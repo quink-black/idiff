@@ -1,0 +1,819 @@
+#include "app/app.h"
+#include "app/viewport.h"
+#include "app/metrics_panel.h"
+#include "app/properties_panel.h"
+
+#include <imgui.h>
+#include <imgui_impl_sdl2.h>
+#include <imgui_impl_sdlrenderer2.h>
+#include <imgui_internal.h>
+#include <SDL.h>
+#include <nfd.h>
+
+#include <algorithm>
+#include <cstdio>
+
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+
+#include "core/image_loader.h"
+#include "core/image_processor.h"
+#include "core/image_comparator.h"
+
+namespace idiff {
+
+struct App::State {
+    SDL_Window* window = nullptr;
+    SDL_Renderer* renderer = nullptr;
+
+    std::unique_ptr<Viewport> viewport;
+    std::unique_ptr<MetricsPanel> metrics_panel;
+    std::unique_ptr<PropertiesPanel> properties_panel;
+
+    UpscaleMethod upscale_method = UpscaleMethod::Lanczos;
+
+    std::string status_text;
+    bool show_metrics = true;
+    bool show_properties = true;
+    bool show_image_list = true;
+    int sidebar_tab = 0;
+};
+
+App::App() : state_(std::make_unique<State>()) {}
+
+App::~App() = default;
+
+bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
+    state_->window = window;
+    state_->renderer = renderer;
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 4.0f;
+    style.FrameRounding = 3.0f;
+    style.GrabRounding = 2.0f;
+    style.WindowPadding = ImVec2(8, 8);
+    style.FramePadding = ImVec2(6, 3);
+    style.ItemSpacing = ImVec2(6, 4);
+    style.TabRounding = 4.0f;
+    style.DockingSeparatorSize = 3.0f;
+
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.18f, 1.00f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.10f, 0.10f, 0.15f, 1.00f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.16f, 0.16f, 0.24f, 1.00f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.18f, 0.18f, 0.26f, 1.00f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.24f, 0.24f, 0.34f, 1.00f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.28f, 0.28f, 0.40f, 1.00f);
+    colors[ImGuiCol_Button] = ImVec4(0.29f, 0.56f, 0.85f, 0.40f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.29f, 0.62f, 1.00f, 0.60f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.29f, 0.62f, 1.00f, 0.80f);
+    colors[ImGuiCol_Header] = ImVec4(0.29f, 0.62f, 1.00f, 0.30f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.29f, 0.62f, 1.00f, 0.45f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.29f, 0.62f, 1.00f, 0.55f);
+    colors[ImGuiCol_Tab] = ImVec4(0.16f, 0.16f, 0.24f, 1.00f);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.29f, 0.62f, 1.00f, 0.60f);
+    colors[ImGuiCol_TabActive] = ImVec4(0.24f, 0.48f, 0.74f, 1.00f);
+    colors[ImGuiCol_CheckMark] = ImVec4(0.29f, 0.62f, 1.00f, 1.00f);
+    colors[ImGuiCol_SliderGrab] = ImVec4(0.29f, 0.62f, 1.00f, 0.80f);
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.40f, 0.72f, 1.00f, 1.00f);
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(0.29f, 0.62f, 1.00f, 0.35f);
+    colors[ImGuiCol_DockingPreview] = ImVec4(0.29f, 0.62f, 1.00f, 0.70f);
+    colors[ImGuiCol_DockingEmptyBg] = ImVec4(0.07f, 0.07f, 0.10f, 1.00f);
+
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer2_Init(renderer);
+
+    int fb_w = 0, fb_h = 0;
+    SDL_GetRendererOutputSize(renderer, &fb_w, &fb_h);
+    int win_w = 0, win_h = 0;
+    SDL_GetWindowSize(window, &win_w, &win_h);
+    float dpi_scale = (win_w > 0) ? static_cast<float>(fb_w) / win_w : 1.0f;
+    if (dpi_scale < 1.0f) dpi_scale = 1.0f;
+    SDL_RenderSetScale(renderer, dpi_scale, dpi_scale);
+
+    state_->viewport = std::make_unique<Viewport>();
+    state_->metrics_panel = std::make_unique<MetricsPanel>();
+    state_->properties_panel = std::make_unique<PropertiesPanel>();
+
+    NFD_Init();
+
+    return true;
+}
+
+void App::shutdown() {
+    NFD_Quit();
+
+    for (auto& entry : entries_) {
+        if (entry.texture) {
+            SDL_DestroyTexture(entry.texture);
+            entry.texture = nullptr;
+        }
+    }
+    entries_.clear();
+
+    if (diff_texture_.texture) {
+        SDL_DestroyTexture(diff_texture_.texture);
+        diff_texture_.texture = nullptr;
+    }
+    diff_image_.reset();
+
+    state_->viewport.reset();
+    state_->metrics_panel.reset();
+    state_->properties_panel.reset();
+
+    ImGui_ImplSDLRenderer2_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+}
+
+void App::frame() {
+    ImGui_ImplSDLRenderer2_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+
+    render_toolbar();
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+
+    ImGuiWindowFlags dock_flags = ImGuiWindowFlags_NoDocking |
+                                   ImGuiWindowFlags_NoTitleBar |
+                                   ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                   ImGuiWindowFlags_NoNavFocus |
+                                   ImGuiWindowFlags_MenuBar;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##DockSpace", nullptr, dock_flags);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+    if (first_frame_) {
+        setup_dock_layout();
+        first_frame_ = false;
+    }
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+
+    ImGui::End();
+
+    render_image_list();
+    render_viewport();
+    render_right_sidebar();
+    render_status_bar();
+
+    ImGui::Render();
+
+    SDL_SetRenderDrawColor(state_->renderer, 18, 18, 26, 255);
+    SDL_RenderClear(state_->renderer);
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), state_->renderer);
+    SDL_RenderPresent(state_->renderer);
+}
+
+void App::setup_dock_layout() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+    ImGui::DockBuilderRemoveNode(dockspace_id);
+    ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace_id, vp->WorkSize);
+
+    ImGuiID dock_left, dock_center_right;
+    ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.20f, &dock_left, &dock_center_right);
+
+    ImGuiID dock_center, dock_right;
+    ImGui::DockBuilderSplitNode(dock_center_right, ImGuiDir_Right, 0.25f, &dock_right, &dock_center);
+
+    ImGui::DockBuilderDockWindow("Images", dock_left);
+    ImGui::DockBuilderDockWindow("Viewport", dock_center);
+    ImGui::DockBuilderDockWindow("Inspector", dock_right);
+
+    ImGui::DockBuilderFinish(dockspace_id);
+}
+
+void App::load_images(const std::vector<std::string>& paths) {
+    ImageLoader loader;
+    for (const auto& path : paths) {
+        auto img = loader.load(path);
+        if (img) {
+            ImageEntry entry;
+            entry.path = path;
+            auto sep = path.find_last_of("/\\");
+            entry.filename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
+            entry.display_label = entry.filename;
+            entry.image = std::move(img);
+            entry.display_image = nullptr;
+            entry.texture = nullptr;
+            entry.texture_dirty = true;
+
+            entries_.push_back(std::move(entry));
+            state_->status_text = "Loaded: " + path;
+        } else {
+            state_->status_text = "Failed to load: " + path + " (" + loader.last_error() + ")";
+        }
+    }
+
+    compute_display_labels();
+    diff_texture_.dirty = true;
+}
+
+void App::open_file_dialog() {
+    nfdfilteritem_t filters[] = {{ "Image files", "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw" }};
+    const nfdpathset_t* outPaths = nullptr;
+    nfdresult_t result = NFD_OpenDialogMultiple(&outPaths, filters, 1, nullptr);
+    if (result == NFD_OKAY) {
+        nfdpathsetsize_t count = 0;
+        NFD_PathSet_GetCount(outPaths, &count);
+        std::vector<std::string> paths;
+        for (nfdpathsetsize_t i = 0; i < count; i++) {
+            nfdchar_t* path = nullptr;
+            NFD_PathSet_GetPath(outPaths, i, &path);
+            if (path) {
+                paths.emplace_back(path);
+                NFD_PathSet_FreePath(path);
+            }
+        }
+        NFD_PathSet_Free(outPaths);
+        load_images(paths);
+    } else if (result == NFD_ERROR) {
+        state_->status_text = "File dialog error: " + std::string(NFD_GetError());
+    }
+}
+
+void App::remove_entry(int index) {
+    if (index < 0 || index >= static_cast<int>(entries_.size())) return;
+
+    if (entries_[index].texture) {
+        SDL_DestroyTexture(entries_[index].texture);
+    }
+    entries_.erase(entries_.begin() + index);
+
+    std::set<int> new_selected;
+    for (int s : selected_) {
+        if (s == index) continue;
+        if (s > index) new_selected.insert(s - 1);
+        else new_selected.insert(s);
+    }
+    selected_ = std::move(new_selected);
+
+    compute_display_labels();
+    diff_texture_.dirty = true;
+}
+
+void App::compute_display_labels() {
+    if (entries_.empty()) return;
+
+    std::unordered_map<std::string, int> name_counts;
+    for (const auto& entry : entries_) {
+        name_counts[entry.filename]++;
+    }
+
+    for (auto& entry : entries_) {
+        if (name_counts[entry.filename] > 1) {
+            auto sep = entry.path.find_last_of("/\\");
+            if (sep != std::string::npos) {
+                auto parent = entry.path.substr(0, sep);
+                auto sep2 = parent.find_last_of("/\\");
+                std::string dir_name = (sep2 != std::string::npos)
+                    ? parent.substr(sep2 + 1) : parent;
+                entry.display_label = dir_name + "/" + entry.filename;
+            } else {
+                entry.display_label = entry.filename;
+            }
+        } else {
+            entry.display_label = entry.filename;
+        }
+    }
+}
+
+void App::update_display_image(int index) {
+    if (index < 0 || index >= static_cast<int>(entries_.size())) return;
+
+    auto& entry = entries_[index];
+    if (!entry.image) return;
+
+    int target_w = entry.image->info().width;
+    int target_h = entry.image->info().height;
+
+    for (int s : selected_) {
+        if (s == index) continue;
+        if (s < 0 || s >= static_cast<int>(entries_.size())) continue;
+        const auto& other = entries_[s];
+        if (other.image) {
+            target_w = std::max(target_w, other.image->info().width);
+            target_h = std::max(target_h, other.image->info().height);
+        }
+    }
+
+    bool needs_upscale = entry.image->info().width < target_w ||
+                         entry.image->info().height < target_h;
+
+    if (needs_upscale) {
+        ImageProcessor proc;
+        UpscaleOptions opts;
+        opts.target_width = target_w;
+        opts.target_height = target_h;
+        opts.method = state_->upscale_method;
+        entry.display_image = proc.upscale(*entry.image, opts);
+    } else {
+        // No upscale needed — clear any stale display_image from a previous comparison
+        entry.display_image.reset();
+    }
+
+    entry.texture_dirty = true;
+    diff_texture_.dirty = true;
+}
+
+void App::upload_texture(ImageEntry& entry) {
+    const Image* img = entry.display_image ? entry.display_image.get() : entry.image.get();
+    if (!img) return;
+
+    const auto& mat = img->mat();
+    if (mat.empty()) return;
+
+    int w = mat.cols;
+    int h = mat.rows;
+    int channels = mat.channels();
+
+    // Metal backend does not reliably support SDL_PIXELFORMAT_RGB24 (3-byte).
+    // Always convert to RGBA32 for upload to avoid rendering artifacts.
+    cv::Mat upload_mat;
+    if (channels == 3) {
+        cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
+        channels = 4;
+    } else if (channels == 4) {
+        upload_mat = mat;
+    } else if (channels == 1) {
+        cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        channels = 4;
+    } else {
+        return;
+    }
+
+    Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
+
+    if (entry.texture) {
+        SDL_DestroyTexture(entry.texture);
+        entry.texture = nullptr;
+    }
+
+    entry.texture = SDL_CreateTexture(state_->renderer, sdl_format,
+                                       SDL_TEXTUREACCESS_STREAMING,
+                                       w, h);
+    if (!entry.texture) return;
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(entry.texture, nullptr, &pixels, &pitch) == 0) {
+        size_t src_row_bytes = static_cast<size_t>(w * channels);
+        size_t dst_pitch = static_cast<size_t>(pitch);
+
+        if (dst_pitch == src_row_bytes && upload_mat.isContinuous()) {
+            std::memcpy(pixels, upload_mat.ptr(), static_cast<size_t>(h) * src_row_bytes);
+        } else {
+            for (int y = 0; y < h; y++) {
+                std::memcpy(static_cast<uint8_t*>(pixels) + y * pitch,
+                           upload_mat.ptr(y), src_row_bytes);
+            }
+        }
+        SDL_UnlockTexture(entry.texture);
+    }
+
+    entry.tex_w = w;
+    entry.tex_h = h;
+    entry.texture_dirty = false;
+}
+
+void App::update_diff_texture() {
+    if (!diff_texture_.dirty) return;
+    diff_texture_.dirty = false;
+
+    diff_image_.reset();
+
+    if (selected_.size() != 2) return;
+
+    auto it = selected_.begin();
+    int idx_a = *it;
+    int idx_b = *(++it);
+
+    if (idx_a >= static_cast<int>(entries_.size())) return;
+    if (idx_b >= static_cast<int>(entries_.size())) return;
+
+    const auto* img_a = entries_[idx_a].display_image
+                            ? entries_[idx_a].display_image.get()
+                            : entries_[idx_a].image.get();
+    const auto* img_b = entries_[idx_b].display_image
+                            ? entries_[idx_b].display_image.get()
+                            : entries_[idx_b].image.get();
+
+    if (!img_a || !img_b) return;
+
+    ImageComparator comparator;
+    DifferenceOptions opts;
+    opts.amplification = 5.0;
+    opts.heatmap_color = HeatmapColor::Inferno;
+
+    auto diff = comparator.compute_difference(*img_a, *img_b, opts);
+    if (!diff) {
+        state_->status_text = "Diff: " + comparator.last_error();
+        return;
+    }
+
+    auto heatmap = comparator.compute_heatmap(*diff, opts);
+    if (!heatmap) {
+        state_->status_text = "Heatmap: " + comparator.last_error();
+        return;
+    }
+
+    diff_image_ = std::move(heatmap);
+    upload_diff_texture();
+}
+
+void App::upload_diff_texture() {
+    if (!diff_image_) return;
+
+    const auto& mat = diff_image_->mat();
+    if (mat.empty()) return;
+
+    int w = mat.cols;
+    int h = mat.rows;
+    int channels = mat.channels();
+
+    // Heatmap is in RGB order (converted in image_comparator).
+    // Convert to RGBA32 for SDL texture upload.
+    cv::Mat upload_mat;
+    if (channels == 4) {
+        upload_mat = mat;
+    } else if (channels == 3) {
+        cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
+    } else if (channels == 1) {
+        cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
+    } else {
+        return;
+    }
+    channels = 4;
+
+    Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
+
+    if (diff_texture_.texture) {
+        SDL_DestroyTexture(diff_texture_.texture);
+    }
+
+    diff_texture_.texture = SDL_CreateTexture(state_->renderer, sdl_format,
+                                               SDL_TEXTUREACCESS_STREAMING,
+                                               w, h);
+    if (!diff_texture_.texture) return;
+
+    void* pixels = nullptr;
+    int pitch = 0;
+    if (SDL_LockTexture(diff_texture_.texture, nullptr, &pixels, &pitch) == 0) {
+        size_t src_row_bytes = static_cast<size_t>(w * channels);
+        size_t dst_pitch = static_cast<size_t>(pitch);
+
+        if (dst_pitch == src_row_bytes && upload_mat.isContinuous()) {
+            std::memcpy(pixels, upload_mat.ptr(), static_cast<size_t>(h) * src_row_bytes);
+        } else {
+            for (int y = 0; y < h; y++) {
+                std::memcpy(static_cast<uint8_t*>(pixels) + y * pitch,
+                           upload_mat.ptr(y), src_row_bytes);
+            }
+        }
+        SDL_UnlockTexture(diff_texture_.texture);
+    }
+
+    diff_texture_.tex_w = w;
+    diff_texture_.tex_h = h;
+}
+
+void App::render_toolbar() {
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open Images...", "Ctrl+O")) {
+                open_file_dialog();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit", "Alt+F4")) {
+                SDL_Event e;
+                e.type = SDL_QUIT;
+                SDL_PushEvent(&e);
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Image List", nullptr, &state_->show_image_list);
+            ImGui::MenuItem("Metrics", nullptr, &state_->show_metrics);
+            ImGui::MenuItem("Properties", nullptr, &state_->show_properties);
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Upscale")) {
+            bool is_nearest = state_->upscale_method == UpscaleMethod::Nearest;
+            bool is_bilinear = state_->upscale_method == UpscaleMethod::Bilinear;
+            bool is_bicubic = state_->upscale_method == UpscaleMethod::Bicubic;
+            bool is_lanczos = state_->upscale_method == UpscaleMethod::Lanczos;
+
+            if (ImGui::Checkbox("Nearest", &is_nearest) && is_nearest) {
+                state_->upscale_method = UpscaleMethod::Nearest;
+            }
+            if (ImGui::Checkbox("Bilinear", &is_bilinear) && is_bilinear) {
+                state_->upscale_method = UpscaleMethod::Bilinear;
+            }
+            if (ImGui::Checkbox("Bicubic", &is_bicubic) && is_bicubic) {
+                state_->upscale_method = UpscaleMethod::Bicubic;
+            }
+            if (ImGui::Checkbox("Lanczos", &is_lanczos) && is_lanczos) {
+                state_->upscale_method = UpscaleMethod::Lanczos;
+            }
+
+            ImGui::EndMenu();
+        }
+
+        ImGui::Separator();
+        if (ImGui::SmallButton("+ Open")) {
+            open_file_dialog();
+        }
+
+        ImGui::EndMainMenuBar();
+    }
+}
+
+void App::render_image_list() {
+    ImGui::SetNextWindowSize(ImVec2(220, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Images", &state_->show_image_list)) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::Button("+ Add Images", ImVec2(-1, 0))) {
+        open_file_dialog();
+    }
+
+    if (selected_.size() >= 2) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear")) {
+            selected_.clear();
+            diff_texture_.dirty = true;
+        }
+    }
+
+    ImGui::Separator();
+
+    if (!selected_.empty()) {
+        ImGui::TextColored(ImVec4(0.40f, 0.80f, 1.00f, 1.00f),
+                           "%zu selected", selected_.size());
+    }
+
+    float list_height = ImGui::GetContentRegionAvail().y;
+    if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
+        for (int i = 0; i < static_cast<int>(entries_.size()); i++) {
+            auto& entry = entries_[i];
+            ImGui::PushID(i);
+
+            bool is_sel = selected_.count(i) > 0;
+
+            if (is_sel) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f, 0.80f, 1.00f, 1.00f));
+            }
+
+            bool checked = is_sel;
+            if (ImGui::Checkbox("##sel", &checked)) {
+                if (checked) {
+                    selected_.insert(i);
+                } else {
+                    selected_.erase(i);
+                }
+                // Selection change affects upscale targets for all selected images
+                for (int s : selected_) {
+                    if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                        entries_[s].texture_dirty = true;
+                    }
+                }
+                diff_texture_.dirty = true;
+            }
+
+            ImGui::SameLine();
+
+            ImGui::TextUnformatted(entry.display_label.c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", entry.path.c_str());
+            }
+
+            if (ImGui::BeginPopupContextItem("entry_ctx")) {
+                if (ImGui::MenuItem("Remove")) { remove_entry(i); }
+                ImGui::EndPopup();
+            }
+
+            if (is_sel) {
+                ImGui::PopStyleColor();
+            }
+
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    if (entries_.empty()) {
+        ImGui::TextDisabled("No images loaded.");
+        ImGui::TextDisabled("Ctrl+O or click '+' to add.");
+    }
+
+    ImGui::End();
+}
+
+void App::render_viewport() {
+    // Upload dirty textures for selected images
+    for (int s : selected_) {
+        if (s >= 0 && s < static_cast<int>(entries_.size())) {
+            if (entries_[s].texture_dirty) {
+                update_display_image(s);
+                upload_texture(entries_[s]);
+            }
+        }
+    }
+
+    update_diff_texture();
+
+    // Build texture list from selected images
+    std::vector<SDL_Texture*> tex_ptrs;
+    std::vector<int> tex_ws, tex_hs;
+    std::vector<const char*> labels;
+
+    for (int s : selected_) {
+        if (s >= 0 && s < static_cast<int>(entries_.size())) {
+            tex_ptrs.push_back(entries_[s].texture);
+            tex_ws.push_back(entries_[s].tex_w);
+            tex_hs.push_back(entries_[s].tex_h);
+            labels.push_back(entries_[s].display_label.c_str());
+        }
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    if (!ImGui::Begin("Viewport", nullptr,
+                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    // Zoom with scroll
+    if (ImGui::IsWindowHovered()) {
+        float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel != 0.0f) {
+            float factor = wheel > 0 ? 1.1f : 0.9f;
+            float zoom = state_->viewport->zoom();
+            zoom *= factor;
+            zoom = std::max(0.1f, std::min(zoom, 64.0f));
+            state_->viewport->set_zoom(zoom);
+        }
+
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            ImVec2 delta = ImGui::GetIO().MouseDelta;
+            float px = state_->viewport->pan_x();
+            float py = state_->viewport->pan_y();
+            state_->viewport->set_pan(px + delta.x, py + delta.y);
+        }
+    }
+
+    // Toolbar
+    {
+        ComparisonMode mode = state_->viewport->mode();
+        int mode_int = static_cast<int>(mode);
+        ImGui::RadioButton("Split", &mode_int, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("Overlay", &mode_int, 1);
+        ImGui::SameLine();
+        ImGui::RadioButton("Diff", &mode_int, 2);
+        state_->viewport->set_mode(static_cast<ComparisonMode>(mode_int));
+
+        ImGui::SameLine();
+        ImGui::Spacing();
+        ImGui::SameLine();
+
+        float zoom = state_->viewport->zoom();
+        if (ImGui::SmallButton("-")) {
+            zoom = std::max(0.1f, zoom * 0.8f);
+        }
+        ImGui::SameLine();
+        ImGui::Text("%.0f%%", zoom * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+")) {
+            zoom = std::min(64.0f, zoom * 1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Fit")) {
+            zoom = 1.0f;
+            state_->viewport->set_pan(0.0f, 0.0f);
+        }
+        state_->viewport->set_zoom(zoom);
+
+        int sel_count = static_cast<int>(selected_.size());
+        if (sel_count > 0) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.40f, 0.80f, 1.00f, 1.00f),
+                               "%d images", sel_count);
+        }
+
+        ImGui::Separator();
+    }
+
+    // Render viewport content using ImGui::Image with SDL_Texture* as ImTextureID
+    if (state_->viewport) {
+        state_->viewport->render(tex_ptrs, tex_ws, tex_hs, labels,
+                                 diff_texture_.texture, diff_texture_.tex_w, diff_texture_.tex_h);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+void App::render_right_sidebar() {
+    ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Inspector")) {
+        ImGui::End();
+        return;
+    }
+
+    std::vector<const Image*> sel_images;
+    std::vector<const Image*> sel_display_images;
+    for (int s : selected_) {
+        if (s >= 0 && s < static_cast<int>(entries_.size())) {
+            const auto& entry = entries_[s];
+            sel_images.push_back(entry.image.get());
+            sel_display_images.push_back(entry.display_image ? entry.display_image.get()
+                                                             : entry.image.get());
+        }
+    }
+
+    const Image* img_a = sel_images.size() >= 1 ? sel_images[0] : nullptr;
+    const Image* img_b = sel_images.size() >= 2 ? sel_images[1] : nullptr;
+    const Image* disp_a = sel_display_images.size() >= 1 ? sel_display_images[0] : nullptr;
+    const Image* disp_b = sel_display_images.size() >= 2 ? sel_display_images[1] : nullptr;
+
+    if (ImGui::BeginTabBar("##inspector_tabs")) {
+        if (ImGui::BeginTabItem("Properties")) {
+            if (state_->properties_panel) {
+                state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b);
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Metrics")) {
+            if (state_->metrics_panel) {
+                state_->metrics_panel->render_inline(disp_a, disp_b);
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    ImGui::End();
+}
+
+void App::render_status_bar() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vp->Size.y - 24));
+    ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 24));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoSavedSettings |
+                              ImGuiWindowFlags_MenuBar;
+
+    if (ImGui::Begin("##statusbar", nullptr, flags)) {
+        if (ImGui::BeginMenuBar()) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
+                         entries_.size(), selected_.size());
+            for (int s : selected_) {
+                if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                    std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf),
+                                 " | %s", entries_[s].display_label.c_str());
+                }
+            }
+            if (!state_->status_text.empty()) {
+                std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf),
+                             " | %s", state_->status_text.c_str());
+            }
+            ImGui::TextUnformatted(buf);
+            ImGui::EndMenuBar();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+} // namespace idiff
