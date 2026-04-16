@@ -39,7 +39,11 @@ private:
     uint32_t flags_;
     std::string last_error_;
 
+#ifdef IDIFF_USE_OPENCV_IMGCODECS
     std::unique_ptr<Image> load_via_opencv(const std::string& path);
+#else
+    std::unique_ptr<Image> load_via_magick(const std::string& path);
+#endif
     std::unique_ptr<Image> load_via_raw(const std::string& path);
 
     static bool is_raw_format(const std::string& path);
