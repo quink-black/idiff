@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <numeric>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -225,8 +226,76 @@ void App::load_images(const std::vector<std::string>& paths) {
         }
     }
 
+    sort_entries_by_name();
     compute_display_labels();
     diff_texture_.dirty = true;
+}
+
+void App::sort_entries_by_name() {
+    // Build a mapping from old index to entry pointer for selected_ fixup
+    std::vector<int> old_indices(entries_.size());
+    std::iota(old_indices.begin(), old_indices.end(), 0);
+
+    // Sort entries and track the permutation
+    std::sort(old_indices.begin(), old_indices.end(), [&](int a, int b) {
+        return entries_[a].filename < entries_[b].filename;
+    });
+
+    // Apply permutation
+    std::vector<ImageEntry> sorted;
+    sorted.reserve(entries_.size());
+    for (int idx : old_indices) {
+        sorted.push_back(std::move(entries_[idx]));
+    }
+
+    // Remap selected_ indices
+    std::vector<int> remap(entries_.size());
+    for (int i = 0; i < static_cast<int>(old_indices.size()); i++) {
+        remap[old_indices[i]] = i;
+    }
+    std::set<int> new_selected;
+    for (int s : selected_) {
+        if (s >= 0 && s < static_cast<int>(remap.size())) {
+            new_selected.insert(remap[s]);
+        }
+    }
+    selected_ = std::move(new_selected);
+    entries_ = std::move(sorted);
+}
+
+void App::move_entry(int from, int to) {
+    if (from == to) return;
+    if (from < 0 || from >= static_cast<int>(entries_.size())) return;
+    if (to < 0 || to >= static_cast<int>(entries_.size())) return;
+
+    // Build old-to-new index mapping
+    std::vector<int> remap(entries_.size());
+    std::iota(remap.begin(), remap.end(), 0);
+
+    // Move the entry
+    ImageEntry tmp = std::move(entries_[from]);
+    if (from < to) {
+        for (int i = from; i < to; i++) {
+            entries_[i] = std::move(entries_[i + 1]);
+            remap[i + 1] = i;
+        }
+    } else {
+        for (int i = from; i > to; i--) {
+            entries_[i] = std::move(entries_[i - 1]);
+            remap[i - 1] = i;
+        }
+    }
+    entries_[to] = std::move(tmp);
+    remap[from] = to;
+
+    // Remap selected_ indices
+    std::set<int> new_selected;
+    for (int s : selected_) {
+        if (s >= 0 && s < static_cast<int>(remap.size())) {
+            new_selected.insert(remap[s]);
+        }
+    }
+    selected_ = std::move(new_selected);
 }
 
 void App::open_file_dialog() {
@@ -606,9 +675,31 @@ void App::render_image_list() {
 
             ImGui::SameLine();
 
-            ImGui::TextUnformatted(entry.display_label.c_str());
+            // Selectable for the label — also serves as drag source/target
+            ImGui::Selectable(entry.display_label.c_str(), is_sel,
+                              ImGuiSelectableFlags_AllowOverlap);
+
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", entry.path.c_str());
+            }
+
+            // Drag source
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                drag_source_idx_ = i;
+                ImGui::SetDragDropPayload("IMAGE_REORDER", &i, sizeof(int));
+                ImGui::Text("%s", entry.display_label.c_str());
+                ImGui::EndDragDropSource();
+            }
+
+            // Drop target
+            if (ImGui::BeginDragDropTarget()) {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("IMAGE_REORDER")) {
+                    int src = *static_cast<const int*>(payload->Data);
+                    move_entry(src, i);
+                    drag_source_idx_ = -1;
+                    drag_target_idx_ = -1;
+                }
+                ImGui::EndDragDropTarget();
             }
 
             if (ImGui::BeginPopupContextItem("entry_ctx")) {

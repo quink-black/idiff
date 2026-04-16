@@ -65,6 +65,8 @@ private:
     void update_diff_texture();
     void upload_diff_texture();
     void compute_display_labels();
+    void sort_entries_by_name();
+    void move_entry(int from, int to);
 
     struct State;
     std::unique_ptr<State> state_;
@@ -72,6 +74,10 @@ private:
     std::vector<ImageEntry> entries_;
     std::set<int> selected_;
     bool first_frame_ = true;
+
+    // Drag-reorder state for image list
+    int drag_source_idx_ = -1;
+    int drag_target_idx_ = -1;
 
     std::unique_ptr<Image> diff_image_;
     DiffTexture diff_texture_;
