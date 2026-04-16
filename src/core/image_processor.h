@@ -24,7 +24,6 @@ struct UpscaleOptions {
 class ImageProcessor {
 public:
     // Upscale image to target dimensions using the specified method.
-    // Uses Magick::Image.resize() for color-managed resizing.
     // Returns a new Image; the original is unmodified.
     std::unique_ptr<Image> upscale(const Image& src, const UpscaleOptions& options);
 

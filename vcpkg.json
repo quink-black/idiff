@@ -1,0 +1,16 @@
+{
+    "name": "idiff",
+    "version": "0.1.0",
+    "dependencies": [
+        {
+            "name": "opencv4",
+            "features": ["quality", "jpeg", "png", "tiff", "webp"]
+        },
+        "libraw",
+        "sdl2",
+        "catch2",
+        "nativefiledialog-extended"
+    ],
+    "overrides": [],
+    "builtin-baseline": "a96085d4cccbe4126fe7924c1e79dafb52b98b92"
+}

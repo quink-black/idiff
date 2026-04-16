@@ -73,10 +73,10 @@ if(IDIFF_BUILD_LIBRAW)
     )
     FetchContent_MakeAvailable(libraw)
 
-    # LibRaw's CMake build creates a 'raw' target.  Our code links against
-    # PkgConfig::LIBRAW when using the system package.  Create an ALIAS so
-    # both paths can use the same target name.
+    # LibRaw's CMake build creates a 'raw' target.  Create an ALIAS so
+    # both paths can use the same target name via LIBRAW_TARGET.
     if(TARGET raw AND NOT TARGET PkgConfig::LIBRAW)
         add_library(PkgConfig::LIBRAW ALIAS raw)
     endif()
+    set(LIBRAW_TARGET PkgConfig::LIBRAW PARENT_SCOPE)
 endif()

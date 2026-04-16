@@ -36,3 +36,10 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     )
 endif()
+
+# Windows: use WIN32 subsystem to suppress the console window
+if(WIN32)
+    set_target_properties(idiff PROPERTIES
+        WIN32_EXECUTABLE TRUE
+    )
+endif()

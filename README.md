@@ -17,15 +17,15 @@ Cross-platform image comparison tool for super resolution workflows.
 
 - CMake 3.20+
 - C++17 compiler
-- OpenCV 4.x (with quality module from opencv_contrib)
-- ImageMagick 7.x (with Magick++ C++ bindings)
+- OpenCV 4.x (with imgcodecs and quality module from opencv_contrib)
 - LibRaw
-- OpenGL 3.3
+- SDL2
+- vcpkg (recommended on Windows)
 
 ### macOS
 
 ```bash
-brew install opencv imagemagick libraw
+brew install opencv libraw sdl2
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(sysctl -n hw.ncpu)
 ```
@@ -33,17 +33,19 @@ cmake --build build -j$(sysctl -n hw.ncpu)
 ### Linux (Ubuntu/Debian)
 
 ```bash
-sudo apt install libopencv-dev libopencv-contrib-dev libmagick++-dev libraw-dev
+sudo apt install libopencv-dev libopencv-contrib-dev libraw-dev libsdl2-dev
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-### Windows
-
-Install vcpkg and set up OpenCV, ImageMagick, LibRaw, then:
+### Windows (vcpkg)
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+# Set vcpkg root path
+set VCPKG_ROOT=C:\path\to\vcpkg
+
+# vcpkg manifest mode installs dependencies automatically
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 ```
 

@@ -2,9 +2,11 @@
 #include "core/image_impl.h"
 
 #include <algorithm>
+#include <vector>
 
-#include <Magick++.h>
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "core/detail/raw_loader.h"
 
@@ -40,31 +42,18 @@ SourceFormat extension_to_format(const std::string& path) {
     return SourceFormat::Unknown;
 }
 
-PixelFormat magick_type_to_pixel_format(const Magick::Image& img) {
-    bool is_gray = img.type() == Magick::GrayscaleType ||
-                   img.type() == Magick::GrayscaleAlphaType;
-    bool has_alpha = img.alpha();
-    size_t depth = img.depth();
+PixelFormat mat_to_pixel_format(const cv::Mat& mat) {
+    int channels = mat.channels();
+    int depth = mat.depth();
+    bool is_16bit = (depth == CV_16U || depth == CV_16S);
 
-    if (is_gray) {
-        return depth > 8 ? PixelFormat::Gray16 : PixelFormat::Gray8;
+    if (channels == 1) {
+        return is_16bit ? PixelFormat::Gray16 : PixelFormat::Gray8;
     }
-    if (has_alpha) {
-        return depth > 8 ? PixelFormat::RGBA16 : PixelFormat::RGBA8;
+    if (channels == 4) {
+        return is_16bit ? PixelFormat::RGBA16 : PixelFormat::RGBA8;
     }
-    return depth > 8 ? PixelFormat::RGB16 : PixelFormat::RGB8;
-}
-
-int pixel_format_channels(PixelFormat fmt) {
-    switch (fmt) {
-        case PixelFormat::Gray8:
-        case PixelFormat::Gray16:  return 1;
-        case PixelFormat::RGB8:
-        case PixelFormat::RGB16:   return 3;
-        case PixelFormat::RGBA8:
-        case PixelFormat::RGBA16:  return 4;
-    }
-    return 3;
+    return is_16bit ? PixelFormat::RGB16 : PixelFormat::RGB8;
 }
 
 int pixel_format_depth(PixelFormat fmt) {
@@ -80,52 +69,29 @@ bool has_flag(uint32_t flags, LoadFlag flag) {
     return (flags & static_cast<uint32_t>(flag)) != 0;
 }
 
-// Extract pixel data from a Magick::Image into the Image's cv::Mat and ImageInfo.
-// The Magick::Image is used only during this call and is not retained.
-void populate_image_from_magick(Magick::Image& mi, Image& image) {
+void populate_image_from_mat(cv::Mat& mat, Image& image, bool keep_alpha) {
     auto& impl = image.internal();
 
-    impl.info.width = static_cast<int>(mi.columns());
-    impl.info.height = static_cast<int>(mi.rows());
-    impl.info.pixel_format = magick_type_to_pixel_format(mi);
+    // OpenCV decodes as BGR; convert to RGB for our internal representation.
+    if (mat.channels() == 3) {
+        cv::cvtColor(mat, mat, cv::COLOR_BGR2RGB);
+    } else if (mat.channels() == 4) {
+        cv::cvtColor(mat, mat, cv::COLOR_BGRA2RGBA);
+    }
+
+    if (!keep_alpha && mat.channels() == 4) {
+        cv::Mat rgb;
+        cv::cvtColor(mat, rgb, cv::COLOR_RGBA2RGB);
+        mat = rgb;
+    }
+
+    impl.info.width = mat.cols;
+    impl.info.height = mat.rows;
+    impl.info.pixel_format = mat_to_pixel_format(mat);
     impl.info.bit_depth = pixel_format_depth(impl.info.pixel_format);
-    impl.info.has_alpha = mi.alpha();
+    impl.info.has_alpha = (mat.channels() == 4);
+    impl.info.color_space = "sRGB";
 
-    // Check for ICC profile
-    try {
-        Magick::Blob icc_blob = mi.profile("icc");
-        if (icc_blob.length() > 0) {
-            impl.info.icc_profile_name = "Embedded ICC";
-        }
-    } catch (...) {
-        // No ICC profile
-    }
-
-    impl.info.color_space = mi.colorSpace() == Magick::sRGBColorspace
-        ? "sRGB" : "Unknown";
-
-    // Export pixels to cv::Mat
-    int channels = pixel_format_channels(impl.info.pixel_format);
-    int cv_type = impl.info.bit_depth > 8
-        ? CV_16UC(channels) : CV_8UC(channels);
-
-    cv::Mat mat(impl.info.height, impl.info.width, cv_type);
-
-    // Mapping string must match the actual pixel format:
-    //   Grayscale → "I" (intensity)
-    //   RGB       → "RGB"
-    //   RGBA      → "RGBA"
-    std::string mapping;
-    if (channels == 1) {
-        mapping = "I";
-    } else if (channels == 4) {
-        mapping = "RGBA";
-    } else {
-        mapping = "RGB";
-    }
-    auto storage = impl.info.bit_depth > 8 ? Magick::ShortPixel : Magick::CharPixel;
-
-    mi.write(0, 0, mi.columns(), mi.rows(), mapping, storage, mat.ptr());
     impl.mat = std::move(mat);
 }
 
@@ -139,7 +105,7 @@ std::unique_ptr<Image> ImageLoader::load(const std::string& path) {
     if (is_raw_format(path)) {
         return load_via_raw(path);
     }
-    return load_via_magick(path);
+    return load_via_opencv(path);
 }
 
 std::unique_ptr<Image> ImageLoader::load_from_memory(const uint8_t* data, size_t size,
@@ -152,19 +118,25 @@ std::unique_ptr<Image> ImageLoader::load_from_memory(const uint8_t* data, size_t
     }
 
     try {
-        Magick::Blob blob(data, size);
-        Magick::Image magick_img(blob);
+        std::vector<uint8_t> buf(data, data + size);
+        int imread_flags = cv::IMREAD_UNCHANGED;
+        if (!has_flag(flags_, LoadFlag::Keep16Bit)) {
+            imread_flags = has_flag(flags_, LoadFlag::KeepAlpha)
+                ? cv::IMREAD_UNCHANGED : cv::IMREAD_COLOR;
+        }
 
-        if (!has_flag(flags_, LoadFlag::KeepAlpha)) {
-            magick_img.type(Magick::TrueColorType);
+        cv::Mat mat = cv::imdecode(buf, imread_flags);
+        if (mat.empty()) {
+            last_error_ = "Failed to decode image from memory";
+            return nullptr;
         }
 
         auto image = std::make_unique<Image>();
         image->internal().info.source_format = format;
-        populate_image_from_magick(magick_img, *image);
+        populate_image_from_mat(mat, *image, has_flag(flags_, LoadFlag::KeepAlpha));
 
         return image;
-    } catch (const Magick::Exception& e) {
+    } catch (const cv::Exception& e) {
         last_error_ = e.what();
         return nullptr;
     }
@@ -174,20 +146,26 @@ const std::string& ImageLoader::last_error() const noexcept {
     return last_error_;
 }
 
-std::unique_ptr<Image> ImageLoader::load_via_magick(const std::string& path) {
+std::unique_ptr<Image> ImageLoader::load_via_opencv(const std::string& path) {
     try {
-        Magick::Image magick_img(path);
+        int imread_flags = cv::IMREAD_UNCHANGED;
+        if (!has_flag(flags_, LoadFlag::Keep16Bit)) {
+            imread_flags = has_flag(flags_, LoadFlag::KeepAlpha)
+                ? cv::IMREAD_UNCHANGED : cv::IMREAD_COLOR;
+        }
 
-        if (!has_flag(flags_, LoadFlag::KeepAlpha)) {
-            magick_img.type(Magick::TrueColorType);
+        cv::Mat mat = cv::imread(path, imread_flags);
+        if (mat.empty()) {
+            last_error_ = "Failed to load image: " + path;
+            return nullptr;
         }
 
         auto image = std::make_unique<Image>();
         image->internal().info.source_format = extension_to_format(path);
-        populate_image_from_magick(magick_img, *image);
+        populate_image_from_mat(mat, *image, has_flag(flags_, LoadFlag::KeepAlpha));
 
         return image;
-    } catch (const Magick::Exception& e) {
+    } catch (const cv::Exception& e) {
         last_error_ = e.what();
         return nullptr;
     }

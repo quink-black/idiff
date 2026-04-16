@@ -15,9 +15,9 @@ target_include_directories(idiff_core PUBLIC
 target_link_libraries(idiff_core PUBLIC
     opencv_core
     opencv_imgproc
+    opencv_imgcodecs
     opencv_quality
-    PkgConfig::MAGICKXX
-    PkgConfig::LIBRAW
+    ${LIBRAW_TARGET}
 )
 
 set_target_properties(idiff_core PROPERTIES

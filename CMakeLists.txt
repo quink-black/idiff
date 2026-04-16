@@ -12,23 +12,13 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Find pkg-config for libraries without CMake configs
-find_package(PkgConfig REQUIRED)
-
-# --- System-required dependencies (too complex to build from source) ---
+# --- System-required dependencies ---
 
 # OpenCV
-find_package(OpenCV REQUIRED COMPONENTS core imgproc quality)
-
-# ImageMagick (pkg-config)
-# ImageMagick depends on many third-party libraries (libjpeg, libpng, libtiff,
-# libwebp, freetype, fontconfig, etc.) and uses autotools — not practical to
-# build from source via CMake.
-pkg_check_modules(MAGICKXX REQUIRED IMPORTED_TARGET Magick++)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs quality)
 
 # SDL2
-# SDL2 has complex platform-specific backends; system package is preferred.
-find_package(SDL2 REQUIRED)
+find_package(SDL2 REQUIRED CONFIG)
 
 # --- Dependencies with source-build fallback ---
 
@@ -52,15 +42,27 @@ else()
     set(IDIFF_BUILD_NFD OFF)
 endif()
 
-# LibRaw — try pkg-config first, then build from source.
-# All paths ensure the target PkgConfig::LIBRAW is available for consumers.
-pkg_check_modules(LIBRAW QUIET IMPORTED_TARGET libraw)
-if(LIBRAW_FOUND)
-    message(STATUS "Found system LibRaw via pkg-config")
+# LibRaw -- try find_package (CONFIG mode for vcpkg), then pkg-config, then build from source.
+find_package(libraw CONFIG QUIET)
+if(libraw_FOUND)
+    message(STATUS "Found system LibRaw via CMake config")
     set(IDIFF_BUILD_LIBRAW OFF)
+    set(LIBRAW_TARGET libraw::raw_r)
 else()
-    message(STATUS "LibRaw not found on system — will build from source")
-    set(IDIFF_BUILD_LIBRAW ON)
+    # Fall back to pkg-config (Linux/macOS)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBRAW QUIET IMPORTED_TARGET libraw)
+    endif()
+    if(LIBRAW_FOUND)
+        message(STATUS "Found system LibRaw via pkg-config")
+        set(IDIFF_BUILD_LIBRAW OFF)
+        set(LIBRAW_TARGET PkgConfig::LIBRAW)
+    else()
+        message(STATUS "LibRaw not found on system -- will build from source")
+        set(IDIFF_BUILD_LIBRAW ON)
+        set(LIBRAW_TARGET PkgConfig::LIBRAW)
+    endif()
 endif()
 
 add_subdirectory(third_party)
