@@ -142,11 +142,13 @@ void Viewport::draw_selection_rect() {
 
 // --- Drawing helpers ---
 
-void Viewport::draw_image_label(const char* label, ImVec2 img_pos, ImVec2 img_size) {
+void Viewport::draw_image_label(const char* label, ImVec2 anchor_pos, ImVec2 /*anchor_size*/) {
     ImVec2 text_size = ImGui::CalcTextSize(label);
     float pad_x = 6.0f, pad_y = 4.0f;
 
-    ImVec2 rect_min(img_pos.x + 4, img_pos.y + 4);
+    // Label is pinned to the anchor area (viewport / cell top-left),
+    // so it stays visible regardless of zoom or pan.
+    ImVec2 rect_min(anchor_pos.x + 4, anchor_pos.y + 4);
     ImVec2 rect_max(rect_min.x + text_size.x + pad_x * 2,
                     rect_min.y + text_size.y + pad_y * 2);
 
@@ -323,7 +325,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
             dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
                          ImVec2(pos.x + size.x, pos.y + size.y));
-            if (labels[0]) draw_image_label(labels[0], pos, size);
+            if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
                                vp_origin_.y + vp_size_.y * 0.5f),
@@ -337,7 +339,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
         dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
                      ImVec2(pos.x + size.x, pos.y + size.y));
-        if (labels[0]) draw_image_label(labels[0], pos, size);
+        if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         return;
     }
 
@@ -406,13 +408,15 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         }
     }
 
-    // Labels
+    // Labels — anchored to viewport edges, not to the (zoomed/panned) image
     if (labels[0]) {
-        draw_image_label(labels[0], pos, ImVec2(split_x, size.y));
+        draw_image_label(labels[0], vp_origin_, vp_size_);
     }
     if (labels[1]) {
-        ImVec2 b_pos(pos.x + split_x, pos.y);
-        draw_image_label(labels[1], b_pos, ImVec2(size.x - split_x, size.y));
+        // Right-side label anchored at the slider position within the viewport
+        float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
+        ImVec2 b_anchor(slider_screen_x, vp_origin_.y);
+        draw_image_label(labels[1], b_anchor, ImVec2(vp_size_.x - slider_screen_x, vp_size_.y));
     }
 }
 
@@ -437,7 +441,7 @@ void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_
 
     if (labels.size() >= 2 && labels[0] && labels[1]) {
         std::string diff_label = std::string("Diff: ") + labels[0] + " vs " + labels[1];
-        draw_image_label(diff_label.c_str(), pos, size);
+        draw_image_label(diff_label.c_str(), vp_origin_, vp_size_);
     }
 }
 
