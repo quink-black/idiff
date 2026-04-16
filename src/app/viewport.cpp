@@ -348,61 +348,66 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     ImVec2 pos, size;
     compute_image_rect(img_w, img_h, pos, size);
 
-    float split_x = size.x * slider_pos_;
+    // The slider line is anchored to the VIEWPORT, not the image.
+    // This ensures it stays visible and draggable regardless of zoom/pan.
+    float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
 
     // UV scale for images that may be smaller than the composite
     float uv_a_scale_x = static_cast<float>(tex_ws[0]) / img_w;
     float uv_b_scale_x = static_cast<float>(tex_ws[1]) / img_w;
 
-    // Draw image B (right side of slider)
+    // Draw image B (right side of slider) — clip to right of the line
     {
-        float u0 = (split_x / size.x) * uv_b_scale_x;
-        float u1 = 1.0f * uv_b_scale_x;
-        ImVec2 rect_min(pos.x + split_x, pos.y);
-        ImVec2 rect_max(pos.x + size.x, pos.y + size.y);
-        dl->AddImage(to_tex_id(tex_ptrs[1]), rect_min, rect_max,
-                     ImVec2(u0, 0), ImVec2(u1, 1));
+        dl->PushClipRect(ImVec2(line_x, vp_origin_.y),
+                         ImVec2(vp_origin_.x + vp_size_.x, vp_origin_.y + vp_size_.y), true);
+        ImVec2 uv0(0, 0);
+        ImVec2 uv1(uv_b_scale_x, 1);
+        dl->AddImage(to_tex_id(tex_ptrs[1]), pos,
+                     ImVec2(pos.x + size.x, pos.y + size.y), uv0, uv1);
+        dl->PopClipRect();
     }
 
-    // Draw image A (left side of slider)
+    // Draw image A (left side of slider) — clip to left of the line
     {
-        float u1 = (split_x / size.x) * uv_a_scale_x;
-        ImVec2 rect_min(pos.x, pos.y);
-        ImVec2 rect_max(pos.x + split_x, pos.y + size.y);
-        dl->AddImage(to_tex_id(tex_ptrs[0]), rect_min, rect_max,
-                     ImVec2(0, 0), ImVec2(u1, 1));
+        dl->PushClipRect(vp_origin_, ImVec2(line_x, vp_origin_.y + vp_size_.y), true);
+        ImVec2 uv0(0, 0);
+        ImVec2 uv1(uv_a_scale_x, 1);
+        dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
+                     ImVec2(pos.x + size.x, pos.y + size.y), uv0, uv1);
+        dl->PopClipRect();
     }
 
-    // Slider line
+    // Slider line — drawn at the viewport-relative position
     {
-        float line_x = pos.x + split_x;
-        dl->AddLine(ImVec2(line_x, pos.y),
-                    ImVec2(line_x, pos.y + size.y),
+        float vp_top = vp_origin_.y;
+        float vp_bot = vp_origin_.y + vp_size_.y;
+        dl->AddLine(ImVec2(line_x, vp_top),
+                    ImVec2(line_x, vp_bot),
                     IM_COL32(255, 255, 255, 220), 2.0f);
 
         float handle_sz = 8.0f;
         dl->AddTriangleFilled(
-            ImVec2(line_x - handle_sz, pos.y),
-            ImVec2(line_x + handle_sz, pos.y),
-            ImVec2(line_x, pos.y + handle_sz * 1.5f),
+            ImVec2(line_x - handle_sz, vp_top),
+            ImVec2(line_x + handle_sz, vp_top),
+            ImVec2(line_x, vp_top + handle_sz * 1.5f),
             IM_COL32(255, 255, 255, 220));
         dl->AddTriangleFilled(
-            ImVec2(line_x - handle_sz, pos.y + size.y),
-            ImVec2(line_x + handle_sz, pos.y + size.y),
-            ImVec2(line_x, pos.y + size.y - handle_sz * 1.5f),
+            ImVec2(line_x - handle_sz, vp_bot),
+            ImVec2(line_x + handle_sz, vp_bot),
+            ImVec2(line_x, vp_bot - handle_sz * 1.5f),
             IM_COL32(255, 255, 255, 220));
     }
 
-    // Handle slider dragging — use an invisible button over the image area
+    // Handle slider dragging — use an invisible button over the VIEWPORT area
     {
-        ImGui::SetCursorScreenPos(pos);
-        ImGui::InvisibleButton("##overlay_slider", size);
+        ImGui::SetCursorScreenPos(vp_origin_);
+        ImGui::InvisibleButton("##overlay_slider", vp_size_);
         if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         }
         if (ImGui::IsItemActive()) {
-            float mouse_x = ImGui::GetIO().MousePos.x - pos.x;
-            slider_pos_ = std::clamp(mouse_x / size.x, 0.0f, 1.0f);
+            float mouse_x = ImGui::GetIO().MousePos.x - vp_origin_.x;
+            slider_pos_ = std::clamp(mouse_x / vp_size_.x, 0.0f, 1.0f);
         }
     }
 
