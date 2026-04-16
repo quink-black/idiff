@@ -108,6 +108,16 @@ private:
     // Content dimensions (max image size across selected images)
     int content_w_ = 0;
     int content_h_ = 0;
+
+    // Split layout: cell size recorded during render_split.
+    // For non-split modes, cell == viewport.
+    int split_cols_ = 1;
+    int split_rows_ = 1;
+
+    // Return the cell origin and size for a given screen-space point.
+    // In split mode, identifies which cell the point falls in.
+    // In other modes, returns the full viewport.
+    void cell_at(ImVec2 screen_pt, ImVec2& out_origin, ImVec2& out_size) const;
 };
 
 } // namespace idiff

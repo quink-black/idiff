@@ -23,21 +23,17 @@ void Viewport::zoom_around(float new_zoom, ImVec2 anchor) {
     new_zoom = std::clamp(new_zoom, 0.05f, 64.0f);
     if (new_zoom == zoom_) return;
 
-    // anchor is in screen coords.  Convert to content-relative coords,
-    // then adjust pan so that point stays under the cursor.
-    //
-    // Before zoom:  screen_x = vp_origin_.x + vp_size_.x/2 + pan_x_ + content_x * fit_scale * zoom_
-    // After  zoom:  screen_x = vp_origin_.x + vp_size_.x/2 + pan_x'  + content_x * fit_scale * new_zoom
-    // We want screen_x unchanged  =>  pan_x' = pan_x + content_x * fit_scale * (zoom_ - new_zoom)
-    //
-    // content_x = (anchor.x - vp_origin_.x - vp_size_.x/2 - pan_x_) / (fit_scale * zoom_)
-    //
-    // Substituting:
-    //   pan_x' = pan_x + (anchor.x - cx) * (1 - new_zoom / zoom_)
-    //   where cx = vp_origin_.x + vp_size_.x/2 + pan_x_
+    // Use the cell that contains the anchor point as the reference frame.
+    // In non-split modes cell == viewport.
+    ImVec2 cell_org, cell_sz;
+    cell_at(anchor, cell_org, cell_sz);
 
-    float cx = vp_origin_.x + vp_size_.x * 0.5f + pan_x_;
-    float cy = vp_origin_.y + vp_size_.y * 0.5f + pan_y_;
+    // cx/cy = center of the cell + current pan offset.
+    // The image in each cell is rendered at:
+    //   img_x = cell_org.x + (cell_sz.x - disp_w)/2 + pan_x_
+    // So the "neutral center" for pan is cell_org + cell_sz/2.
+    float cx = cell_org.x + cell_sz.x * 0.5f + pan_x_;
+    float cy = cell_org.y + cell_sz.y * 0.5f + pan_y_;
 
     float ratio = 1.0f - new_zoom / zoom_;
     pan_x_ += (anchor.x - cx) * ratio;
@@ -51,36 +47,27 @@ void Viewport::zoom_to_rect(ImVec2 rect_min, ImVec2 rect_max) {
     float rh = rect_max.y - rect_min.y;
     if (rw < 4.0f || rh < 4.0f || vp_size_.x < 1.0f || vp_size_.y < 1.0f) return;
 
-    // Center of the selection in screen coords
-    float sel_cx = (rect_min.x + rect_max.x) * 0.5f;
-    float sel_cy = (rect_min.y + rect_max.y) * 0.5f;
+    // Use the cell that contains the selection center as the reference frame.
+    ImVec2 sel_center((rect_min.x + rect_max.x) * 0.5f,
+                      (rect_min.y + rect_max.y) * 0.5f);
+    ImVec2 cell_org, cell_sz;
+    cell_at(sel_center, cell_org, cell_sz);
 
-    // Center of the viewport in screen coords
-    float vp_cx = vp_origin_.x + vp_size_.x * 0.5f;
-    float vp_cy = vp_origin_.y + vp_size_.y * 0.5f;
+    float sel_cx = sel_center.x;
+    float sel_cy = sel_center.y;
 
-    // How much to scale up so the selection fills the viewport
-    float scale_factor = std::min(vp_size_.x / rw, vp_size_.y / rh);
+    // Center of the cell (the neutral pan origin for this cell)
+    float cell_cx = cell_org.x + cell_sz.x * 0.5f;
+    float cell_cy = cell_org.y + cell_sz.y * 0.5f;
 
-    // New pan: the selection center should map to the viewport center.
-    // Before: sel_cx = vp_cx + pan_x_ + offset_in_content
-    // After:  vp_cx  = vp_cx + pan_x' + offset_in_content * scale_factor
-    // => pan_x' = (pan_x_ + (sel_cx - vp_cx)) * scale_factor - (sel_cx - vp_cx) * scale_factor
-    //           = (pan_x_ - (sel_cx - vp_cx)) * scale_factor + ... simplify:
-    //
-    // Actually simpler: after zoom, we want the content point that was at sel_cx
-    // to be at vp_cx.
-    //   content_x = (sel_cx - vp_cx - pan_x_) / zoom_  (in fit-scaled units)
-    //   new_zoom = zoom_ * scale_factor
-    //   vp_cx = vp_cx + new_pan_x + content_x * new_zoom
-    //   new_pan_x = -content_x * new_zoom = -(sel_cx - vp_cx - pan_x_) / zoom_ * new_zoom
-    //             = -(sel_cx - vp_cx - pan_x_) * scale_factor
+    // Scale so the selection fills the cell (not the whole viewport)
+    float scale_factor = std::min(cell_sz.x / rw, cell_sz.y / rh);
 
     float new_zoom = std::clamp(zoom_ * scale_factor, 0.05f, 64.0f);
     float actual_factor = new_zoom / zoom_;
 
-    pan_x_ = -(sel_cx - vp_cx - pan_x_) * actual_factor;
-    pan_y_ = -(sel_cy - vp_cy - pan_y_) * actual_factor;
+    pan_x_ = -(sel_cx - cell_cx - pan_x_) * actual_factor;
+    pan_y_ = -(sel_cy - cell_cy - pan_y_) * actual_factor;
     zoom_ = new_zoom;
 }
 
@@ -91,9 +78,8 @@ void Viewport::fit_to_content() {
 }
 
 void Viewport::zoom_to_actual() {
-    // 1:1 pixel mapping: the fit_scale in render is min(vp/img),
-    // so actual pixels means zoom = 1/fit_scale = max(img/vp).
-    // But we don't know the image size here; we stored content_w_/h_ during render.
+    // 1:1 pixel mapping: the fit_scale in render is min(area/img),
+    // so actual pixels means zoom = 1/fit_scale.
     if (content_w_ <= 0 || content_h_ <= 0 || vp_size_.x <= 0 || vp_size_.y <= 0) {
         zoom_ = 1.0f;
         pan_x_ = 0.0f;
@@ -101,9 +87,11 @@ void Viewport::zoom_to_actual() {
         return;
     }
 
-    float fit_scale = std::min(vp_size_.x / content_w_, vp_size_.y / content_h_);
+    // In split mode, fit_scale is based on cell size, not viewport size.
+    float area_w = vp_size_.x / split_cols_;
+    float area_h = vp_size_.y / split_rows_;
+    float fit_scale = std::min(area_w / content_w_, area_h / content_h_);
     float new_zoom = 1.0f / fit_scale;
-    // Center the image
     pan_x_ = 0.0f;
     pan_y_ = 0.0f;
     zoom_ = std::clamp(new_zoom, 0.05f, 64.0f);
@@ -217,6 +205,12 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     dl->PushClipRect(vp_origin_, ImVec2(vp_origin_.x + vp_size_.x,
                                          vp_origin_.y + vp_size_.y), true);
 
+    // Reset split layout for non-split modes (render_split will set them)
+    if (mode_ != ComparisonMode::Split) {
+        split_cols_ = 1;
+        split_rows_ = 1;
+    }
+
     switch (mode_) {
         case ComparisonMode::Split:
             render_split(tex_ptrs, tex_ws, tex_hs, labels);
@@ -252,6 +246,10 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
     else if (n <= 4) { cols = 2; rows = 2; }
     else if (n <= 6) { cols = 3; rows = 2; }
     else { cols = 3; rows = (n + cols - 1) / cols; }
+
+    // Record layout so zoom helpers can use cell dimensions
+    split_cols_ = cols;
+    split_rows_ = rows;
 
     float cell_w = vp_size_.x / cols;
     float cell_h = vp_size_.y / rows;
@@ -443,6 +441,21 @@ void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_
         std::string diff_label = std::string("Diff: ") + labels[0] + " vs " + labels[1];
         draw_image_label(diff_label.c_str(), vp_origin_, vp_size_);
     }
+}
+
+void Viewport::cell_at(ImVec2 screen_pt, ImVec2& out_origin, ImVec2& out_size) const {
+    float cell_w = vp_size_.x / split_cols_;
+    float cell_h = vp_size_.y / split_rows_;
+
+    // Determine which cell the point falls in
+    int col = static_cast<int>((screen_pt.x - vp_origin_.x) / cell_w);
+    int row = static_cast<int>((screen_pt.y - vp_origin_.y) / cell_h);
+    col = std::clamp(col, 0, split_cols_ - 1);
+    row = std::clamp(row, 0, split_rows_ - 1);
+
+    out_origin = ImVec2(vp_origin_.x + col * cell_w,
+                        vp_origin_.y + row * cell_h);
+    out_size = ImVec2(cell_w, cell_h);
 }
 
 } // namespace idiff
