@@ -668,56 +668,111 @@ void App::render_viewport() {
         return;
     }
 
-    // Zoom with scroll
-    if (ImGui::IsWindowHovered()) {
-        float wheel = ImGui::GetIO().MouseWheel;
-        if (wheel != 0.0f) {
-            float factor = wheel > 0 ? 1.1f : 0.9f;
-            float zoom = state_->viewport->zoom();
-            zoom *= factor;
-            zoom = std::max(0.1f, std::min(zoom, 64.0f));
-            state_->viewport->set_zoom(zoom);
-        }
+    auto& vp = *state_->viewport;
+    ImGuiIO& io = ImGui::GetIO();
+    bool hovered = ImGui::IsWindowHovered();
+    bool focused = ImGui::IsWindowFocused();
 
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-            ImVec2 delta = ImGui::GetIO().MouseDelta;
-            float px = state_->viewport->pan_x();
-            float py = state_->viewport->pan_y();
-            state_->viewport->set_pan(px + delta.x, py + delta.y);
+    // --- Mouse wheel zoom with anchor at cursor position ---
+    if (hovered) {
+        float wheel = io.MouseWheel;
+        if (wheel != 0.0f) {
+            float factor = wheel > 0 ? 1.15f : (1.0f / 1.15f);
+            float new_zoom = vp.zoom() * factor;
+            vp.zoom_around(new_zoom, io.MousePos);
         }
+    }
+
+    // --- Middle-mouse drag to pan ---
+    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+        ImVec2 delta = io.MouseDelta;
+        vp.set_pan(vp.pan_x() + delta.x, vp.pan_y() + delta.y);
+    }
+
+    // --- Right-mouse drag for selection rectangle zoom ---
+    if (hovered || vp.selecting()) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered) {
+            vp.begin_selection(io.MousePos);
+        }
+        if (vp.selecting()) {
+            vp.update_selection(io.MousePos);
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+                ImVec2 smin = vp.selection_min();
+                ImVec2 smax = vp.selection_max();
+                float sw = smax.x - smin.x;
+                float sh = smax.y - smin.y;
+                if (sw > 8.0f && sh > 8.0f) {
+                    vp.end_selection();  // commits zoom_to_rect
+                } else {
+                    vp.cancel_selection();  // too small, treat as click
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                vp.cancel_selection();
+            }
+        }
+    }
+
+    // --- Keyboard shortcuts (when viewport is focused) ---
+    if (focused || hovered) {
+        // '0' or Ctrl+0 : fit to content
+        bool ctrl = io.KeyCtrl;
+        if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Keypad0)) {
+            vp.fit_to_content();
+        }
+        // '1' or Ctrl+1 : actual pixels (100%)
+        if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_Keypad1)) {
+            vp.zoom_to_actual();
+        }
+        // 'F' : fit to content
+        if (ImGui::IsKeyPressed(ImGuiKey_F) && !ctrl) {
+            vp.fit_to_content();
+        }
+    }
+
+    // --- Double-click to fit ---
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        vp.fit_to_content();
     }
 
     // Toolbar
     {
-        ComparisonMode mode = state_->viewport->mode();
+        ComparisonMode mode = vp.mode();
         int mode_int = static_cast<int>(mode);
         ImGui::RadioButton("Split", &mode_int, 0);
         ImGui::SameLine();
         ImGui::RadioButton("Overlay", &mode_int, 1);
         ImGui::SameLine();
         ImGui::RadioButton("Diff", &mode_int, 2);
-        state_->viewport->set_mode(static_cast<ComparisonMode>(mode_int));
+        vp.set_mode(static_cast<ComparisonMode>(mode_int));
 
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
 
-        float zoom = state_->viewport->zoom();
+        float zoom = vp.zoom();
         if (ImGui::SmallButton("-")) {
-            zoom = std::max(0.1f, zoom * 0.8f);
+            // Zoom out centered on viewport
+            ImVec2 vp_center(vp.viewport_origin().x + vp.viewport_size().x * 0.5f,
+                             vp.viewport_origin().y + vp.viewport_size().y * 0.5f);
+            vp.zoom_around(zoom * 0.8f, vp_center);
         }
         ImGui::SameLine();
-        ImGui::Text("%.0f%%", zoom * 100.0f);
+        ImGui::Text("%.0f%%", vp.zoom() * 100.0f);
         ImGui::SameLine();
         if (ImGui::SmallButton("+")) {
-            zoom = std::min(64.0f, zoom * 1.25f);
+            ImVec2 vp_center(vp.viewport_origin().x + vp.viewport_size().x * 0.5f,
+                             vp.viewport_origin().y + vp.viewport_size().y * 0.5f);
+            vp.zoom_around(zoom * 1.25f, vp_center);
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Fit")) {
-            zoom = 1.0f;
-            state_->viewport->set_pan(0.0f, 0.0f);
+            vp.fit_to_content();
         }
-        state_->viewport->set_zoom(zoom);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("1:1")) {
+            vp.zoom_to_actual();
+        }
 
         int sel_count = static_cast<int>(selected_.size());
         if (sel_count > 0) {
@@ -731,11 +786,9 @@ void App::render_viewport() {
         ImGui::Separator();
     }
 
-    // Render viewport content using ImGui::Image with SDL_Texture* as ImTextureID
-    if (state_->viewport) {
-        state_->viewport->render(tex_ptrs, tex_ws, tex_hs, labels,
-                                 diff_texture_.texture, diff_texture_.tex_w, diff_texture_.tex_h);
-    }
+    // Render viewport content
+    vp.render(tex_ptrs, tex_ws, tex_hs, labels,
+              diff_texture_.texture, diff_texture_.tex_w, diff_texture_.tex_h);
 
     ImGui::End();
     ImGui::PopStyleVar();

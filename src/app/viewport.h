@@ -33,16 +33,49 @@ public:
     void set_mode(ComparisonMode mode) { mode_ = mode; }
 
     float zoom() const noexcept { return zoom_; }
-    void set_zoom(float z) { zoom_ = z; }
+    void set_zoom(float z);
 
     float pan_x() const noexcept { return pan_x_; }
     float pan_y() const noexcept { return pan_y_; }
     void set_pan(float x, float y) { pan_x_ = x; pan_y_ = y; }
 
+    // Zoom keeping a screen-space anchor point fixed.
+    // anchor is in screen coordinates (e.g. mouse position).
+    void zoom_around(float new_zoom, ImVec2 anchor);
+
+    // Zoom to fit a screen-space rectangle into the viewport.
+    void zoom_to_rect(ImVec2 rect_min, ImVec2 rect_max);
+
+    // Reset zoom and pan so the content fits the viewport.
+    void fit_to_content();
+
+    // Reset to 1:1 pixel zoom centered.
+    void zoom_to_actual();
+
+    // Selection rectangle state (screen coords, driven by App input handling)
+    bool selecting() const noexcept { return selecting_; }
+    void begin_selection(ImVec2 start);
+    void update_selection(ImVec2 current);
+    void end_selection();   // commits zoom_to_rect
+    void cancel_selection();
+
+    ImVec2 selection_min() const noexcept { return sel_min_; }
+    ImVec2 selection_max() const noexcept { return sel_max_; }
+
+    // Last known viewport region (set during render)
+    ImVec2 viewport_origin() const noexcept { return vp_origin_; }
+    ImVec2 viewport_size() const noexcept { return vp_size_; }
+
 private:
     static ImTextureID to_tex_id(SDL_Texture* tex);
 
     void draw_image_label(const char* label, ImVec2 img_pos, ImVec2 img_size);
+    void draw_selection_rect();
+
+    // Compute the top-left screen position and displayed size for a single image
+    // given the viewport area, applying zoom and pan.
+    void compute_image_rect(int img_w, int img_h,
+                            ImVec2& out_pos, ImVec2& out_size) const;
 
     void render_split(const std::vector<SDL_Texture*>& tex_ptrs,
                       const std::vector<int>& tex_ws,
@@ -61,6 +94,20 @@ private:
     float pan_y_ = 0.0f;
     float split_pos_ = 0.5f;
     float slider_pos_ = 0.5f;
+
+    // Selection rectangle (screen coords)
+    bool selecting_ = false;
+    ImVec2 sel_start_{0, 0};
+    ImVec2 sel_min_{0, 0};
+    ImVec2 sel_max_{0, 0};
+
+    // Viewport region recorded during render
+    ImVec2 vp_origin_{0, 0};
+    ImVec2 vp_size_{0, 0};
+
+    // Content dimensions (max image size across selected images)
+    int content_w_ = 0;
+    int content_h_ = 0;
 };
 
 } // namespace idiff
