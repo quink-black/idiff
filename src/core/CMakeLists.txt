@@ -3,6 +3,7 @@ add_library(idiff_core
     image_loader.cpp
     image_processor.cpp
     image_comparator.cpp
+    media_source.cpp
     metrics_engine.cpp
     detail/raw_loader.cpp
 )

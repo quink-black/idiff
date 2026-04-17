@@ -26,6 +26,7 @@
 #include "core/image_loader.h"
 #include "core/image_processor.h"
 #include "core/image_comparator.h"
+#include "core/media_source.h"
 
 namespace idiff {
 
@@ -253,16 +254,20 @@ void App::load_images(const std::vector<std::string>& paths) {
     // comparison mode.
     const bool was_empty = entries_.empty();
 
-    ImageLoader loader;
-    loader.set_preferred_backend(state_->loader_backend);
     for (const auto& path : paths) {
-        auto img = loader.load(path);
+        // Wrap the file in an ImageFileSource so every entry looks like a
+        // (single-frame) MediaSource to the rest of the app.  Decoding
+        // happens inside source->read_frame(0), which internally uses the
+        // same ImageLoader pipeline as before.
+        auto source = std::make_unique<ImageFileSource>(path, state_->loader_backend);
+        auto img = source->read_frame(0);
         if (img) {
             ImageEntry entry;
             entry.path = path;
             auto sep = path.find_last_of("/\\");
             entry.filename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
             entry.display_label = entry.filename;
+            entry.source = std::move(source);
             entry.image = std::move(img);
             entry.display_image = nullptr;
             entry.texture = nullptr;
@@ -271,7 +276,7 @@ void App::load_images(const std::vector<std::string>& paths) {
             entries_.push_back(std::move(entry));
             state_->status_text = "Loaded: " + path;
         } else {
-            state_->status_text = "Failed to load: " + path + " (" + loader.last_error() + ")";
+            state_->status_text = "Failed to load: " + path + " (" + source->last_error() + ")";
         }
     }
 
@@ -312,14 +317,18 @@ void App::load_images(const std::vector<std::string>& paths) {
 void App::reload_all_images() {
     if (entries_.empty()) return;
 
-    ImageLoader loader;
-    loader.set_preferred_backend(state_->loader_backend);
-
     int reloaded = 0;
     int failed = 0;
     std::string last_fail;
     for (auto& entry : entries_) {
-        auto img = loader.load(entry.path);
+        // Update the backend preference on the source, then ask it to
+        // re-decode the current frame.  For video sources this will be
+        // tracked by the shared frame index once time-axis wiring lands;
+        // for still images the index is always 0.
+        if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
+            ifs->set_preferred_backend(state_->loader_backend);
+        }
+        auto img = entry.source ? entry.source->read_frame(0) : nullptr;
         if (img) {
             entry.image = std::move(img);
             entry.display_image.reset();
@@ -327,7 +336,8 @@ void App::reload_all_images() {
             reloaded++;
         } else {
             failed++;
-            last_fail = entry.filename + " (" + loader.last_error() + ")";
+            std::string err = entry.source ? entry.source->last_error() : "no source";
+            last_fail = entry.filename + " (" + err + ")";
         }
     }
     diff_texture_.dirty = true;

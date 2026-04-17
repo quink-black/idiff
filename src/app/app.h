@@ -13,6 +13,7 @@ struct SDL_Texture;
 namespace idiff {
 
 class Image;
+class MediaSource;
 class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
@@ -21,6 +22,15 @@ struct ImageEntry {
     std::string path;
     std::string filename;
     std::string display_label;
+    // Source of pixel data.  For still images, this is an ImageFileSource
+    // with frame_count() == 1.  For video streams (e.g. raw YUV) it
+    // exposes multiple frames.  The field is always non-null for an
+    // entry that was successfully added by load_images().
+    std::unique_ptr<MediaSource> source;
+    // Cached decoded frame for the current frame index.  This is what
+    // all downstream rendering / comparison paths consume.  It is
+    // repopulated via source->read_frame() whenever the frame index
+    // changes or the loader backend is toggled.
     std::unique_ptr<Image> image;
     std::unique_ptr<Image> display_image;
     SDL_Texture* texture = nullptr;
