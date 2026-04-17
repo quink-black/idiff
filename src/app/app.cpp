@@ -647,11 +647,23 @@ void App::render_image_list() {
 
     float list_height = ImGui::GetContentRegionAvail().y;
     if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
+        // The first two selected entries (in index order) are used as A / B
+        // for overlay and diff. Record them so we can tag the list visually.
+        int ab_idx[2] = {-1, -1};
+        {
+            int k = 0;
+            for (int s : selected_) {
+                if (k < 2) ab_idx[k++] = s; else break;
+            }
+        }
+
         for (int i = 0; i < static_cast<int>(entries_.size()); i++) {
             auto& entry = entries_[i];
             ImGui::PushID(i);
 
             bool is_sel = selected_.count(i) > 0;
+            const char* ab_tag = (i == ab_idx[0]) ? "A"
+                                : (i == ab_idx[1]) ? "B" : nullptr;
 
             if (is_sel) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f, 0.80f, 1.00f, 1.00f));
@@ -674,6 +686,21 @@ void App::render_image_list() {
             }
 
             ImGui::SameLine();
+
+            // Draw A / B tag as a pill in front of the label so the user
+            // can tell which selected entries feed overlay / diff.
+            if (ab_tag) {
+                ImVec4 pill_col = (ab_tag[0] == 'A')
+                    ? ImVec4(0.30f, 0.70f, 1.00f, 1.00f)    // A: blue
+                    : ImVec4(1.00f, 0.55f, 0.25f, 1.00f);   // B: orange
+                ImGui::PushStyleColor(ImGuiCol_Button, pill_col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pill_col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, pill_col);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+                ImGui::SmallButton(ab_tag);
+                ImGui::PopStyleColor(4);
+                ImGui::SameLine();
+            }
 
             // Selectable for the label — also serves as drag source/target
             ImGui::Selectable(entry.display_label.c_str(), is_sel,
@@ -741,13 +768,26 @@ void App::render_viewport() {
     std::vector<SDL_Texture*> tex_ptrs;
     std::vector<int> tex_ws, tex_hs;
     std::vector<const char*> labels;
+    // Hold label storage so const char* remains valid for the frame
+    std::vector<std::string> label_storage;
+    label_storage.reserve(selected_.size());
 
+    int slot = 0;
     for (int s : selected_) {
         if (s >= 0 && s < static_cast<int>(entries_.size())) {
             tex_ptrs.push_back(entries_[s].texture);
             tex_ws.push_back(entries_[s].tex_w);
             tex_hs.push_back(entries_[s].tex_h);
-            labels.push_back(entries_[s].display_label.c_str());
+
+            // Prefix the first two selections with [A] / [B] so the user
+            // can tell which two images drive overlay / diff.
+            std::string lbl;
+            if (slot == 0)      lbl = "[A] " + entries_[s].display_label;
+            else if (slot == 1) lbl = "[B] " + entries_[s].display_label;
+            else                lbl = entries_[s].display_label;
+            label_storage.push_back(std::move(lbl));
+            labels.push_back(label_storage.back().c_str());
+            slot++;
         }
     }
 
@@ -894,12 +934,14 @@ void App::render_right_sidebar() {
 
     std::vector<const Image*> sel_images;
     std::vector<const Image*> sel_display_images;
+    std::vector<const char*> sel_names;
     for (int s : selected_) {
         if (s >= 0 && s < static_cast<int>(entries_.size())) {
             const auto& entry = entries_[s];
             sel_images.push_back(entry.image.get());
             sel_display_images.push_back(entry.display_image ? entry.display_image.get()
                                                              : entry.image.get());
+            sel_names.push_back(entry.display_label.c_str());
         }
     }
 
@@ -907,11 +949,14 @@ void App::render_right_sidebar() {
     const Image* img_b = sel_images.size() >= 2 ? sel_images[1] : nullptr;
     const Image* disp_a = sel_display_images.size() >= 1 ? sel_display_images[0] : nullptr;
     const Image* disp_b = sel_display_images.size() >= 2 ? sel_display_images[1] : nullptr;
+    const char* name_a = sel_names.size() >= 1 ? sel_names[0] : nullptr;
+    const char* name_b = sel_names.size() >= 2 ? sel_names[1] : nullptr;
 
     if (ImGui::BeginTabBar("##inspector_tabs")) {
         if (ImGui::BeginTabItem("Properties")) {
             if (state_->properties_panel) {
-                state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b);
+                state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
+                                                        name_a, name_b);
             }
             ImGui::EndTabItem();
         }

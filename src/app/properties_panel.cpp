@@ -2,6 +2,8 @@
 
 #include <imgui.h>
 
+#include <cstdio>
+
 #include "core/image.h"
 
 namespace idiff {
@@ -10,33 +12,48 @@ PropertiesPanel::PropertiesPanel() = default;
 PropertiesPanel::~PropertiesPanel() = default;
 
 void PropertiesPanel::render(const Image* image_a, const Image* image_b,
-                             const Image* display_a, const Image* display_b) {
+                             const Image* display_a, const Image* display_b,
+                             const char* name_a, const char* name_b) {
     ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Properties")) {
         ImGui::End();
         return;
     }
-    render_inline(image_a, image_b, display_a, display_b);
+    render_inline(image_a, image_b, display_a, display_b, name_a, name_b);
     ImGui::End();
 }
 
 void PropertiesPanel::render_inline(const Image* image_a, const Image* image_b,
-                                     const Image* display_a, const Image* display_b) {
-    render_image_props("Image A", image_a, display_a);
+                                     const Image* display_a, const Image* display_b,
+                                     const char* name_a, const char* name_b) {
+    render_image_props("A", name_a, image_a, display_a);
     if (image_a && image_b) {
         ImGui::Separator();
     }
-    render_image_props("Image B", image_b, display_b);
+    render_image_props("B", name_b, image_b, display_b);
 }
 
-void PropertiesPanel::render_image_props(const char* label, const Image* img,
-                                          const Image* display_img) {
+void PropertiesPanel::render_image_props(const char* slot_label, const char* name,
+                                          const Image* img, const Image* display_img) {
     if (!img) {
-        ImGui::TextDisabled("%s: No image", label);
+        ImGui::TextDisabled("%s: No image", slot_label);
         return;
     }
 
-    if (ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Header shows "A — filename" / "B — filename" so the user can tell which
+    // selected image is used as A / B in overlay and diff modes.
+    char header[512];
+    if (name && name[0]) {
+        std::snprintf(header, sizeof(header), "%s \xe2\x80\x94 %s", slot_label, name);
+    } else {
+        std::snprintf(header, sizeof(header), "Image %s", slot_label);
+    }
+
+    // Give the header a stable ID so its open/close state is not tied to the filename.
+    ImGui::PushID(slot_label);
+    bool open = ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen);
+    ImGui::PopID();
+    if (open) {
         const auto& info = img->info();
 
         if (ImGui::BeginTable("##props_table", 2, ImGuiTableFlags_BordersInnerV)) {

@@ -11,12 +11,15 @@ public:
     ~PropertiesPanel();
 
     void render(const Image* image_a, const Image* image_b,
-                const Image* display_a = nullptr, const Image* display_b = nullptr);
+                const Image* display_a = nullptr, const Image* display_b = nullptr,
+                const char* name_a = nullptr, const char* name_b = nullptr);
     void render_inline(const Image* image_a, const Image* image_b,
-                       const Image* display_a = nullptr, const Image* display_b = nullptr);
+                       const Image* display_a = nullptr, const Image* display_b = nullptr,
+                       const char* name_a = nullptr, const char* name_b = nullptr);
 
 private:
-    void render_image_props(const char* label, const Image* img, const Image* display_img);
+    void render_image_props(const char* slot_label, const char* name,
+                            const Image* img, const Image* display_img);
 };
 
 } // namespace idiff
