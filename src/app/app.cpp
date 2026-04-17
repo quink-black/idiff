@@ -169,7 +169,11 @@ void App::frame() {
         setup_dock_layout();
         first_frame_ = false;
     }
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+    // NoWindowMenuButton hides the small arrow ImGui normally draws in the
+    // lower-left corner of the central dock node (the per-node window menu).
+    // It is not useful in this app and only confuses users.
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f),
+                     ImGuiDockNodeFlags_NoWindowMenuButton);
 
     ImGui::End();
 
