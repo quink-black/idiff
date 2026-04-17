@@ -144,15 +144,75 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     colors[ImGuiCol_DockingPreview] = ImVec4(0.29f, 0.62f, 1.00f, 0.70f);
     colors[ImGuiCol_DockingEmptyBg] = ImVec4(0.07f, 0.07f, 0.10f, 1.00f);
 
-    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
-    ImGui_ImplSDLRenderer2_Init(renderer);
-
+    // Figure out the framebuffer-to-window ratio *before* initialising
+    // the renderer backend so we can rasterise the UI font at the
+    // physical pixel density.  Without this step the font atlas is
+    // built at logical-pixel size (e.g. 13 px) and SDL upscales the
+    // glyphs to physical pixels at draw time, which produces the
+    // blurry text seen on Retina displays.
     int fb_w = 0, fb_h = 0;
     SDL_GetRendererOutputSize(renderer, &fb_w, &fb_h);
     int win_w = 0, win_h = 0;
     SDL_GetWindowSize(window, &win_w, &win_h);
     float dpi_scale = (win_w > 0) ? static_cast<float>(fb_w) / win_w : 1.0f;
     if (dpi_scale < 1.0f) dpi_scale = 1.0f;
+
+    // Pick the first readable system UI font that contains CJK glyphs,
+    // so Chinese titles/labels in comparison-config JSON render as
+    // real characters instead of '?' placeholders.  If none of the
+    // candidates exist we silently fall back to ImGui's built-in
+    // ProggyClean bitmap font (ASCII only, but never fails to load).
+    const float base_font_size = 15.0f;
+    ImFontConfig font_cfg;
+    font_cfg.OversampleH = 2;
+    font_cfg.OversampleV = 2;
+    font_cfg.PixelSnapH = false;
+    // Rasterise at physical-pixel size; FontGlobalScale compensates
+    // below so ImGui layout keeps using logical-pixel metrics.
+    const float pixel_font_size = base_font_size * dpi_scale;
+    static const char* kFontCandidates[] = {
+#if defined(__APPLE__)
+        // Modern macOS (Big Sur+) ships PingFang here; older releases
+        // fall back to the secondary Chinese-capable system fonts.
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+#elif defined(_WIN32)
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttf",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+#else
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+#endif
+    };
+    ImFont* ui_font = nullptr;
+    for (const char* path : kFontCandidates) {
+        if (std::filesystem::exists(path)) {
+            ui_font = io.Fonts->AddFontFromFileTTF(
+                path, pixel_font_size, &font_cfg,
+                io.Fonts->GetGlyphRangesChineseFull());
+            if (ui_font) break;
+        }
+    }
+    if (!ui_font) {
+        // Fallback: default font, still rasterised at DPI-aware size.
+        ImFontConfig default_cfg;
+        default_cfg.SizePixels = pixel_font_size;
+        default_cfg.OversampleH = 2;
+        default_cfg.OversampleV = 2;
+        io.Fonts->AddFontDefault(&default_cfg);
+    }
+    // Keep layout in logical pixels; the atlas is already in physical
+    // pixels thanks to pixel_font_size above.
+    io.FontGlobalScale = 1.0f / dpi_scale;
+
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer2_Init(renderer);
+
     SDL_RenderSetScale(renderer, dpi_scale, dpi_scale);
 
     state_->viewport = std::make_unique<Viewport>();
