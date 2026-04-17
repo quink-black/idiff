@@ -162,8 +162,18 @@ void App::frame() {
     render_toolbar();
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->WorkPos);
-    ImGui::SetNextWindowSize(vp->WorkSize);
+
+    // Reserve a strip at the bottom of the work area for the status bar.
+    // The DockSpace host window is shrunk by this amount so docked panels
+    // (Images / Viewport / Inspector) don't overlap and hide the status bar.
+    // render_status_bar() uses the same height to position itself.
+    float status_bar_h = ImGui::GetFrameHeightWithSpacing();
+    ImVec2 dock_pos = vp->WorkPos;
+    ImVec2 dock_size = vp->WorkSize;
+    dock_size.y = std::max(0.0f, dock_size.y - status_bar_h);
+
+    ImGui::SetNextWindowPos(dock_pos);
+    ImGui::SetNextWindowSize(dock_size);
     ImGui::SetNextWindowViewport(vp->ID);
 
     ImGuiWindowFlags dock_flags = ImGuiWindowFlags_NoDocking |
@@ -1284,17 +1294,36 @@ void App::render_right_sidebar() {
 
 void App::render_status_bar() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vp->Size.y - 24));
-    ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 24));
+
+    // Height must accommodate the menu bar we draw inside.  Using the
+    // current frame height (with spacing) keeps the bar aligned with the
+    // font size / DPI scale, rather than hard-coding a pixel count that is
+    // wrong at non-default scales.  MUST match the reservation made in
+    // frame() so the DockSpace and the status bar tile exactly.
+    float bar_h = ImGui::GetFrameHeightWithSpacing();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x,
+                                    vp->WorkPos.y + vp->WorkSize.y - bar_h));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, bar_h));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar |
+    // Without NoTitleBar the default ImGui title bar consumes the whole
+    // 24-px slot and the MenuBar (where we actually draw the status text)
+    // gets clipped to zero height, making the whole bar invisible.  Also
+    // lock the window in place so users cannot accidentally move/resize it.
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+                              ImGuiWindowFlags_NoResize |
+                              ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_NoCollapse |
+                              ImGuiWindowFlags_NoDocking |
+                              ImGuiWindowFlags_NoBringToFrontOnFocus |
+                              ImGuiWindowFlags_NoNavFocus |
+                              ImGuiWindowFlags_NoScrollbar |
                               ImGuiWindowFlags_NoSavedSettings |
                               ImGuiWindowFlags_MenuBar;
 
     if (ImGui::Begin("##statusbar", nullptr, flags)) {
         if (ImGui::BeginMenuBar()) {
-            char buf[512];
+            char buf[1024];
             int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
                                    entries_.size(), selected_.size());
             auto append = [&](const char* fmt, ...) {
