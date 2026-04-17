@@ -46,6 +46,17 @@ if(NOT IDIFF_WITH_IMAGEMAGICK STREQUAL "OFF")
         else()
             pkg_check_modules(MAGICKXX QUIET IMPORTED_TARGET Magick++)
         endif()
+
+        if(MAGICKXX_FOUND)
+            string(REGEX MATCH "^[0-9]+" MAGICKXX_MAJOR "${MAGICKXX_VERSION}")
+            message(STATUS "Found Magick++ (pkg-config): ${MAGICKXX_VERSION} (major: ${MAGICKXX_MAJOR})")
+
+            if(MAGICKXX_MAJOR AND (MAGICKXX_MAJOR LESS 7))
+                message(WARNING "Magick++ version ${MAGICKXX_VERSION} is older than the supported minimum (7). Disabling ImageMagick backend.")
+                set(MAGICKXX_FOUND OFF)
+            endif()
+        endif()
+
         if(MAGICKXX_FOUND)
             set(IDIFF_HAVE_IMAGEMAGICK ON)
             message(STATUS "ImageMagick (Magick++) found -- "
