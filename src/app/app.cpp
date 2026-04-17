@@ -2,6 +2,7 @@
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
+#include "app/settings.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -11,9 +12,11 @@
 #include <nfd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <numeric>
 #include <string_view>
 #include <unordered_map>
@@ -51,6 +54,20 @@ struct App::State {
     bool show_properties = true;
     bool show_image_list = true;
     int sidebar_tab = 0;
+
+    // Persistent cross-session settings (currently just last-used YUV
+    // parameters).  Loaded in App::init(), saved whenever a YUV file is
+    // successfully added.
+    AppSettings settings;
+
+    // YUV-parameters dialog state.  When pending_yuv_paths is non-empty,
+    // frame() opens a modal for the front element; the user either
+    // confirms (turning it into a YuvRawSource entry) or skips it.
+    std::vector<std::string> pending_yuv_paths;
+    YuvStreamParams yuv_dialog_params{};
+    // When true, the dialog was just primed with a new path and must call
+    // ImGui::OpenPopup on the next render.  Gets cleared after opening.
+    bool yuv_dialog_needs_open = false;
 };
 
 App::App() : state_(std::make_unique<State>()) {}
@@ -115,6 +132,13 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->viewport = std::make_unique<Viewport>();
     state_->metrics_panel = std::make_unique<MetricsPanel>();
     state_->properties_panel = std::make_unique<PropertiesPanel>();
+
+    // Load persistent settings (last-used YUV params, etc.).  A missing
+    // file is fine -- AppSettings::load falls back to defaults.
+    state_->settings = AppSettings::load();
+    // Seed the dialog with whatever the user last confirmed so they do
+    // not have to retype resolution / pixel-format for each file.
+    state_->yuv_dialog_params = state_->settings.last_yuv_params;
 
     NFD_Init();
 
@@ -217,6 +241,7 @@ void App::frame() {
     render_viewport();
     render_right_sidebar();
     render_status_bar();
+    render_yuv_params_dialog();
 
     ImGui::Render();
 
@@ -255,6 +280,21 @@ void App::load_images(const std::vector<std::string>& paths) {
     const bool was_empty = entries_.empty();
 
     for (const auto& path : paths) {
+        // Raw YUV files carry no decoding metadata, so we cannot load
+        // them synchronously here.  Queue them for the parameter dialog
+        // which runs during the next frame and creates YuvRawSource
+        // entries on confirmation.
+        auto dot = path.find_last_of('.');
+        std::string ext;
+        if (dot != std::string::npos) ext = path.substr(dot);
+        std::string ext_lower = ext;
+        for (auto& c : ext_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext_lower == ".yuv") {
+            state_->pending_yuv_paths.push_back(path);
+            state_->yuv_dialog_needs_open = true;
+            continue;
+        }
+
         // Wrap the file in an ImageFileSource so every entry looks like a
         // (single-frame) MediaSource to the rest of the app.  Decoding
         // happens inside source->read_frame(0), which internally uses the
@@ -365,6 +405,179 @@ void App::get_ab_indices(int& a_idx, int& b_idx) const {
     if (swap_ab_) std::swap(a_idx, b_idx);
 }
 
+bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) {
+    auto source = std::make_unique<YuvRawSource>(path, params);
+    if (source->frame_count() <= 0) {
+        state_->status_text = "YUV: invalid parameters or unreadable file: " + path;
+        return false;
+    }
+    auto img = source->read_frame(0);
+    if (!img) {
+        state_->status_text = "YUV: decode failed for " + path +
+                              " (" + source->last_error() + ")";
+        return false;
+    }
+
+    const bool was_empty = entries_.empty();
+
+    ImageEntry entry;
+    entry.path = path;
+    auto sep = path.find_last_of("/\\");
+    entry.filename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
+    // Include frame count in the label so the list shows e.g.
+    // "clip.yuv (300 frames)" for multi-frame streams.
+    entry.display_label = entry.filename;
+    if (source->frame_count() > 1) {
+        entry.display_label += " (" + std::to_string(source->frame_count())
+                            + " frames)";
+    }
+    entry.source = std::move(source);
+    entry.image = std::move(img);
+    entry.display_image = nullptr;
+    entry.texture = nullptr;
+    entry.texture_dirty = true;
+
+    entries_.push_back(std::move(entry));
+
+    sort_entries_by_name();
+    compute_display_labels();
+    diff_texture_.dirty = true;
+
+    // Persist parameters so the next .yuv file starts with the same
+    // defaults in the dialog.
+    state_->settings.last_yuv_params = params;
+    state_->settings.save();
+
+    // Mirror the "first load" convenience from load_images(): if the
+    // entry list was empty before this add, auto-select up to the first
+    // two items and switch to Overlay.
+    if (was_empty && !entries_.empty()) {
+        selected_.clear();
+        swap_ab_ = false;
+        int pick = std::min<int>(2, static_cast<int>(entries_.size()));
+        for (int i = 0; i < pick; i++) selected_.insert(i);
+        for (int s : selected_) {
+            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                entries_[s].texture_dirty = true;
+            }
+        }
+        diff_texture_.dirty = true;
+        if (state_->viewport) {
+            state_->viewport->set_mode(ComparisonMode::Overlay);
+        }
+    }
+
+    state_->status_text = "Loaded YUV: " + path;
+    return true;
+}
+
+void App::render_yuv_params_dialog() {
+    if (state_->pending_yuv_paths.empty()) return;
+
+    const std::string current_path = state_->pending_yuv_paths.front();
+
+    // First-frame priming: seed dialog params with the guess for this
+    // specific filename so the controls reflect the user's likely intent.
+    if (state_->yuv_dialog_needs_open) {
+        // Start from the last-confirmed defaults, then let the guess
+        // override whatever fields it can recognize from the filename.
+        state_->yuv_dialog_params = state_->settings.last_yuv_params;
+        guess_yuv_params_from_filename(current_path, state_->yuv_dialog_params);
+        ImGui::OpenPopup("YUV Parameters");
+        state_->yuv_dialog_needs_open = false;
+    }
+
+    // Center the modal over the main viewport.
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("YUV Parameters", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Configure decoder parameters for:");
+        ImGui::TextDisabled("%s", current_path.c_str());
+        ImGui::Separator();
+
+        auto& params = state_->yuv_dialog_params;
+
+        ImGui::InputInt("Width",  &params.width);
+        ImGui::InputInt("Height", &params.height);
+
+        const char* fmt_items[] = { "YUV420P (I420)", "YUV422P", "YUV444P" };
+        int fmt_idx = static_cast<int>(params.pixel_format);
+        if (ImGui::Combo("Pixel format", &fmt_idx, fmt_items,
+                         IM_ARRAYSIZE(fmt_items))) {
+            params.pixel_format = static_cast<YuvPixelFormat>(fmt_idx);
+        }
+
+        const char* range_items[] = { "Limited (TV, 16-235)", "Full (PC, 0-255)" };
+        int range_idx = static_cast<int>(params.color_range);
+        if (ImGui::Combo("Color range", &range_idx, range_items,
+                         IM_ARRAYSIZE(range_items))) {
+            params.color_range = static_cast<YuvColorRange>(range_idx);
+        }
+
+        // Preview the frame size / frame count.  Guards against div-by-zero
+        // and provides early feedback when the user types a bad resolution.
+        std::size_t frame_bytes = yuv_frame_size_bytes(params);
+        if (frame_bytes == 0) {
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
+                "Invalid: width/height must be positive (and even for 4:2:0/4:2:2)");
+        } else {
+            std::error_code ec;
+            auto fsize = std::filesystem::file_size(current_path, ec);
+            if (ec) {
+                ImGui::TextDisabled("Frame size: %zu bytes",
+                                     static_cast<size_t>(frame_bytes));
+            } else {
+                int fc = static_cast<int>(fsize / frame_bytes);
+                ImGui::Text("Frame size: %zu bytes  |  File has %d frame(s)",
+                            static_cast<size_t>(frame_bytes), fc);
+                if (fsize % frame_bytes != 0) {
+                    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
+                        "Warning: file size is not an exact multiple of frame size");
+                }
+            }
+        }
+
+        ImGui::Separator();
+
+        bool confirmed = false;
+        bool skipped   = false;
+        if (ImGui::Button("Load", ImVec2(100, 0))) {
+            confirmed = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Skip", ImVec2(100, 0))) {
+            skipped = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel all", ImVec2(100, 0))) {
+            state_->pending_yuv_paths.clear();
+            ImGui::CloseCurrentPopup();
+        }
+
+        if (confirmed) {
+            add_yuv_entry(current_path, params);
+            state_->pending_yuv_paths.erase(state_->pending_yuv_paths.begin());
+            ImGui::CloseCurrentPopup();
+            // If there's another file in the queue, arm the dialog for it.
+            if (!state_->pending_yuv_paths.empty()) {
+                state_->yuv_dialog_needs_open = true;
+            }
+        } else if (skipped) {
+            state_->pending_yuv_paths.erase(state_->pending_yuv_paths.begin());
+            ImGui::CloseCurrentPopup();
+            if (!state_->pending_yuv_paths.empty()) {
+                state_->yuv_dialog_needs_open = true;
+            }
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+
+
 namespace {
 
 // Split a filename into (stem, extension) using the last '.' as the
@@ -461,7 +674,10 @@ void App::move_entry(int from, int to) {
 }
 
 void App::open_file_dialog() {
-    nfdfilteritem_t filters[] = {{ "Image files", "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw" }};
+    nfdfilteritem_t filters[] = {
+        { "Image / YUV files",
+          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv" }
+    };
     const nfdpathset_t* outPaths = nullptr;
     nfdresult_t result = NFD_OpenDialogMultiple(&outPaths, filters, 1, nullptr);
     if (result == NFD_OKAY) {

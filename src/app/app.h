@@ -17,6 +17,7 @@ class MediaSource;
 class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
+struct YuvStreamParams;
 
 struct ImageEntry {
     std::string path;
@@ -79,6 +80,14 @@ private:
     void compute_display_labels();
     void sort_entries_by_name();
     void move_entry(int from, int to);
+
+    // Pop up the YUV-parameters modal for the next file in
+    // pending_yuv_paths_, if any.  Called from frame() after panels so
+    // the dialog renders on top.
+    void render_yuv_params_dialog();
+    // Build a YuvRawSource for the given path+params and append it as a
+    // new ImageEntry.  Returns true on success.
+    bool add_yuv_entry(const std::string& path, const YuvStreamParams& params);
 
     // Returns the entry indices used as A and B for overlay / diff.
     // Derived from the first two selected items (in selection order),

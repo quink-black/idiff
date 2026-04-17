@@ -70,6 +70,71 @@ private:
     std::string last_error_;
 };
 
+// Pixel layouts supported for raw YUV streams.  All variants are planar
+// and 8-bit per component.
+enum class YuvPixelFormat {
+    YUV420P,  // I420: Y plane followed by U plane (w/2 x h/2) then V plane
+    YUV422P,  // Y plane followed by U (w/2 x h) then V (w/2 x h)
+    YUV444P,  // Y, U, V all w x h
+};
+
+// Color range of the YUV samples.
+enum class YuvColorRange {
+    Limited,  // BT.601-style: Y in [16, 235], UV in [16, 240]
+    Full,     // Y and UV in [0, 255]
+};
+
+// All parameters needed to decode a raw YUV file.  The file itself carries
+// no metadata so the user (or a filename-based guess) must supply these.
+struct YuvStreamParams {
+    int width = 0;
+    int height = 0;
+    YuvPixelFormat pixel_format = YuvPixelFormat::YUV420P;
+    YuvColorRange color_range = YuvColorRange::Limited;
+};
+
+// Bytes per frame for the given format, or 0 if params are invalid.
+std::size_t yuv_frame_size_bytes(const YuvStreamParams& p) noexcept;
+
+// Short human-readable label, e.g. "YUV420P".
+const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept;
+const char* yuv_color_range_name(YuvColorRange r) noexcept;
+
+// Heuristically guess YUV parameters from a file path.  Recognizes
+// patterns like `name_1920x1080_yuv420p.yuv` or `name_nv12_1280x720.yuv`.
+// Unknown fields are left at their existing value in `out`, so callers
+// can prefill `out` with UI defaults and let the guess override what it
+// can recognize.  Returns true if any field was populated.
+bool guess_yuv_params_from_filename(const std::string& path,
+                                    YuvStreamParams& out);
+
+// MediaSource backed by a raw YUV file on disk.  Frames are read on
+// demand using the configured parameters.  The file is opened lazily on
+// the first successful read_frame().
+class YuvRawSource final : public MediaSource {
+public:
+    YuvRawSource(std::string path, const YuvStreamParams& params);
+    ~YuvRawSource() override;
+
+    int frame_count() const noexcept override { return frame_count_; }
+    int width() const noexcept override { return params_.width; }
+    int height() const noexcept override { return params_.height; }
+    const std::string& format_description() const noexcept override { return format_desc_; }
+    std::unique_ptr<Image> read_frame(int index) override;
+    const std::string& last_error() const noexcept override { return last_error_; }
+
+    const std::string& path() const noexcept { return path_; }
+    const YuvStreamParams& params() const noexcept { return params_; }
+
+private:
+    std::string path_;
+    YuvStreamParams params_;
+    std::size_t frame_bytes_ = 0;
+    int frame_count_ = 0;
+    std::string format_desc_;
+    std::string last_error_;
+};
+
 } // namespace idiff
 
 #endif // IDIFF_MEDIA_SOURCE_H

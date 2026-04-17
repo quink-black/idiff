@@ -4,6 +4,7 @@ add_executable(idiff
     viewport.cpp
     metrics_panel.cpp
     properties_panel.cpp
+    settings.cpp
 )
 
 if(APPLE)
