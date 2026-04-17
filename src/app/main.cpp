@@ -52,8 +52,15 @@ int main(int argc, char** argv) {
         app.load_images(paths);
     }
 
+    // Make sure drag-and-drop file events are delivered.
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+
     bool running = true;
     while (running) {
+        // Paths collected from SDL_DROPFILE events during this frame.
+        // Batched so that sort / label / diff recompute only runs once.
+        std::vector<std::string> dropped_paths;
+
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
@@ -65,6 +72,14 @@ int main(int argc, char** argv) {
                 event.window.windowID == SDL_GetWindowID(window)) {
                 running = false;
             }
+            if (event.type == SDL_DROPFILE && event.drop.file) {
+                dropped_paths.emplace_back(event.drop.file);
+                SDL_free(event.drop.file);
+            }
+        }
+
+        if (!dropped_paths.empty()) {
+            app.load_images(dropped_paths);
         }
 
         app.frame();
