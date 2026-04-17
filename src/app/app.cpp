@@ -239,6 +239,12 @@ void App::setup_dock_layout() {
 }
 
 void App::load_images(const std::vector<std::string>& paths) {
+    // Detect the "first load" case — the list was empty before this call.
+    // We only auto-select / auto-switch mode in that scenario so that later
+    // "append more images" calls do not clobber the user's current picks or
+    // comparison mode.
+    const bool was_empty = entries_.empty();
+
     ImageLoader loader;
     for (const auto& path : paths) {
         auto img = loader.load(path);
@@ -263,6 +269,28 @@ void App::load_images(const std::vector<std::string>& paths) {
     sort_entries_by_name();
     compute_display_labels();
     diff_texture_.dirty = true;
+
+    // Convenience: on the first successful load, auto-select up to the first
+    // two images and switch to Overlay mode.  This removes the need for the
+    // user to manually tick two checkboxes before seeing any comparison, and
+    // matches the most common use case (drop two images in, compare them).
+    if (was_empty && !entries_.empty()) {
+        selected_.clear();
+        swap_ab_ = false;
+        int pick = std::min<int>(2, static_cast<int>(entries_.size()));
+        for (int i = 0; i < pick; i++) selected_.insert(i);
+        // Flag newly-selected entries for texture/display refresh so the
+        // viewport renders them immediately on the next frame.
+        for (int s : selected_) {
+            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                entries_[s].texture_dirty = true;
+            }
+        }
+        diff_texture_.dirty = true;
+        if (state_->viewport) {
+            state_->viewport->set_mode(ComparisonMode::Overlay);
+        }
+    }
 }
 
 void App::get_ab_indices(int& a_idx, int& b_idx) const {
