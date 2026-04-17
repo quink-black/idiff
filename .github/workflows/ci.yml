@@ -52,6 +52,7 @@ jobs:
             libmagick++-dev \
             libraw-dev \
             libsdl2-dev \
+            libgtk-3-dev \
             pkg-config
 
       - name: Configure
