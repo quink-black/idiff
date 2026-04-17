@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <numeric>
 #include <string_view>
 #include <unordered_map>
@@ -1053,7 +1054,17 @@ void App::load_comparison_config_from_path(const std::string& path) {
         cache_root, std::filesystem::path(path), &cache_status);
     if (cache_dir.empty()) {
         state_->status_text = "Config load aborted: " + cache_status;
+        std::cerr << "[idiff] config load aborted: "
+                  << cache_status << std::endl;
         return;
+    }
+    // Also log to stdout so the user can review which cache directory
+    // was reused or created -- the UI status bar gets overwritten as
+    // soon as the first group finishes loading, so a terminal log is
+    // the only place the message stays visible.
+    if (!cache_status.empty()) {
+        std::cout << "[idiff] " << cache_status
+                  << " at " << cache_dir.string() << std::endl;
     }
 
     // Drop whatever was previously loaded so the user sees a clean
