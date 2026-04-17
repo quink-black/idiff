@@ -143,6 +143,22 @@ void App::frame() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
+    // Global keyboard shortcuts.  Only fire when no text input widget is
+    // capturing keystrokes so typing in e.g. search boxes won't trigger a
+    // file dialog.  Shortcuts mirror what's advertised in the File menu.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (!io.WantTextInput) {
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
+                open_file_dialog();
+            }
+            if (!entries_.empty() &&
+                ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
+                save_viewport_dialog();
+            }
+        }
+    }
+
     render_toolbar();
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
