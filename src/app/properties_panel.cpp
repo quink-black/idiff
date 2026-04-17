@@ -40,11 +40,15 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
         return;
     }
 
-    // Header shows "A — filename" / "B — filename" so the user can tell which
+    // Header shows "A | filename" / "B | filename" so the user can tell which
     // selected image is used as A / B in overlay and diff modes.
+    //
+    // NOTE: use an ASCII separator here.  The default ImGui font only covers
+    // Basic Latin, so Unicode separators like em-dash (U+2014) render as the
+    // fallback '?' glyph.
     char header[512];
     if (name && name[0]) {
-        std::snprintf(header, sizeof(header), "%s \xe2\x80\x94 %s", slot_label, name);
+        std::snprintf(header, sizeof(header), "%s | %s", slot_label, name);
     } else {
         std::snprintf(header, sizeof(header), "Image %s", slot_label);
     }
