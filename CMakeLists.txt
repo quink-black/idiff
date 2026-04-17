@@ -22,12 +22,10 @@ option(IDIFF_USE_OPENCV_IMGCODECS "Use OpenCV imgcodecs instead of ImageMagick f
 
 # --- System-required dependencies ---
 
-# OpenCV -- imgcodecs is only needed when replacing ImageMagick.
-if(IDIFF_USE_OPENCV_IMGCODECS)
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs quality)
-else()
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc quality)
-endif()
+# OpenCV -- imgcodecs is used both as an optional general-image loader
+# (replacing ImageMagick) and as the writer for the "Save viewport" feature,
+# so it is always required.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs quality)
 
 # ImageMagick (pkg-config) -- only when not using OpenCV imgcodecs.
 if(NOT IDIFF_USE_OPENCV_IMGCODECS)

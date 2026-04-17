@@ -59,6 +59,7 @@ private:
     void render_status_bar();
 
     void open_file_dialog();
+    void save_viewport_dialog();
     void remove_entry(int index);
     void update_display_image(int index);
     void upload_texture(ImageEntry& entry);

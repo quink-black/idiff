@@ -66,6 +66,11 @@ public:
     ImVec2 viewport_origin() const noexcept { return vp_origin_; }
     ImVec2 viewport_size() const noexcept { return vp_size_; }
 
+    // Overlay split position (0..1, left vs right half).  Exposed so the
+    // "Save viewport" feature can reproduce the same split in the saved
+    // image.
+    float overlay_slider_pos() const noexcept { return slider_pos_; }
+
     // Hover info computed during render().  Valid until the next render()
     // call.  Consumers should check hover_valid() before using the values.
     //

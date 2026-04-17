@@ -18,6 +18,7 @@
 #include <unordered_map>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include "core/image_loader.h"
@@ -340,6 +341,227 @@ void App::open_file_dialog() {
     }
 }
 
+// Compose the current viewport contents into a single BGRA image and write
+// it to disk.  The output is in image-pixel space (not window pixels), so
+// zoom / pan does not affect quality; the user always gets a full-resolution
+// snapshot of what the three comparison modes depict.
+void App::save_viewport_dialog() {
+    auto& vport = *state_->viewport;
+    ComparisonMode mode = vport.mode();
+
+    // --- Collect the input images that feed the viewport ---
+    int ab_idx[2] = {-1, -1};
+    get_ab_indices(ab_idx[0], ab_idx[1]);
+
+    auto entry_display_mat = [&](int idx) -> cv::Mat {
+        if (idx < 0 || idx >= static_cast<int>(entries_.size())) return {};
+        const auto& e = entries_[idx];
+        const Image* img = e.display_image ? e.display_image.get()
+                                           : e.image.get();
+        if (!img) return {};
+        return img->mat();
+    };
+
+    // Gather the ordered list of mats in the same order push_entry()
+    // populates for the viewport (A, B, then the remaining selected).
+    std::vector<cv::Mat> slot_mats;
+    std::vector<std::string> slot_labels;
+    auto push_slot = [&](int idx, const char* tag) {
+        cv::Mat m = entry_display_mat(idx);
+        if (m.empty()) return;
+        slot_mats.push_back(m);
+        slot_labels.push_back(
+            tag ? (std::string("[") + tag + "] " + entries_[idx].display_label)
+                : entries_[idx].display_label);
+    };
+    if (ab_idx[0] >= 0) push_slot(ab_idx[0], "A");
+    if (ab_idx[1] >= 0) push_slot(ab_idx[1], "B");
+    for (int s : selected_) {
+        if (s == ab_idx[0] || s == ab_idx[1]) continue;
+        push_slot(s, nullptr);
+    }
+
+    if (slot_mats.empty() &&
+        !(mode == ComparisonMode::Difference && diff_image_)) {
+        state_->status_text = "Save: nothing to save (no images selected)";
+        return;
+    }
+
+    // Normalize every mat to BGRA-8 so we can compose freely without per-cell
+    // depth/channel branching.  Saving in 8-bit is fine here because the
+    // viewport itself renders via 8-bit SDL textures.
+    auto to_bgra8 = [](const cv::Mat& src) -> cv::Mat {
+        cv::Mat s = src;
+        if (s.depth() != CV_8U) {
+            // Map [0, typeMax] -> [0, 255] so the saved image matches what
+            // the user sees on screen (textures are uploaded 8-bit).
+            double scale = (s.depth() == CV_16U) ? (1.0 / 257.0) : 1.0;
+            s.convertTo(s, CV_8U, scale);
+        }
+        cv::Mat out;
+        switch (s.channels()) {
+            case 1: cv::cvtColor(s, out, cv::COLOR_GRAY2BGRA); break;
+            // In-memory image mats are RGB/RGBA; convert to BGR/BGRA so
+            // cv::imwrite produces a correct file.
+            case 3: cv::cvtColor(s, out, cv::COLOR_RGB2BGRA); break;
+            case 4: cv::cvtColor(s, out, cv::COLOR_RGBA2BGRA); break;
+            default: return {};
+        }
+        return out;
+    };
+
+    cv::Mat composed;  // final image to write (BGRA-8)
+
+    if (mode == ComparisonMode::Difference) {
+        if (!diff_image_) {
+            state_->status_text = "Save: no diff map available "
+                                  "(select exactly 2 images first)";
+            return;
+        }
+        composed = to_bgra8(diff_image_->mat());
+    } else if (mode == ComparisonMode::Overlay) {
+        // Reproduce the viewport's A/B slider.  The slider is anchored to
+        // the viewport, so in image-pixel space the split column is just
+        // slider_pos * composite_width.
+        cv::Mat a = slot_mats.size() >= 1 ? to_bgra8(slot_mats[0]) : cv::Mat();
+        cv::Mat b = slot_mats.size() >= 2 ? to_bgra8(slot_mats[1]) : cv::Mat();
+        if (a.empty() && b.empty()) {
+            state_->status_text = "Save: no images for overlay";
+            return;
+        }
+        if (b.empty()) {
+            composed = a;  // only A selected
+        } else {
+            int w = std::max(a.cols, b.cols);
+            int h = std::max(a.rows, b.rows);
+            cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC4);
+
+            float slider = vport.overlay_slider_pos();
+            int split = std::clamp(static_cast<int>(std::round(slider * w)),
+                                   0, w);
+
+            // Left half from A, right half from B.  display_image is already
+            // upscaled to the common size, but guard just in case.
+            auto blit = [](const cv::Mat& src, cv::Mat& dst,
+                           int x0, int x1) {
+                if (src.empty() || x1 <= x0) return;
+                int sw = std::min(src.cols, x1) - x0;
+                if (sw <= 0) return;
+                int sh = std::min(src.rows, dst.rows);
+                cv::Rect src_roi(x0, 0, sw, sh);
+                cv::Rect dst_roi(x0, 0, sw, sh);
+                if (x0 >= src.cols) return;
+                src(src_roi).copyTo(dst(dst_roi));
+            };
+            blit(a, canvas, 0, split);
+            blit(b, canvas, split, w);
+
+            // Draw a thin vertical divider so the split is obvious in the
+            // saved image.
+            if (split > 0 && split < w) {
+                cv::line(canvas, {split, 0}, {split, h - 1},
+                         cv::Scalar(255, 255, 255, 255), 1);
+            }
+            composed = canvas;
+        }
+    } else {  // Split
+        // Match the grid layout Viewport::render_split uses.
+        int n = static_cast<int>(slot_mats.size());
+        if (n == 0) {
+            state_->status_text = "Save: no images to save";
+            return;
+        }
+        int cols, rows;
+        if (n == 1) { cols = 1; rows = 1; }
+        else if (n == 2) { cols = 2; rows = 1; }
+        else if (n <= 4) { cols = 2; rows = 2; }
+        else if (n <= 6) { cols = 3; rows = 2; }
+        else { cols = 3; rows = (n + cols - 1) / cols; }
+
+        // Use the largest image size as the per-cell size so cells stay
+        // uniform; smaller images are centered with transparent padding.
+        int cell_w = 0, cell_h = 0;
+        for (const auto& m : slot_mats) {
+            cell_w = std::max(cell_w, m.cols);
+            cell_h = std::max(cell_h, m.rows);
+        }
+        if (cell_w <= 0 || cell_h <= 0) {
+            state_->status_text = "Save: image has zero dimensions";
+            return;
+        }
+
+        int out_w = cell_w * cols;
+        int out_h = cell_h * rows;
+        cv::Mat canvas = cv::Mat::zeros(out_h, out_w, CV_8UC4);
+
+        for (int i = 0; i < n; i++) {
+            int col = i % cols;
+            int row = i / cols;
+            cv::Mat m = to_bgra8(slot_mats[i]);
+            if (m.empty()) continue;
+            int x = col * cell_w + (cell_w - m.cols) / 2;
+            int y = row * cell_h + (cell_h - m.rows) / 2;
+            m.copyTo(canvas(cv::Rect(x, y, m.cols, m.rows)));
+        }
+
+        // Draw cell dividers (matching the white-translucent look on screen).
+        cv::Scalar divider(255, 255, 255, 80);
+        for (int c = 1; c < cols; c++) {
+            cv::line(canvas, {c * cell_w, 0},
+                     {c * cell_w, out_h - 1}, divider, 1);
+        }
+        for (int r = 1; r < rows; r++) {
+            cv::line(canvas, {0, r * cell_h},
+                     {out_w - 1, r * cell_h}, divider, 1);
+        }
+        composed = canvas;
+    }
+
+    if (composed.empty()) {
+        state_->status_text = "Save: failed to compose viewport image";
+        return;
+    }
+
+    // --- Ask the user for a destination path ---
+    nfdfilteritem_t filters[] = {
+        { "PNG image", "png" },
+        { "JPEG image", "jpg,jpeg" },
+    };
+    const char* default_name = "viewport.png";
+    nfdchar_t* out_path = nullptr;
+    nfdresult_t result = NFD_SaveDialog(&out_path, filters, 2, nullptr,
+                                         default_name);
+    if (result != NFD_OKAY) {
+        if (result == NFD_ERROR) {
+            state_->status_text = "Save dialog error: " +
+                                  std::string(NFD_GetError());
+        }
+        return;
+    }
+    std::string path = out_path;
+    NFD_FreePath(out_path);
+
+    // NFD_SaveDialog does not always append an extension; default to .png
+    // when none was given so cv::imwrite picks the right encoder.
+    auto has_ext = [](const std::string& p) {
+        auto dot = p.find_last_of('.');
+        auto slash = p.find_last_of("/\\");
+        return dot != std::string::npos &&
+               (slash == std::string::npos || dot > slash);
+    };
+    if (!has_ext(path)) path += ".png";
+
+    // Convert back to the byte order cv::imwrite expects (BGR/BGRA).  Our
+    // `composed` is already BGRA so no further conversion is needed.
+    try {
+        bool ok = cv::imwrite(path, composed);
+        state_->status_text = ok ? ("Saved viewport to: " + path)
+                                 : ("Save failed: " + path);
+    } catch (const cv::Exception& ex) {
+        state_->status_text = std::string("Save failed: ") + ex.what();
+    }
+}
+
 void App::remove_entry(int index) {
     if (index < 0 || index >= static_cast<int>(entries_.size())) return;
 
@@ -594,6 +816,11 @@ void App::render_toolbar() {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open Images...", "Ctrl+O")) {
                 open_file_dialog();
+            }
+            if (ImGui::MenuItem("Save Viewport As...", "Ctrl+S",
+                                 false,
+                                 !entries_.empty())) {
+                save_viewport_dialog();
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Alt+F4")) {
@@ -936,6 +1163,22 @@ void App::render_viewport() {
         ImGui::SameLine();
         if (ImGui::SmallButton("1:1")) {
             vp.zoom_to_actual();
+        }
+
+        ImGui::SameLine();
+        ImGui::Spacing();
+        ImGui::SameLine();
+        bool can_save = !entries_.empty() &&
+                        (!selected_.empty() ||
+                         (vp.mode() == ComparisonMode::Difference && diff_image_));
+        ImGui::BeginDisabled(!can_save);
+        if (ImGui::SmallButton("Save...")) {
+            save_viewport_dialog();
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Save the current viewport (Split / Overlay / Diff) "
+                              "to a PNG or JPEG file");
         }
 
         int sel_count = static_cast<int>(selected_.size());

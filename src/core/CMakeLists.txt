@@ -14,13 +14,13 @@ target_include_directories(idiff_core PUBLIC
 
 target_link_libraries(idiff_core PUBLIC
     opencv_core
+    opencv_imgcodecs
     opencv_imgproc
     opencv_quality
     ${LIBRAW_TARGET}
 )
 
 if(IDIFF_USE_OPENCV_IMGCODECS)
-    target_link_libraries(idiff_core PUBLIC opencv_imgcodecs)
     target_compile_definitions(idiff_core PUBLIC IDIFF_USE_OPENCV_IMGCODECS)
 else()
     target_link_libraries(idiff_core PUBLIC PkgConfig::MAGICKXX)
