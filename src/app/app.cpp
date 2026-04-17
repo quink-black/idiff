@@ -15,7 +15,9 @@
 #include <cstdio>
 #include <cstring>
 #include <numeric>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -305,6 +307,34 @@ void App::get_ab_indices(int& a_idx, int& b_idx) const {
     if (swap_ab_) std::swap(a_idx, b_idx);
 }
 
+namespace {
+
+// Split a filename into (stem, extension) using the last '.' as the
+// delimiter.  A leading dot (e.g. ".hidden") does not start an extension —
+// the whole string is treated as the stem, matching the convention used
+// by most shells and file managers.
+std::pair<std::string_view, std::string_view>
+split_stem_ext(std::string_view name) {
+    if (name.size() <= 1) return {name, {}};
+    auto dot = name.find_last_of('.');
+    if (dot == std::string_view::npos || dot == 0) return {name, {}};
+    return {name.substr(0, dot), name.substr(dot + 1)};
+}
+
+// Compare filenames by (stem, extension) so that a "base" name like
+// "kid.jpg" sorts before its derived siblings ("kid-pisa.jpg",
+// "kid-pisa-v0.jpg").  The default std::string operator< puts '-' (0x2D)
+// before '.' (0x2E) which is the wrong answer here: the user expects the
+// shorter root name to come first.
+bool filename_less(const std::string& a, const std::string& b) {
+    auto [a_stem, a_ext] = split_stem_ext(a);
+    auto [b_stem, b_ext] = split_stem_ext(b);
+    if (a_stem != b_stem) return a_stem < b_stem;
+    return a_ext < b_ext;
+}
+
+} // namespace
+
 void App::sort_entries_by_name() {
     // Build a mapping from old index to entry pointer for selected_ fixup
     std::vector<int> old_indices(entries_.size());
@@ -312,7 +342,7 @@ void App::sort_entries_by_name() {
 
     // Sort entries and track the permutation
     std::sort(old_indices.begin(), old_indices.end(), [&](int a, int b) {
-        return entries_[a].filename < entries_[b].filename;
+        return filename_less(entries_[a].filename, entries_[b].filename);
     });
 
     // Apply permutation
