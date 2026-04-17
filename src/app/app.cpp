@@ -1175,6 +1175,37 @@ void App::switch_to_comparison_group(int group_idx) {
         state_->status_text = "No cache configured for comparison group";
         return;
     }
+
+    // Whenever the user picks a new group, the old prefetch plan (that
+    // was centred on the previous group) is no longer interesting --
+    // the neighbours of the NEW group are what the user will likely
+    // visit next.  Cancel the pending queue first, then re-schedule
+    // around group_idx.  Workers currently busy with an old task are
+    // allowed to finish; their result still lands in the cache and is
+    // reusable, it just might not be "nearby" anymore.
+    state_->url_cache->cancel_pending_prefetches();
+    {
+        constexpr int kPrefetchRadius = 3;
+        const int total = static_cast<int>(
+            state_->comparison_config.groups.size());
+        // Schedule in increasing |offset| order so the nearest groups
+        // (most likely to be clicked next) get lower priority values.
+        // We interleave +offset and -offset so adjacent "next" and
+        // "previous" groups compete fairly at the same priority.
+        for (int off = 1; off <= kPrefetchRadius; ++off) {
+            for (int sign : {+1, -1}) {
+                int idx = group_idx + sign * off;
+                if (idx < 0 || idx >= total) continue;
+                const auto& g = state_->comparison_config.groups[idx];
+                for (const auto& it : g.items) {
+                    if (!it.url.empty()) {
+                        state_->url_cache->prefetch(it.url, off);
+                    }
+                }
+            }
+        }
+    }
+
     for (const auto& item : group.items) {
         auto p = state_->url_cache->fetch(item.url);
         if (p.empty()) {

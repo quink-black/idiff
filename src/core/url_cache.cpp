@@ -438,7 +438,8 @@ void UrlCache::register_urls(const std::vector<std::string>& urls) {
 }
 
 bool UrlCache::run_curl(const std::string& url,
-                         const std::filesystem::path& dest) {
+                         const std::filesystem::path& dest,
+                         std::string* out_error) {
     // Download to a sibling .part file first, then rename into place so
     // a partial download never masquerades as a complete cache hit.
     std::filesystem::path tmp = dest;
@@ -458,6 +459,15 @@ bool UrlCache::run_curl(const std::string& url,
         << " "    << shell_quote(url)
         << " 2>&1";
 
+    // Report the error either to `*out_error` (thread-local scratch
+    // for the background pool) or to the cache's own last_error_
+    // string.  Keeping both paths separate means fetch() never
+    // stomps on what a concurrent worker wrote, and vice versa.
+    auto set_err = [&](std::string msg) {
+        if (out_error) { *out_error = std::move(msg); }
+        else           { last_error_ = std::move(msg); }
+    };
+
     std::string captured;
     captured.reserve(256);
 #ifdef _WIN32
@@ -466,8 +476,8 @@ bool UrlCache::run_curl(const std::string& url,
     FILE* pipe = popen(cmd.str().c_str(), "r");
 #endif
     if (!pipe) {
-        last_error_ = "failed to launch curl (popen): " +
-                      std::string(std::strerror(errno));
+        set_err("failed to launch curl (popen): " +
+                std::string(std::strerror(errno)));
         return false;
     }
     char buf[256];
@@ -492,9 +502,9 @@ bool UrlCache::run_curl(const std::string& url,
                 captured.back() == ' ')) {
             captured.pop_back();
         }
-        last_error_ = captured.empty()
+        set_err(captured.empty()
             ? ("curl exit code " + std::to_string(rc))
-            : captured;
+            : captured);
         return false;
     }
 
@@ -506,11 +516,11 @@ bool UrlCache::run_curl(const std::string& url,
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);
         if (ec) {
-            last_error_ = "failed to finalize cache entry: " + ec.message();
+            set_err("failed to finalize cache entry: " + ec.message());
             return false;
         }
     }
-    last_error_.clear();
+    if (!out_error) last_error_.clear();
     return true;
 }
 
@@ -529,6 +539,37 @@ std::filesystem::path UrlCache::fetch(const std::string& url,
         if (!ec && sz > 0) return target;
     }
 
+    // If a prefetch for this URL is already running, join it instead of
+    // starting a duplicate curl.  This is the whole point of the
+    // background pool from the foreground's perspective -- a group the
+    // user selects while its images are still being prefetched should
+    // not re-download anything, it should just wait.
+    //
+    // When force_refresh is requested we intentionally bypass the join:
+    // the caller explicitly wants a fresh copy, so letting them reuse
+    // an ongoing download (which might itself have started before the
+    // reason for the refresh existed) would be incorrect.
+    std::shared_ptr<Task> wait_on;
+    if (!force_refresh) {
+        std::unique_lock<std::mutex> lk(pool_mtx_);
+        auto it = inflight_.find(url);
+        if (it != inflight_.end()) {
+            wait_on = it->second;
+        }
+    }
+    if (wait_on) {
+        std::unique_lock<std::mutex> tlk(wait_on->m);
+        wait_on->cv.wait(tlk, [&] { return wait_on->done; });
+        if (wait_on->success) {
+            return wait_on->path;
+        }
+        // The prefetch failed; fall through and retry on this thread
+        // so the caller still gets a shot at surfacing a fresh error
+        // via last_error().  The inflight_ entry has already been
+        // removed by the worker that produced the failure.
+        last_error_ = wait_on->error;
+    }
+
     fs::create_directories(target.parent_path(), ec);
     if (ec && !fs::exists(target.parent_path())) {
         last_error_ = "cannot create cache directory: " + ec.message();
@@ -539,6 +580,191 @@ std::filesystem::path UrlCache::fetch(const std::string& url,
         return {};
     }
     return target;
+}
+
+bool UrlCache::is_cached(const std::string& url) const {
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(path_for(url), ec);
+    return !ec && sz > 0;
+}
+
+void UrlCache::prefetch(const std::string& url, int priority) {
+    if (url.empty()) return;
+
+    // Skip anything already materialized on disk -- a prefetch request
+    // for a hit is just noise.  Intentionally done outside the pool
+    // lock: the file-existence check is pure I/O and the worst case
+    // (file appears between our check and enqueue) is a redundant
+    // curl that immediately returns because its .part rename will
+    // overwrite a fresh but identical file.
+    if (is_cached(url)) return;
+
+    {
+        std::lock_guard<std::mutex> lk(pool_mtx_);
+        if (stop_) return;
+        // Dedup against anything already queued or running.
+        if (inflight_.count(url)) return;
+
+        auto t = std::make_shared<Task>();
+        t->url = url;
+        t->priority = priority;
+        t->seq = next_seq_++;
+        inflight_.emplace(url, t);
+
+        PendingRef ref;
+        ref.priority = priority;
+        ref.seq      = t->seq;
+        ref.url      = url;
+        queue_.push(std::move(ref));
+    }
+    pool_cv_.notify_one();
+
+    // Start workers only once we actually have something to do.  The
+    // check inside ensure_pool_started() is cheap on the hot path.
+    ensure_pool_started();
+}
+
+void UrlCache::cancel_pending_prefetches() {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    // We discard the entire priority_queue -- walking it to keep
+    // "already started" entries isn't necessary because started tasks
+    // aren't in the queue anymore (workers pop them off before
+    // marking them started).  For each discarded URL we also drop
+    // its inflight_ entry so a subsequent prefetch() call for the
+    // same URL can re-queue it at the new priority.
+    while (!queue_.empty()) {
+        const auto& ref = queue_.top();
+        auto it = inflight_.find(ref.url);
+        if (it != inflight_.end() && it->second && !it->second->started) {
+            // Wake up anybody waiting on this task with a "cancelled"
+            // result so they can fall back to a synchronous fetch.
+            auto task = it->second;
+            {
+                std::lock_guard<std::mutex> tlk(task->m);
+                task->done    = true;
+                task->success = false;
+                task->error   = "cancelled";
+            }
+            task->cv.notify_all();
+            inflight_.erase(it);
+        }
+        queue_.pop();
+    }
+}
+
+void UrlCache::ensure_pool_started() {
+    std::lock_guard<std::mutex> lk(pool_mtx_);
+    if (pool_started_ || stop_) return;
+
+    // Three workers is the sweet spot for mass HTTP downloads: enough
+    // concurrency to mask per-request RTT, few enough to stay polite
+    // to the origin and avoid triggering rate limits.  Tuning this up
+    // rarely helps because curl is already pipelining retries.
+    constexpr unsigned kWorkerCount = 3;
+    workers_.reserve(kWorkerCount);
+    for (unsigned i = 0; i < kWorkerCount; ++i) {
+        workers_.emplace_back([this] { worker_loop(); });
+    }
+    pool_started_ = true;
+}
+
+void UrlCache::worker_loop() {
+    namespace fs = std::filesystem;
+    for (;;) {
+        std::shared_ptr<Task> task;
+        {
+            std::unique_lock<std::mutex> lk(pool_mtx_);
+            pool_cv_.wait(lk, [&] { return stop_ || !queue_.empty(); });
+            if (stop_ && queue_.empty()) return;
+
+            // Pop the highest-priority pending URL.  A cancel_pending
+            // call may have already erased its inflight_ entry, in
+            // which case we just loop back and try the next one.
+            auto ref = queue_.top();
+            queue_.pop();
+            auto it = inflight_.find(ref.url);
+            if (it == inflight_.end()) continue;
+            task = it->second;
+            if (!task) { inflight_.erase(it); continue; }
+
+            // Mark the task as started so cancel_pending_prefetches()
+            // leaves it alone (we're committed to finishing the curl).
+            {
+                std::lock_guard<std::mutex> tlk(task->m);
+                task->started = true;
+            }
+        }
+
+        // Fast path: the file may have arrived on disk between enqueue
+        // and now (e.g. a foreground fetch ran first).  Skip curl and
+        // just publish a success result.
+        fs::path target = path_for(task->url);
+        std::error_code ec;
+        auto sz = fs::file_size(target, ec);
+        bool ok = !ec && sz > 0;
+        std::string err;
+
+        if (!ok) {
+            fs::create_directories(target.parent_path(), ec);
+            if (ec && !fs::exists(target.parent_path())) {
+                err = "cannot create cache directory: " + ec.message();
+            } else {
+                ok = run_curl(task->url, target, &err);
+            }
+        }
+
+        // Publish the result and wake anyone waiting on fetch().
+        {
+            std::lock_guard<std::mutex> tlk(task->m);
+            task->path    = ok ? target : fs::path{};
+            task->error   = ok ? std::string{} : std::move(err);
+            task->success = ok;
+            task->done    = true;
+        }
+        task->cv.notify_all();
+
+        // Done; drop the inflight entry so future prefetch() calls
+        // can re-queue this URL (e.g. after force_refresh deletion).
+        {
+            std::lock_guard<std::mutex> lk(pool_mtx_);
+            auto it = inflight_.find(task->url);
+            if (it != inflight_.end() && it->second == task) {
+                inflight_.erase(it);
+            }
+        }
+    }
+}
+
+UrlCache::~UrlCache() {
+    {
+        std::lock_guard<std::mutex> lk(pool_mtx_);
+        stop_ = true;
+        // Drain the queue so workers exit cleanly once their current
+        // download finishes.  We do NOT touch Tasks already picked up
+        // by a worker -- interrupting a curl mid-flight would leak a
+        // zombie .part file.  worker_loop() notices stop_ after its
+        // current iteration and returns.
+        while (!queue_.empty()) {
+            const auto& ref = queue_.top();
+            auto it = inflight_.find(ref.url);
+            if (it != inflight_.end() && it->second && !it->second->started) {
+                auto t = it->second;
+                {
+                    std::lock_guard<std::mutex> tlk(t->m);
+                    t->done    = true;
+                    t->success = false;
+                    t->error   = "cancelled";
+                }
+                t->cv.notify_all();
+                inflight_.erase(it);
+            }
+            queue_.pop();
+        }
+    }
+    pool_cv_.notify_all();
+    for (auto& th : workers_) {
+        if (th.joinable()) th.join();
+    }
 }
 
 } // namespace idiff

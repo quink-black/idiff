@@ -1,8 +1,16 @@
 #ifndef IDIFF_URL_CACHE_H
 #define IDIFF_URL_CACHE_H
 
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <mutex>
+#include <queue>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace idiff {
@@ -33,6 +41,16 @@ public:
     // per-config subdirectory (e.g. "Downloads/idiff_cache_foo_YYYYmmdd_HHMMSS")
     // and hand it in here so every config gets its own scoped cache.
     explicit UrlCache(std::filesystem::path root);
+
+    // Shuts down the background worker pool (if any) and joins all
+    // threads.  Any prefetches still queued but not yet started are
+    // dropped; in-flight curl invocations are allowed to finish so the
+    // corresponding `.part` file either becomes a valid cache entry
+    // or is cleaned up on failure, never leaving half-written garbage.
+    ~UrlCache();
+
+    UrlCache(const UrlCache&) = delete;
+    UrlCache& operator=(const UrlCache&) = delete;
 
     // Resolve the preferred cache root, in priority order:
     //   1. A `cache_root = <path>` (or plain path) line inside
@@ -93,8 +111,36 @@ public:
     //
     // `force_refresh` bypasses the existence check and always re-runs
     // curl; useful when the remote asset is known to have changed.
+    //
+    // If a background prefetch for the same URL is already running,
+    // this call waits for it to finish instead of kicking off a second
+    // curl.  The net effect: prefetched files are returned instantly,
+    // in-flight ones are transparently joined, and cold URLs are
+    // downloaded on the foreground thread.
     std::filesystem::path fetch(const std::string& url,
                                  bool force_refresh = false);
+
+    // Return true when the URL is already materialized on disk as a
+    // non-empty file.  Cheap -- no network access.  Useful for UI hints
+    // (e.g. "this group is ready, that one is still downloading").
+    bool is_cached(const std::string& url) const;
+
+    // Schedule `url` to be downloaded by the background worker pool.
+    // Returns immediately.  Lower `priority` values are served first
+    // (0 = most urgent).  Duplicate URLs already queued or in-flight
+    // are silently ignored, so callers can re-issue the same set of
+    // prefetches on every viewport change without extra bookkeeping.
+    // A call to prefetch() lazily spins up the worker threads on first
+    // use.
+    void prefetch(const std::string& url, int priority = 10);
+
+    // Drop every queued-but-not-yet-started prefetch task.  Tasks that
+    // have already been picked up by a worker keep running -- cancelling
+    // mid-curl would waste bandwidth we already spent.  Intended for use
+    // when the "what to prefetch" plan changes (e.g. the user jumped to
+    // a different comparison group and the old neighbours are no longer
+    // interesting).
+    void cancel_pending_prefetches();
 
     // Diagnostic from the most recent fetch() call.  Empty on success.
     const std::string& last_error() const noexcept { return last_error_; }
@@ -115,8 +161,64 @@ private:
     std::string strip_host_;
     std::size_t strip_segments_ = 0;
 
+    // --- Background prefetch pool ------------------------------------
+    //
+    // Per-URL task state shared between fetch() (which may wait on the
+    // result) and the worker threads (which fill it in).  We keep the
+    // std::shared_ptr in the inflight_ map so even when a worker is
+    // about to erase its map entry, a fetch() caller still holding a
+    // copy of the shared_ptr can safely inspect the result.
+    struct Task {
+        std::mutex              m;
+        std::condition_variable cv;
+        std::string             url;
+        std::filesystem::path   path;       // filled on success
+        std::string             error;      // filled on failure
+        bool                    done    = false;
+        bool                    success = false;
+        bool                    started = false;  // picked up by a worker
+        int                     priority = 0;
+        std::uint64_t           seq     = 0;      // FIFO tiebreaker
+    };
+
+    // Priority queue entry.  We intentionally store only the URL so
+    // the Task shared_ptr stays reachable solely through inflight_ --
+    // that makes "cancel pending" a simple queue-clear instead of
+    // having to scrub dangling shared_ptr copies out of the queue.
+    struct PendingRef {
+        int           priority = 0;
+        std::uint64_t seq      = 0;
+        std::string   url;
+        // Lower priority first; FIFO within same priority.  std::priority_queue
+        // is a max-heap, so "less urgent" must compare greater.
+        bool operator<(const PendingRef& o) const {
+            if (priority != o.priority) return priority > o.priority;
+            return seq > o.seq;
+        }
+    };
+
+    mutable std::mutex              pool_mtx_;
+    std::condition_variable         pool_cv_;
+    std::priority_queue<PendingRef> queue_;
+    std::unordered_map<std::string, std::shared_ptr<Task>> inflight_;
+    std::vector<std::thread>        workers_;
+    std::uint64_t                   next_seq_    = 0;
+    bool                            stop_        = false;
+    bool                            pool_started_ = false;
+
+    // Lazily start the worker pool on first prefetch().  No-op once
+    // the threads are already running.  Must be called with pool_mtx_
+    // NOT held (it locks internally on first start).
+    void ensure_pool_started();
+
+    // Worker thread body.  Pulls the highest-priority pending URL,
+    // marks its Task as started, releases the lock, runs curl, and
+    // writes the result back into the Task under the Task's own mutex.
+    void worker_loop();
+
     bool run_curl(const std::string& url,
-                  const std::filesystem::path& dest);
+                  const std::filesystem::path& dest,
+                  std::string* out_error = nullptr);
 };
 
 } // namespace idiff
