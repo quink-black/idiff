@@ -47,6 +47,12 @@ if(IDIFF_BUILD_CATCH2)
     )
     FetchContent_MakeAvailable(Catch2)
     # Catch2's CMake build provides Catch2::Catch2WithMain automatically.
+    # When Catch2 is found via find_package, CMake adds its cmake/ dir to
+    # CMAKE_MODULE_PATH so include(Catch) works.  With FetchContent that
+    # doesn't happen, so do it manually here -- propagate to the parent
+    # scope (root CMakeLists) so tests/CMakeLists.txt can include(Catch).
+    list(APPEND CMAKE_MODULE_PATH "${Catch2_SOURCE_DIR}/extras")
+    set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 endif()
 
 # ---- Native File Dialog Extended (from source when not found on system) ----
