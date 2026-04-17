@@ -67,6 +67,16 @@ public:
 
     void load_images(const std::vector<std::string>& paths);
 
+    // Dispatch entry for any "user asked to open these files" flow
+    // (menu, drag & drop, side-bar button, command-line args, ...).
+    // Paths with a `.json` extension are routed to the comparison-
+    // config loader; everything else is forwarded to load_images().
+    // Mixing both kinds in a single call is supported: the first JSON
+    // wins and replaces the current session, any other paths are
+    // ignored with a status-bar note so the user isn't silently left
+    // with a half-loaded state.
+    void load_paths(const std::vector<std::string>& paths);
+
     const std::vector<ImageEntry>& entries() const noexcept { return entries_; }
     const std::set<int>& selected() const noexcept { return selected_; }
 
@@ -80,6 +90,25 @@ private:
 
     void open_file_dialog();
     void save_viewport_dialog();
+    // Open a comparison-config JSON file.  Lets the user describe several
+    // groups of image URLs in a single document; we then download (with
+    // disk caching) one group at a time and feed the cached local paths
+    // into load_images().  Decoupling "fetch" from "decode" keeps memory
+    // bounded to whatever the current group needs.
+    void open_comparison_config_dialog();
+    // Parse a comparison-config JSON file from disk and take it over as
+    // the current session (tearing down any previously-loaded images
+    // and previous config first).  Shared by the dedicated "Open
+    // Comparison Config..." menu item and by the generic load_paths()
+    // dispatch when the user picks / drops a `.json` file through any
+    // other entry point.  On parse error the status bar is updated and
+    // the current state is left untouched.
+    void load_comparison_config_from_path(const std::string& path);
+    // Swap the currently-loaded entries for the contents of
+    // comparison_groups_[group_idx].  Images belonging to the previous
+    // group are unloaded first so only one group's worth of pixels is
+    // resident in memory at a time.  Out-of-range indices are ignored.
+    void switch_to_comparison_group(int group_idx);
     void remove_entry(int index);
     void reload_all_images();
     void update_display_image(int index);

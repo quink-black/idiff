@@ -36,6 +36,24 @@ target_include_directories(imgui PUBLIC
 target_link_libraries(imgui PUBLIC SDL2::SDL2)
 target_compile_definitions(imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
 
+# ---- nlohmann/json (header-only; from system if available, else fetch) ----
+#
+# Used by idiff_core for the comparison-config loader.  The find_package()
+# call lives in the top-level CMakeLists.txt so the resulting IMPORTED
+# target is visible from every subdirectory; here we only need to pull
+# the source in when the system package was absent.
+if(IDIFF_BUILD_JSON)
+    set(JSON_BuildTests OFF CACHE INTERNAL "")
+    set(JSON_Install    OFF CACHE INTERNAL "")
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 # ---- Catch2 v3 (from source when not found on system) ----
 
 if(IDIFF_BUILD_CATCH2)

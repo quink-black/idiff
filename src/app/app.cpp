@@ -30,6 +30,8 @@
 #include "core/image_processor.h"
 #include "core/image_comparator.h"
 #include "core/media_source.h"
+#include "core/comparison_config.h"
+#include "core/url_cache.h"
 
 namespace idiff {
 
@@ -78,6 +80,19 @@ struct App::State {
     // own frame_count.  Single-frame entries ignore this value.  The
     // timeline bar exposes this as a slider.
     int current_frame = 0;
+
+    // Comparison-config support.  When the user opens a JSON config we
+    // keep the parsed groups here and load them on demand.  Only one
+    // group at a time is loaded into `entries_` so memory stays bounded
+    // regardless of how many groups the document lists.
+    ComparisonConfig comparison_config;
+    int current_group_idx = -1;  // -1 = no config loaded
+    // Download cache, scoped to the currently-loaded config.  Each
+    // config gets its own subdirectory (idiff_cache_<stem>_<timestamp>)
+    // under the configured cache root / Downloads folder, so the user
+    // can later tell which cache dump came from which comparison JSON.
+    // Reset to nullptr when no config is loaded.
+    std::unique_ptr<UrlCache> url_cache;
 };
 
 App::App() : state_(std::make_unique<State>()) {}
@@ -968,9 +983,13 @@ void App::move_entry(int from, int to) {
 }
 
 void App::open_file_dialog() {
+    // A single "All supported" filter is friendlier than a
+    // multi-filter drop-down: the user rarely cares whether something
+    // is an image or a config, they just want to point at a file and
+    // move on.  load_paths() takes care of routing after the fact.
     nfdfilteritem_t filters[] = {
-        { "Image / YUV files",
-          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv" }
+        { "Images, YUV streams, and comparison configs",
+          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json" }
     };
     const nfdpathset_t* outPaths = nullptr;
     nfdresult_t result = NFD_OpenDialogMultiple(&outPaths, filters, 1, nullptr);
@@ -987,11 +1006,244 @@ void App::open_file_dialog() {
             }
         }
         NFD_PathSet_Free(outPaths);
-        load_images(paths);
+        load_paths(paths);
     } else if (result == NFD_ERROR) {
         state_->status_text = "File dialog error: " + std::string(NFD_GetError());
     }
 }
+
+void App::open_comparison_config_dialog() {
+    nfdfilteritem_t filters[] = {
+        { "Comparison config (JSON)", "json" },
+    };
+    nfdchar_t* out_path = nullptr;
+    nfdresult_t result = NFD_OpenDialog(&out_path, filters, 1, nullptr);
+    if (result != NFD_OKAY) {
+        if (result == NFD_ERROR) {
+            state_->status_text = "Config dialog error: " +
+                                   std::string(NFD_GetError());
+        }
+        return;
+    }
+    std::string path = out_path;
+    NFD_FreePath(out_path);
+    load_comparison_config_from_path(path);
+}
+
+void App::load_comparison_config_from_path(const std::string& path) {
+    ComparisonConfig cfg = load_comparison_config(path);
+    if (!cfg.error.empty()) {
+        state_->status_text = "Config: " + cfg.error;
+        return;
+    }
+
+    // Drop whatever was previously loaded so the user sees a clean
+    // switch.  Per the task brief, we keep at most one group's worth of
+    // images resident in memory, so we also release entries from any
+    // previously-loaded config.
+    for (auto& entry : entries_) {
+        if (entry.texture) SDL_DestroyTexture(entry.texture);
+    }
+    entries_.clear();
+    selected_.clear();
+    swap_ab_ = false;
+    if (diff_texture_.texture) {
+        SDL_DestroyTexture(diff_texture_.texture);
+        diff_texture_.texture = nullptr;
+    }
+    diff_image_.reset();
+    diff_texture_.dirty = true;
+
+    state_->comparison_config = std::move(cfg);
+    state_->current_group_idx = -1;
+
+    // Build a cache directory scoped to this particular config file.
+    // The root is resolved fresh on every open so edits to
+    // ~/.idiff.config take effect without relaunching the app; the
+    // per-config subdirectory name encodes the JSON stem + local
+    // timestamp so repeated opens produce distinct, traceable dumps.
+    std::filesystem::path cache_root = UrlCache::resolve_default_root();
+    std::string sub_dir = UrlCache::make_config_cache_dirname(
+        std::filesystem::path(path));
+    state_->url_cache = std::make_unique<UrlCache>(cache_root / sub_dir);
+
+    // Feed every URL from every group into the cache up front so it
+    // can compute the shared host / path prefix and trim it from the
+    // local paths.  This keeps the cache directory as shallow as
+    // possible while still guaranteeing distinct local files per URL.
+    std::vector<std::string> all_urls;
+    for (const auto& g : state_->comparison_config.groups) {
+        for (const auto& it : g.items) {
+            if (!it.url.empty()) all_urls.push_back(it.url);
+        }
+    }
+    state_->url_cache->register_urls(all_urls);
+
+    int total_items = 0;
+    for (const auto& g : state_->comparison_config.groups) {
+        total_items += static_cast<int>(g.items.size());
+    }
+    state_->status_text = "Loaded config: " +
+        std::to_string(state_->comparison_config.groups.size()) +
+        " group(s), " + std::to_string(total_items) + " image(s). " +
+        "Cache: " + state_->url_cache->root().string();
+
+    // Start on the first group so the user sees pixels immediately.
+    // switch_to_comparison_group() is responsible for the actual
+    // download + load_images() handoff.
+    if (!state_->comparison_config.groups.empty()) {
+        switch_to_comparison_group(0);
+    }
+}
+
+void App::load_paths(const std::vector<std::string>& paths) {
+    // Split incoming paths by extension so the user can drop a JSON
+    // config onto the window (or pick one through the generic "Open
+    // Images" dialog) without hunting for a dedicated menu entry.
+    std::vector<std::string> image_paths;
+    std::vector<std::string> json_paths;
+    image_paths.reserve(paths.size());
+    for (const auto& p : paths) {
+        std::string ext = std::filesystem::path(p).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (ext == ".json") {
+            json_paths.push_back(p);
+        } else {
+            image_paths.push_back(p);
+        }
+    }
+
+    if (!json_paths.empty()) {
+        // A comparison config replaces the whole session, so it is
+        // meaningless to honour more than one at a time.  If the user
+        // mixed JSON and image paths in the same drop/pick, take the
+        // first JSON and surface the rest as a status message instead
+        // of silently dropping them.
+        load_comparison_config_from_path(json_paths.front());
+        if (json_paths.size() > 1 || !image_paths.empty()) {
+            state_->status_text +=
+                "  (ignored " +
+                std::to_string(json_paths.size() - 1 + image_paths.size()) +
+                " extra file(s) -- config replaces the session)";
+        }
+        return;
+    }
+
+    if (!image_paths.empty()) {
+        load_images(image_paths);
+    }
+}
+
+void App::switch_to_comparison_group(int group_idx) {
+    if (group_idx < 0 ||
+        group_idx >= static_cast<int>(state_->comparison_config.groups.size())) {
+        return;
+    }
+    if (group_idx == state_->current_group_idx) return;
+
+    // Release the previous group's images first so we never hold two
+    // groups' pixels in memory simultaneously.  This is the main memory
+    // lever for configs with many large groups.
+    for (auto& entry : entries_) {
+        if (entry.texture) SDL_DestroyTexture(entry.texture);
+    }
+    entries_.clear();
+    selected_.clear();
+    swap_ab_ = false;
+    if (diff_texture_.texture) {
+        SDL_DestroyTexture(diff_texture_.texture);
+        diff_texture_.texture = nullptr;
+    }
+    diff_image_.reset();
+    diff_texture_.dirty = true;
+
+    const auto& group = state_->comparison_config.groups[group_idx];
+
+    // Fetch each URL to disk (reusing cached entries when present) and
+    // collect the local paths.  fetch() streams straight to disk so the
+    // app's resident set stays small even when a group contains very
+    // large images.
+    std::vector<std::string> local_paths;
+    local_paths.reserve(group.items.size());
+    int failures = 0;
+    std::string last_err;
+    if (!state_->url_cache) {
+        // Should not happen -- open_comparison_config_dialog() always
+        // creates the cache before we get here -- but guard anyway so
+        // a stray call does not dereference nullptr.
+        state_->status_text = "No cache configured for comparison group";
+        return;
+    }
+    for (const auto& item : group.items) {
+        auto p = state_->url_cache->fetch(item.url);
+        if (p.empty()) {
+            failures++;
+            last_err = state_->url_cache->last_error();
+            continue;
+        }
+        local_paths.push_back(p.string());
+    }
+
+    state_->current_group_idx = group_idx;
+
+    if (!local_paths.empty()) {
+        load_images(local_paths);
+    }
+
+    // After load_images(), re-label entries with the human-friendly names
+    // from the config (item.title, or the URL's basename when no title was
+    // provided) instead of the opaque sha256 cache filenames that
+    // load_images() inferred from the cached paths.  Match entries back to
+    // their original config item by local path so the labelling survives
+    // sort_entries_by_name() re-ordering.
+    if (!entries_.empty()) {
+        // Build (local cache path -> group item) lookup for this group.
+        // We only populate it for items we actually fetched successfully;
+        // everything else keeps its auto-derived filename.
+        std::unordered_map<std::string, const ComparisonItem*> by_path;
+        for (const auto& item : group.items) {
+            auto p = state_->url_cache->path_for(item.url);
+            by_path[p.string()] = &item;
+        }
+        auto url_basename = [](const std::string& url) -> std::string {
+            std::size_t end = url.size();
+            if (auto q = url.find_first_of("?#"); q != std::string::npos) {
+                end = q;
+            }
+            std::size_t slash = url.find_last_of('/',
+                                    end ? end - 1 : 0);
+            std::size_t beg = (slash == std::string::npos) ? 0 : slash + 1;
+            if (beg >= end) return {};
+            return url.substr(beg, end - beg);
+        };
+        for (auto& e : entries_) {
+            auto it = by_path.find(e.path);
+            if (it == by_path.end() || !it->second) continue;
+            const auto& item = *it->second;
+            std::string label = !item.title.empty()
+                                ? item.title : url_basename(item.url);
+            if (label.empty()) continue;
+            e.filename = label;
+            e.display_label = label;
+        }
+        // compute_display_labels() will uniquify labels if duplicates
+        // exist after the rename.
+        compute_display_labels();
+    }
+
+    std::string msg = "Group \"" + group.name + "\": loaded " +
+                       std::to_string(local_paths.size()) + "/" +
+                       std::to_string(group.items.size()) + " image(s)";
+    if (failures > 0) {
+        msg += " (" + std::to_string(failures) + " download failure";
+        if (failures > 1) msg += "s";
+        msg += ": " + last_err + ")";
+    }
+    state_->status_text = std::move(msg);
+}
+
+
 
 // Compose the current viewport contents into a single BGRA image and write
 // it to disk.  The output is in image-pixel space (not window pixels), so
@@ -1469,6 +1721,9 @@ void App::render_toolbar() {
             if (ImGui::MenuItem("Open Images...", "Ctrl+O")) {
                 open_file_dialog();
             }
+            if (ImGui::MenuItem("Open Comparison Config...")) {
+                open_comparison_config_dialog();
+            }
             if (ImGui::MenuItem("Save Viewport As...", "Ctrl+S",
                                  false,
                                  !entries_.empty())) {
@@ -1553,6 +1808,40 @@ void App::render_image_list() {
 
     if (ImGui::Button("+ Add Images", ImVec2(-1, 0))) {
         open_file_dialog();
+    }
+
+    // Group selector, only shown when a comparison-config is active.
+    // Switching the combo triggers an on-demand download + load of the
+    // selected group; only that one group's pixels are kept resident.
+    if (state_->current_group_idx >= 0 &&
+        !state_->comparison_config.groups.empty()) {
+        const auto& groups = state_->comparison_config.groups;
+        int idx = state_->current_group_idx;
+        std::string preview = (idx >= 0 &&
+                               idx < static_cast<int>(groups.size()))
+            ? groups[idx].name : std::string("(none)");
+        preview += " (" +
+            std::to_string((idx >= 0 && idx < static_cast<int>(groups.size()))
+                           ? groups[idx].items.size() : 0) + ")";
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##group", preview.c_str())) {
+            for (int i = 0; i < static_cast<int>(groups.size()); ++i) {
+                std::string label = groups[i].name + "  (" +
+                    std::to_string(groups[i].items.size()) + ")";
+                bool selected = (i == idx);
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    switch_to_comparison_group(i);
+                }
+                if (!groups[i].description.empty() &&
+                    ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s", groups[i].description.c_str());
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Group %d / %d",
+                            idx + 1, static_cast<int>(groups.size()));
     }
 
     if (selected_.size() >= 2) {

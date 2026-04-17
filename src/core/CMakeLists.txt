@@ -5,6 +5,8 @@ add_library(idiff_core
     image_comparator.cpp
     media_source.cpp
     metrics_engine.cpp
+    url_cache.cpp
+    comparison_config.cpp
     detail/raw_loader.cpp
 )
 
@@ -18,6 +20,7 @@ target_link_libraries(idiff_core PUBLIC
     opencv_imgcodecs
     opencv_imgproc
     opencv_quality
+    nlohmann_json::nlohmann_json
     ${LIBRAW_TARGET}
 )
 

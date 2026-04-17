@@ -49,7 +49,10 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; i++) {
             paths.emplace_back(argv[i]);
         }
-        app.load_images(paths);
+        // Route through load_paths() so launching with a JSON
+        // argument (e.g. `idiff config.json`) is equivalent to the
+        // menu's "Open Comparison Config..." entry.
+        app.load_paths(paths);
     }
 
     // Make sure drag-and-drop file events are delivered.
@@ -79,7 +82,9 @@ int main(int argc, char** argv) {
         }
 
         if (!dropped_paths.empty()) {
-            app.load_images(dropped_paths);
+            // Drag-and-drop accepts both images and comparison-config
+            // JSON files; the dispatcher figures out which is which.
+            app.load_paths(dropped_paths);
         }
 
         app.frame();

@@ -88,6 +88,20 @@ else()
     set(IDIFF_BUILD_NFD OFF)
 endif()
 
+# nlohmann/json (header-only) -- used by the comparison-config loader.
+# Resolved at top level so the IMPORTED target
+# `nlohmann_json::nlohmann_json` is visible from every subdirectory
+# (find_package() inside a subdirectory only exports targets to that
+# subdirectory by default, which breaks linking from src/core).
+find_package(nlohmann_json 3.7 QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found on system -- will build from source")
+    set(IDIFF_BUILD_JSON ON)
+else()
+    message(STATUS "Found system nlohmann_json: ${nlohmann_json_DIR}")
+    set(IDIFF_BUILD_JSON OFF)
+endif()
+
 # LibRaw -- try find_package (CONFIG mode for vcpkg), then pkg-config,
 # then build from source.
 find_package(libraw CONFIG QUIET)
