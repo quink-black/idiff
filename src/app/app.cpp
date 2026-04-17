@@ -68,6 +68,12 @@ struct App::State {
     // When true, the dialog was just primed with a new path and must call
     // ImGui::OpenPopup on the next render.  Gets cleared after opening.
     bool yuv_dialog_needs_open = false;
+
+    // Shared timeline index.  All multi-frame entries display
+    // frame(current_frame + entry.frame_offset), clamped to each entry's
+    // own frame_count.  Single-frame entries ignore this value.  The
+    // timeline bar exposes this as a slider.
+    int current_frame = 0;
 };
 
 App::App() : state_(std::make_unique<State>()) {}
@@ -201,9 +207,26 @@ void App::frame() {
     // (Images / Viewport / Inspector) don't overlap and hide the status bar.
     // render_status_bar() uses the same height to position itself.
     float status_bar_h = ImGui::GetFrameHeightWithSpacing();
+
+    // If any loaded source exposes more than one frame we also reserve a
+    // variable-height strip above the status bar for the timeline slider
+    // and per-entry offsets.  Computed up front so the docking area and
+    // the timeline / status bar agree on layout.
+    float timeline_h = 0.0f;
+    if (timeline_length() > 1) {
+        int offset_rows = 0;
+        for (const auto& e : entries_) {
+            if (e.source && e.source->frame_count() > 1) offset_rows++;
+        }
+        int visible_offset_rows = std::min(offset_rows, 4);
+        timeline_h = ImGui::GetFrameHeightWithSpacing()
+                   * (1.0f + visible_offset_rows) + 8.0f;
+    }
+
     ImVec2 dock_pos = vp->WorkPos;
     ImVec2 dock_size = vp->WorkSize;
-    dock_size.y = std::max(0.0f, dock_size.y - status_bar_h);
+    dock_size.y = std::max(0.0f,
+                          dock_size.y - status_bar_h - timeline_h);
 
     ImGui::SetNextWindowPos(dock_pos);
     ImGui::SetNextWindowSize(dock_size);
@@ -240,6 +263,7 @@ void App::frame() {
     render_image_list();
     render_viewport();
     render_right_sidebar();
+    render_timeline_bar();
     render_status_bar();
     render_yuv_params_dialog();
 
@@ -574,6 +598,164 @@ void App::render_yuv_params_dialog() {
 
         ImGui::EndPopup();
     }
+}
+
+int App::timeline_length() const {
+    int max_frames = 1;
+    for (const auto& e : entries_) {
+        if (e.source) {
+            max_frames = std::max(max_frames, e.source->frame_count());
+        }
+    }
+    return max_frames;
+}
+
+void App::sync_entries_to_timeline() {
+    bool any_changed = false;
+    for (auto& e : entries_) {
+        if (!e.source) continue;
+        const int count = e.source->frame_count();
+        if (count <= 1) continue;  // still image -- timeline doesn't apply
+
+        // Clamp the effective frame index into the entry's own range so
+        // offsets that would run past either end simply pin to the edge.
+        int target = state_->current_frame + e.frame_offset;
+        if (target < 0) target = 0;
+        if (target >= count) target = count - 1;
+
+        if (target == e.cached_frame && e.image) continue;
+
+        auto img = e.source->read_frame(target);
+        if (!img) {
+            // Leave the previously-decoded frame in place so the viewport
+            // doesn't go blank; surface the error to the status bar.
+            state_->status_text = "Frame read failed for " + e.filename
+                                + " (" + e.source->last_error() + ")";
+            continue;
+        }
+        e.image = std::move(img);
+        e.display_image.reset();
+        e.texture_dirty = true;
+        e.cached_frame = target;
+        any_changed = true;
+    }
+    if (any_changed) {
+        diff_texture_.dirty = true;
+    }
+}
+
+float App::render_timeline_bar() {
+    const int length = timeline_length();
+    if (length <= 1) return 0.0f;
+
+    // Clamp the shared index once per frame so any external mutation
+    // (e.g. adding / removing entries) can't leave it past the new end.
+    if (state_->current_frame < 0) state_->current_frame = 0;
+    if (state_->current_frame >= length) state_->current_frame = length - 1;
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float row_h = ImGui::GetFrameHeightWithSpacing();
+
+    // Height: one row for the slider + one row per multi-frame entry
+    // (capped to 4 so a large number of streams doesn't consume the
+    // whole window -- the scrollable child handles overflow).
+    int offset_rows = 0;
+    for (const auto& e : entries_) {
+        if (e.source && e.source->frame_count() > 1) offset_rows++;
+    }
+    const int visible_offset_rows = std::min(offset_rows, 4);
+    const float bar_h = row_h * (1.0f + visible_offset_rows) + 8.0f;
+
+    // Position directly above the status bar.
+    const float status_bar_h = ImGui::GetFrameHeightWithSpacing();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x,
+                                    vp->WorkPos.y + vp->WorkSize.y
+                                    - status_bar_h - bar_h));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, bar_h));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+                              ImGuiWindowFlags_NoResize |
+                              ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_NoCollapse |
+                              ImGuiWindowFlags_NoDocking |
+                              ImGuiWindowFlags_NoBringToFrontOnFocus |
+                              ImGuiWindowFlags_NoNavFocus |
+                              ImGuiWindowFlags_NoSavedSettings;
+
+    bool frame_changed = false;
+
+    if (ImGui::Begin("##timeline", nullptr, flags)) {
+        // Prev / Next buttons around the slider for precise single-step
+        // scrubbing.  The slider uses length-1 as the max so the label
+        // reads as a frame index (0..N-1).
+        if (ImGui::SmallButton("<")) {
+            if (state_->current_frame > 0) {
+                state_->current_frame--;
+                frame_changed = true;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(">")) {
+            if (state_->current_frame < length - 1) {
+                state_->current_frame++;
+                frame_changed = true;
+            }
+        }
+        ImGui::SameLine();
+
+        int frame = state_->current_frame;
+        ImGui::SetNextItemWidth(-200.0f);  // leave room for the label
+        if (ImGui::SliderInt("##frame", &frame, 0, length - 1,
+                             "Frame %d")) {
+            state_->current_frame = frame;
+            frame_changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::Text("of %d", length);
+
+        // Per-entry offsets.  Wrap in a scrollable child so many streams
+        // don't blow up the status strip.
+        if (offset_rows > 0) {
+            ImGui::BeginChild("##offsets",
+                              ImVec2(0, row_h * visible_offset_rows),
+                              false);
+            for (std::size_t i = 0; i < entries_.size(); ++i) {
+                auto& e = entries_[i];
+                if (!e.source || e.source->frame_count() <= 1) continue;
+
+                // Effective frame for display feedback.
+                int effective = state_->current_frame + e.frame_offset;
+                if (effective < 0) effective = 0;
+                int cnt = e.source->frame_count();
+                if (effective >= cnt) effective = cnt - 1;
+
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TextUnformatted(e.filename.c_str());
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(160.0f);
+                int off = e.frame_offset;
+                if (ImGui::InputInt("offset", &off, 1, 10)) {
+                    if (off != e.frame_offset) {
+                        e.frame_offset = off;
+                        frame_changed = true;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("-> frame %d / %d", effective, cnt - 1);
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+
+    if (frame_changed) {
+        sync_entries_to_timeline();
+    }
+
+    return bar_h;
 }
 
 

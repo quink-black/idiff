@@ -38,6 +38,15 @@ struct ImageEntry {
     int tex_w = 0;
     int tex_h = 0;
     bool texture_dirty = true;
+
+    // Multi-frame bookkeeping (only meaningful when source->frame_count() > 1).
+    // frame_offset is a user-tunable per-entry shift applied to the shared
+    // timeline index so two streams that start at different frames can be
+    // aligned.  cached_frame remembers which frame `image` currently holds;
+    // it is used to avoid re-decoding when the effective frame has not
+    // changed.
+    int frame_offset = 0;
+    int cached_frame = 0;
 };
 
 struct DiffTexture {
@@ -88,6 +97,20 @@ private:
     // Build a YuvRawSource for the given path+params and append it as a
     // new ImageEntry.  Returns true on success.
     bool add_yuv_entry(const std::string& path, const YuvStreamParams& params);
+
+    // Timeline bar rendered above the status bar when at least one entry
+    // exposes more than one frame.  Returns the bar height in pixels
+    // (0 when not drawn) so frame() can shrink the docking area by that
+    // amount.
+    float render_timeline_bar();
+    // Returns the length of the shared timeline, i.e. the maximum number
+    // of frames across all multi-frame entries (clamped to at least 1).
+    int timeline_length() const;
+    // Re-decode frames for every multi-frame entry so they match the
+    // current timeline index (plus each entry's per-entry frame_offset).
+    // No-op for single-frame entries.  Marks textures and diff dirty on
+    // any actual change.
+    void sync_entries_to_timeline();
 
     // Returns the entry indices used as A and B for overlay / diff.
     // Derived from the first two selected items (in selection order),
