@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -155,6 +156,104 @@ void trim_inplace(std::string& s) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SHA-256 (FIPS 180-4, single-shot).
+//
+// We need a deterministic, short fingerprint of the comparison-config
+// JSON for the cache directory name.  SHA-256 is overkill for a
+// dedup key (we only keep 12 hex chars = 48 bits), but rolling our
+// own keeps url_cache.cpp free of crypto-library dependencies and
+// portable across every platform idiff already supports.  The
+// implementation below is a direct, unoptimized transcription of
+// FIPS 180-4 §6.2 -- sufficient for hashing JSON files up to a few
+// MB with negligible cost.
+// ---------------------------------------------------------------------------
+
+constexpr std::uint32_t kSha256K[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
+};
+
+inline std::uint32_t rotr32(std::uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+std::string sha256_hex(const std::string& data) {
+    std::uint32_t h[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
+    };
+
+    // Pad: data || 0x80 || 0x00... || 64-bit big-endian bit length.
+    const std::uint64_t bit_len = static_cast<std::uint64_t>(data.size()) * 8ull;
+    std::string buf = data;
+    buf.push_back('\x80');
+    while ((buf.size() % 64) != 56) buf.push_back('\x00');
+    for (int i = 7; i >= 0; --i) {
+        buf.push_back(static_cast<char>((bit_len >> (i * 8)) & 0xff));
+    }
+
+    for (std::size_t off = 0; off < buf.size(); off += 64) {
+        std::uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            const auto* p = reinterpret_cast<const unsigned char*>(buf.data() + off + i * 4);
+            w[i] = (static_cast<std::uint32_t>(p[0]) << 24) |
+                   (static_cast<std::uint32_t>(p[1]) << 16) |
+                   (static_cast<std::uint32_t>(p[2]) <<  8) |
+                   (static_cast<std::uint32_t>(p[3]));
+        }
+        for (int i = 16; i < 64; ++i) {
+            std::uint32_t s0 = rotr32(w[i-15], 7) ^ rotr32(w[i-15], 18) ^ (w[i-15] >> 3);
+            std::uint32_t s1 = rotr32(w[i-2], 17) ^ rotr32(w[i-2],  19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16] + s0 + w[i-7] + s1;
+        }
+        std::uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+        std::uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; ++i) {
+            std::uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+            std::uint32_t ch = (e & f) ^ (~e & g);
+            std::uint32_t t1 = hh + S1 + ch + kSha256K[i] + w[i];
+            std::uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+            std::uint32_t mj = (a & b) ^ (a & c) ^ (b & c);
+            std::uint32_t t2 = S0 + mj;
+            hh = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+
+    static const char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (int i = 0; i < 8; ++i) {
+        for (int s = 28; s >= 0; s -= 4) {
+            out.push_back(hex[(h[i] >> s) & 0xf]);
+        }
+    }
+    return out;
+}
+
+// Slurp an entire small file into memory.  Returns std::nullopt on any
+// I/O failure so the caller can branch cleanly into its fallback path
+// instead of having to inspect errno.  Intended for JSON configs
+// (typically << 1 MB); there is no size cap because a pathological
+// config would already have failed to parse upstream.
+std::optional<std::string> read_file_bytes(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    if (!in && !in.eof()) return std::nullopt;
+    return oss.str();
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -240,28 +339,139 @@ std::filesystem::path UrlCache::resolve_default_root() {
     return std::filesystem::path(".");
 }
 
-std::string UrlCache::make_config_cache_dirname(
-    const std::filesystem::path& json_file) {
-    // Use the stem so "foo.json" -> "foo", and sanitize to keep the
-    // resulting directory name portable.
+std::filesystem::path UrlCache::prepare_for_config(
+    const std::filesystem::path& cache_root,
+    const std::filesystem::path& json_file,
+    std::string* out_status) {
+    namespace fs = std::filesystem;
+
+    auto set_status = [&](std::string s) {
+        if (out_status) *out_status = std::move(s);
+    };
+
+    // Derive the directory stem from the JSON file name.  Sanitizing
+    // keeps the filesystem happy when the config lives under a path
+    // with spaces, unicode, colons, etc.
     std::string stem = json_file.stem().string();
     stem = sanitize_segment(stem);
     if (stem.empty()) stem = "config";
 
-    // Local-time timestamp, fixed at call time so all URLs from one
-    // config land in the same directory even across many fetches.
-    using clock = std::chrono::system_clock;
-    auto now = clock::to_time_t(clock::now());
-    std::tm tm{};
+    // Read the JSON bytes up front: we need them for both the hash
+    // (directory name) and the on-disk "source.json" marker used to
+    // confirm the reused directory actually corresponds to this
+    // config's content.  Anything that fails here forces us into a
+    // timestamped fallback so a mis-readable file never silently
+    // pollutes an unrelated cache.
+    auto bytes = read_file_bytes(json_file);
+    if (!bytes) {
+        // Fall back to a timestamped, content-less directory so the
+        // caller still gets a usable cache even if we cannot stat
+        // the JSON right now (e.g. permission glitch, disappearing
+        // network mount).  This matches pre-hash behaviour.
+        using clock = std::chrono::system_clock;
+        auto now = clock::to_time_t(clock::now());
+        std::tm tm{};
 #ifdef _WIN32
-    localtime_s(&tm, &now);
+        localtime_s(&tm, &now);
 #else
-    localtime_r(&now, &tm);
+        localtime_r(&now, &tm);
 #endif
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+        fs::path dir = cache_root / ("idiff_cache_" + stem + "_" + buf);
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (ec) {
+            set_status("Failed to create cache directory: " + ec.message());
+            return {};
+        }
+        set_status("Could not read JSON; using fresh cache: " + dir.string());
+        return dir;
+    }
 
-    return "idiff_cache_" + stem + "_" + buf;
+    // 12 hex chars = 48 bits.  At that width collisions among user
+    // JSON files are vanishingly rare -- and the source.json check
+    // below is the authoritative guard even when they do happen.
+    std::string short_hash = sha256_hex(*bytes).substr(0, 12);
+    fs::path primary = cache_root / ("idiff_cache_" + stem + "_" + short_hash);
+    fs::path marker  = primary / "source.json";
+
+    std::error_code ec;
+    auto write_marker = [&](const fs::path& dir) -> bool {
+        std::ofstream out(dir / "source.json", std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(bytes->data(), static_cast<std::streamsize>(bytes->size()));
+        return static_cast<bool>(out);
+    };
+
+    // Case 1: directory exists.  Trust it only when source.json is
+    // byte-identical to the incoming JSON -- otherwise we are looking
+    // at a hash collision (or a cache someone hand-edited) and must
+    // not mix unrelated images in.
+    if (fs::exists(primary, ec)) {
+        auto existing = read_file_bytes(marker);
+        if (existing && *existing == *bytes) {
+            set_status("Reused cache: " + primary.string());
+            return primary;
+        }
+        if (!existing) {
+            // Directory exists but marker is missing.  This happens
+            // when an older build created the directory without
+            // recording the JSON -- adopt it by writing the marker
+            // now, since the directory name already embeds the
+            // content hash.
+            if (write_marker(primary)) {
+                set_status("Adopted cache: " + primary.string());
+                return primary;
+            }
+            set_status("Failed to write source.json under " + primary.string());
+            return {};
+        }
+        // Contents diverge: fall through to the collision branch.
+    }
+
+    // Case 2: collision fallback.  Append a timestamp so the existing
+    // (mismatched) directory stays intact and the new session gets a
+    // clean slate.  The timestamp ensures uniqueness even if the user
+    // somehow triggers the same collision twice within one second.
+    if (fs::exists(primary, ec)) {
+        using clock = std::chrono::system_clock;
+        auto now = clock::to_time_t(clock::now());
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &now);
+#else
+        localtime_r(&now, &tm);
+#endif
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
+        fs::path alt = cache_root /
+            ("idiff_cache_" + stem + "_" + short_hash + "_" + buf);
+        fs::create_directories(alt, ec);
+        if (ec) {
+            set_status("Failed to create fallback cache directory: " + ec.message());
+            return {};
+        }
+        if (!write_marker(alt)) {
+            set_status("Failed to write source.json under " + alt.string());
+            return {};
+        }
+        set_status("Hash collision; using fallback cache: " + alt.string());
+        return alt;
+    }
+
+    // Case 3: brand new primary directory.
+    fs::create_directories(primary, ec);
+    if (ec) {
+        set_status("Failed to create cache directory: " + ec.message());
+        return {};
+    }
+    if (!write_marker(primary)) {
+        set_status("Failed to write source.json under " + primary.string());
+        return {};
+    }
+    set_status("Created cache: " + primary.string());
+    return primary;
 }
 
 std::filesystem::path UrlCache::path_for(const std::string& url) const {
@@ -275,7 +485,7 @@ std::filesystem::path UrlCache::path_for(const std::string& url) const {
     // bare path) falls back to a stable "_local" folder.  When
     // register_urls() observed that every URL in this session shares
     // the same host, we drop it entirely: the cache root is already
-    // per-config (resolve_default_root() / make_config_cache_dirname()),
+    // per-config (resolve_default_root() / prepare_for_config()),
     // so the host directory would just add visual noise.
     std::string host = sanitize_segment(url_decode(p.host));
     if (host.empty()) host = "_local";

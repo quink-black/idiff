@@ -1037,6 +1037,25 @@ void App::load_comparison_config_from_path(const std::string& path) {
         return;
     }
 
+    // Resolve (or create) the cache directory up front, before we
+    // drop any of the currently-loaded state.  Anything that can
+    // fail here must bail out while the existing session is still
+    // intact so the user doesn't end up with a blank window and a
+    // stale url_cache when e.g. the cache root is unwritable.  The
+    // directory name encodes the JSON stem + a short hash of the
+    // JSON content, so re-opening the same config reuses every image
+    // it already downloaded; prepare_for_config() also drops a
+    // byte-identical "source.json" into the directory as a
+    // collision guard.
+    std::filesystem::path cache_root = UrlCache::resolve_default_root();
+    std::string cache_status;
+    std::filesystem::path cache_dir = UrlCache::prepare_for_config(
+        cache_root, std::filesystem::path(path), &cache_status);
+    if (cache_dir.empty()) {
+        state_->status_text = "Config load aborted: " + cache_status;
+        return;
+    }
+
     // Drop whatever was previously loaded so the user sees a clean
     // switch.  Per the task brief, we keep at most one group's worth of
     // images resident in memory, so we also release entries from any
@@ -1057,15 +1076,7 @@ void App::load_comparison_config_from_path(const std::string& path) {
     state_->comparison_config = std::move(cfg);
     state_->current_group_idx = -1;
 
-    // Build a cache directory scoped to this particular config file.
-    // The root is resolved fresh on every open so edits to
-    // ~/.idiff.config take effect without relaunching the app; the
-    // per-config subdirectory name encodes the JSON stem + local
-    // timestamp so repeated opens produce distinct, traceable dumps.
-    std::filesystem::path cache_root = UrlCache::resolve_default_root();
-    std::string sub_dir = UrlCache::make_config_cache_dirname(
-        std::filesystem::path(path));
-    state_->url_cache = std::make_unique<UrlCache>(cache_root / sub_dir);
+    state_->url_cache = std::make_unique<UrlCache>(cache_dir);
 
     // Feed every URL from every group into the cache up front so it
     // can compute the shared host / path prefix and trim it from the
@@ -1086,7 +1097,7 @@ void App::load_comparison_config_from_path(const std::string& path) {
     state_->status_text = "Loaded config: " +
         std::to_string(state_->comparison_config.groups.size()) +
         " group(s), " + std::to_string(total_items) + " image(s). " +
-        "Cache: " + state_->url_cache->root().string();
+        cache_status;
 
     // Start on the first group so the user sees pixels immediately.
     // switch_to_comparison_group() is responsible for the actual

@@ -70,12 +70,30 @@ public:
     // when it cannot be determined (extremely rare on desktop systems).
     static std::filesystem::path downloads_dir();
 
-    // Build a per-config cache directory name of the form
-    // "idiff_cache_<json_stem>_<YYYYmmdd_HHMMSS>".  Characters unsafe
-    // for filesystem paths in the stem are replaced with '_'.  The
-    // timestamp uses local time and is fixed at call time.
-    static std::string make_config_cache_dirname(
-        const std::filesystem::path& json_file);
+    // Resolve the cache directory for a particular comparison-config
+    // file and make sure it exists.  The returned path has the form
+    //   "<cache_root>/idiff_cache_<json_stem>_<12-hex-content-hash>"
+    // so re-opening the same JSON file (byte-identical content) always
+    // lands in the same directory and re-uses every image previously
+    // downloaded there -- no duplicate-download when you quit and come
+    // back, even across machines if the cache root is shared.
+    //
+    // To defend against the (astronomically unlikely) case of two
+    // different JSON files sharing the same short hash, every
+    // materialized cache directory stores an exact byte copy of the
+    // JSON next to the cached images as "source.json".  Before reusing
+    // a directory we compare the caller's JSON against that copy; a
+    // mismatch falls back to a timestamp-suffixed sibling directory so
+    // the old cache stays intact and the new session starts clean.
+    //
+    // `out_status` (optional) receives a short, human-readable line
+    // describing the outcome ("Reused cache …", "Created cache …",
+    // or an error).  On unrecoverable I/O failure an empty path is
+    // returned and `out_status` explains why.
+    static std::filesystem::path prepare_for_config(
+        const std::filesystem::path& cache_root,
+        const std::filesystem::path& json_file,
+        std::string* out_status = nullptr);
 
     // Return the local path where `url` is (or will be) cached.  The
     // path mirrors the URL structure: `<root>/<host>/<url_path>`.  This
