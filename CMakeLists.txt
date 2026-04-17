@@ -14,26 +14,53 @@ endif()
 
 # --- Options ---
 
-# Use OpenCV imgcodecs instead of ImageMagick for general image loading.
-# ImageMagick is preferred (ICC profiles, wide format support, color-space
-# awareness) but is unavailable in vcpkg.  Enable this option on platforms
-# where ImageMagick cannot be installed.
-option(IDIFF_USE_OPENCV_IMGCODECS "Use OpenCV imgcodecs instead of ImageMagick for image loading" OFF)
+# ImageMagick is the preferred loader (ICC profiles, wide format coverage,
+# color-space awareness) but is unavailable or awkward to install on some
+# platforms (notably vcpkg / Windows, and some Linux CI images).  OpenCV
+# imgcodecs is always available and always compiled in as the fallback.
+#
+# Values:
+#   AUTO (default): use ImageMagick if pkg-config finds it, otherwise skip.
+#   ON:             require ImageMagick; fail configuration if missing.
+#   OFF:            skip ImageMagick entirely, OpenCV-only build.
+set(IDIFF_WITH_IMAGEMAGICK "AUTO" CACHE STRING
+    "Enable ImageMagick loader backend: AUTO | ON | OFF")
+set_property(CACHE IDIFF_WITH_IMAGEMAGICK PROPERTY STRINGS AUTO ON OFF)
 
 # --- System-required dependencies ---
 
-# OpenCV -- imgcodecs is used both as an optional general-image loader
-# (replacing ImageMagick) and as the writer for the "Save viewport" feature,
-# so it is always required.
+# OpenCV -- imgcodecs is used both as a general-image loader backend and as
+# the writer for the "Save viewport" feature, so it is always required.
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs quality)
 
-# ImageMagick (pkg-config) -- only when not using OpenCV imgcodecs.
-if(NOT IDIFF_USE_OPENCV_IMGCODECS)
-    find_package(PkgConfig REQUIRED)
-    # ImageMagick depends on many third-party libraries (libjpeg, libpng,
-    # libtiff, libwebp, freetype, fontconfig, etc.) and uses autotools --
-    # not practical to build from source via CMake.
-    pkg_check_modules(MAGICKXX REQUIRED IMPORTED_TARGET Magick++)
+# ImageMagick (pkg-config) -- optional, controlled by IDIFF_WITH_IMAGEMAGICK.
+# ImageMagick depends on many third-party libraries (libjpeg, libpng,
+# libtiff, libwebp, freetype, fontconfig, etc.) and uses autotools -- not
+# practical to build from source via CMake.
+set(IDIFF_HAVE_IMAGEMAGICK OFF)
+if(NOT IDIFF_WITH_IMAGEMAGICK STREQUAL "OFF")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        if(IDIFF_WITH_IMAGEMAGICK STREQUAL "ON")
+            pkg_check_modules(MAGICKXX REQUIRED IMPORTED_TARGET Magick++)
+        else()
+            pkg_check_modules(MAGICKXX QUIET IMPORTED_TARGET Magick++)
+        endif()
+        if(MAGICKXX_FOUND)
+            set(IDIFF_HAVE_IMAGEMAGICK ON)
+            message(STATUS "ImageMagick (Magick++) found -- "
+                           "enabling ImageMagick loader backend")
+        endif()
+    elseif(IDIFF_WITH_IMAGEMAGICK STREQUAL "ON")
+        message(FATAL_ERROR
+                "IDIFF_WITH_IMAGEMAGICK=ON but pkg-config is not available")
+    endif()
+endif()
+
+if(NOT IDIFF_HAVE_IMAGEMAGICK)
+    message(STATUS
+        "ImageMagick loader backend disabled -- OpenCV imgcodecs will be "
+        "the only image loader backend")
 endif()
 
 # SDL2

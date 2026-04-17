@@ -39,6 +39,12 @@ struct App::State {
 
     UpscaleMethod upscale_method = UpscaleMethod::Lanczos;
 
+    // Which image loader backend load_images() should prefer.  ImageMagick
+    // is chosen by default when compiled in because it handles ICC profiles
+    // and a wider set of formats; users can switch to OpenCV via the View
+    // menu to observe decoding differences.
+    LoaderBackend loader_backend = ImageLoader::default_backend();
+
     std::string status_text;
     bool show_metrics = true;
     bool show_properties = true;
@@ -248,6 +254,7 @@ void App::load_images(const std::vector<std::string>& paths) {
     const bool was_empty = entries_.empty();
 
     ImageLoader loader;
+    loader.set_preferred_backend(state_->loader_backend);
     for (const auto& path : paths) {
         auto img = loader.load(path);
         if (img) {
@@ -292,6 +299,47 @@ void App::load_images(const std::vector<std::string>& paths) {
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
+    }
+}
+
+// Rerun the image loader over every entry using the currently-selected
+// backend.  This is triggered when the user changes the "Image Loader"
+// choice in the View menu so they can eyeball decoding differences (ICC
+// handling, bit-depth, exotic formats) between ImageMagick and OpenCV.
+// Entries whose re-load fails are kept with their previous pixel data so
+// the viewport does not suddenly go blank; a status message tells the
+// user which file failed.
+void App::reload_all_images() {
+    if (entries_.empty()) return;
+
+    ImageLoader loader;
+    loader.set_preferred_backend(state_->loader_backend);
+
+    int reloaded = 0;
+    int failed = 0;
+    std::string last_fail;
+    for (auto& entry : entries_) {
+        auto img = loader.load(entry.path);
+        if (img) {
+            entry.image = std::move(img);
+            entry.display_image.reset();
+            entry.texture_dirty = true;
+            reloaded++;
+        } else {
+            failed++;
+            last_fail = entry.filename + " (" + loader.last_error() + ")";
+        }
+    }
+    diff_texture_.dirty = true;
+
+    const char* name = ImageLoader::backend_name(state_->loader_backend);
+    if (failed == 0) {
+        state_->status_text = std::string("Reloaded ")
+            + std::to_string(reloaded) + " image(s) via " + name;
+    } else {
+        state_->status_text = std::string("Reloaded ")
+            + std::to_string(reloaded) + " via " + name + ", "
+            + std::to_string(failed) + " failed: " + last_fail;
     }
 }
 
@@ -919,6 +967,29 @@ void App::render_toolbar() {
             ImGui::MenuItem("Image List", nullptr, &state_->show_image_list);
             ImGui::MenuItem("Metrics", nullptr, &state_->show_metrics);
             ImGui::MenuItem("Properties", nullptr, &state_->show_properties);
+
+            if (ImGui::BeginMenu("Image Loader")) {
+                // Let the user compare decoding output between backends at
+                // runtime.  Switching reloads all currently-open images so
+                // the viewport immediately reflects the new backend.  A
+                // backend entry is disabled (and annotated) when it was
+                // not compiled into this build.
+                auto loader_item = [&](LoaderBackend b) {
+                    const bool available = ImageLoader::has_backend(b);
+                    const bool selected = (state_->loader_backend == b);
+                    std::string label = ImageLoader::backend_name(b);
+                    if (!available) label += "  (not compiled in)";
+                    if (ImGui::MenuItem(label.c_str(), nullptr, selected,
+                                        available && !selected)) {
+                        state_->loader_backend = b;
+                        reload_all_images();
+                    }
+                };
+                loader_item(LoaderBackend::ImageMagick);
+                loader_item(LoaderBackend::OpenCV);
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMenu();
         }
 

@@ -61,6 +61,7 @@ private:
     void open_file_dialog();
     void save_viewport_dialog();
     void remove_entry(int index);
+    void reload_all_images();
     void update_display_image(int index);
     void upload_texture(ImageEntry& entry);
     void update_diff_texture();
