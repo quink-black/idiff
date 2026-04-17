@@ -68,12 +68,21 @@ private:
     void sort_entries_by_name();
     void move_entry(int from, int to);
 
+    // Returns the entry indices used as A and B for overlay / diff.
+    // Derived from the first two selected items (in selection order),
+    // honoring the user-controlled swap flag. Missing slots are -1.
+    void get_ab_indices(int& a_idx, int& b_idx) const;
+
     struct State;
     std::unique_ptr<State> state_;
 
     std::vector<ImageEntry> entries_;
     std::set<int> selected_;
     bool first_frame_ = true;
+
+    // When true, the A/B assignment derived from `selected_` is swapped.
+    // Reset whenever the selection content changes.
+    bool swap_ab_ = false;
 
     // Drag-reorder state for image list
     int drag_source_idx_ = -1;

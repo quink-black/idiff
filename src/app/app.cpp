@@ -11,8 +11,11 @@
 #include <nfd.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <numeric>
+#include <unordered_map>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -231,6 +234,18 @@ void App::load_images(const std::vector<std::string>& paths) {
     diff_texture_.dirty = true;
 }
 
+void App::get_ab_indices(int& a_idx, int& b_idx) const {
+    a_idx = -1;
+    b_idx = -1;
+    int k = 0;
+    for (int s : selected_) {
+        if (k == 0) a_idx = s;
+        else if (k == 1) { b_idx = s; break; }
+        k++;
+    }
+    if (swap_ab_) std::swap(a_idx, b_idx);
+}
+
 void App::sort_entries_by_name() {
     // Build a mapping from old index to entry pointer for selected_ fixup
     std::vector<int> old_indices(entries_.size());
@@ -334,6 +349,10 @@ void App::remove_entry(int index) {
         if (s == index) continue;
         if (s > index) new_selected.insert(s - 1);
         else new_selected.insert(s);
+    }
+    // Membership changed -- reset A/B swap so it doesn't apply to a different pair.
+    if (new_selected != selected_) {
+        swap_ab_ = false;
     }
     selected_ = std::move(new_selected);
 
@@ -473,9 +492,9 @@ void App::update_diff_texture() {
 
     if (selected_.size() != 2) return;
 
-    auto it = selected_.begin();
-    int idx_a = *it;
-    int idx_b = *(++it);
+    int idx_a = -1, idx_b = -1;
+    get_ab_indices(idx_a, idx_b);
+    if (idx_a < 0 || idx_b < 0) return;
 
     if (idx_a >= static_cast<int>(entries_.size())) return;
     if (idx_b >= static_cast<int>(entries_.size())) return;
@@ -634,6 +653,7 @@ void App::render_image_list() {
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear")) {
             selected_.clear();
+            swap_ab_ = false;
             diff_texture_.dirty = true;
         }
     }
@@ -647,15 +667,10 @@ void App::render_image_list() {
 
     float list_height = ImGui::GetContentRegionAvail().y;
     if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
-        // The first two selected entries (in index order) are used as A / B
-        // for overlay and diff. Record them so we can tag the list visually.
+        // The first two selected entries drive overlay / diff. A/B may be
+        // swapped by the user via the viewport's Swap A/B button.
         int ab_idx[2] = {-1, -1};
-        {
-            int k = 0;
-            for (int s : selected_) {
-                if (k < 2) ab_idx[k++] = s; else break;
-            }
-        }
+        get_ab_indices(ab_idx[0], ab_idx[1]);
 
         for (int i = 0; i < static_cast<int>(entries_.size()); i++) {
             auto& entry = entries_[i];
@@ -676,6 +691,9 @@ void App::render_image_list() {
                 } else {
                     selected_.erase(i);
                 }
+                // Selection membership changed -- reset A/B swap so the
+                // user's intent isn't attached to stale slot mapping.
+                swap_ab_ = false;
                 // Selection change affects upscale targets for all selected images
                 for (int s : selected_) {
                     if (s >= 0 && s < static_cast<int>(entries_.size())) {
@@ -764,7 +782,9 @@ void App::render_viewport() {
 
     update_diff_texture();
 
-    // Build texture list from selected images
+    // Build texture list from selected images. Place A then B in the first
+    // two slots (honoring the swap flag), followed by any additional
+    // selected images in their natural order.
     std::vector<SDL_Texture*> tex_ptrs;
     std::vector<int> tex_ws, tex_hs;
     std::vector<const char*> labels;
@@ -772,23 +792,26 @@ void App::render_viewport() {
     std::vector<std::string> label_storage;
     label_storage.reserve(selected_.size());
 
-    int slot = 0;
-    for (int s : selected_) {
-        if (s >= 0 && s < static_cast<int>(entries_.size())) {
-            tex_ptrs.push_back(entries_[s].texture);
-            tex_ws.push_back(entries_[s].tex_w);
-            tex_hs.push_back(entries_[s].tex_h);
+    int ab_idx[2] = {-1, -1};
+    get_ab_indices(ab_idx[0], ab_idx[1]);
 
-            // Prefix the first two selections with [A] / [B] so the user
-            // can tell which two images drive overlay / diff.
-            std::string lbl;
-            if (slot == 0)      lbl = "[A] " + entries_[s].display_label;
-            else if (slot == 1) lbl = "[B] " + entries_[s].display_label;
-            else                lbl = entries_[s].display_label;
-            label_storage.push_back(std::move(lbl));
-            labels.push_back(label_storage.back().c_str());
-            slot++;
-        }
+    auto push_entry = [&](int s, const char* prefix) {
+        if (s < 0 || s >= static_cast<int>(entries_.size())) return;
+        tex_ptrs.push_back(entries_[s].texture);
+        tex_ws.push_back(entries_[s].tex_w);
+        tex_hs.push_back(entries_[s].tex_h);
+        std::string lbl = prefix
+            ? (std::string("[") + prefix + "] " + entries_[s].display_label)
+            : entries_[s].display_label;
+        label_storage.push_back(std::move(lbl));
+        labels.push_back(label_storage.back().c_str());
+    };
+
+    if (ab_idx[0] >= 0) push_entry(ab_idx[0], "A");
+    if (ab_idx[1] >= 0) push_entry(ab_idx[1], "B");
+    for (int s : selected_) {
+        if (s == ab_idx[0] || s == ab_idx[1]) continue;
+        push_entry(s, nullptr);
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
@@ -906,6 +929,19 @@ void App::render_viewport() {
         }
 
         int sel_count = static_cast<int>(selected_.size());
+        if (sel_count >= 2) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Swap A/B")) {
+                swap_ab_ = !swap_ab_;
+                diff_texture_.dirty = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Swap which selected image acts as A and B");
+            }
+        }
+
         if (sel_count > 0) {
             ImGui::SameLine();
             ImGui::Spacing();
@@ -932,25 +968,28 @@ void App::render_right_sidebar() {
         return;
     }
 
-    std::vector<const Image*> sel_images;
-    std::vector<const Image*> sel_display_images;
-    std::vector<const char*> sel_names;
-    for (int s : selected_) {
-        if (s >= 0 && s < static_cast<int>(entries_.size())) {
-            const auto& entry = entries_[s];
-            sel_images.push_back(entry.image.get());
-            sel_display_images.push_back(entry.display_image ? entry.display_image.get()
-                                                             : entry.image.get());
-            sel_names.push_back(entry.display_label.c_str());
-        }
-    }
+    // Resolve A and B via the shared helper so the inspector matches the
+    // viewport / image list labeling (including the Swap A/B toggle).
+    int ab_idx[2] = {-1, -1};
+    get_ab_indices(ab_idx[0], ab_idx[1]);
 
-    const Image* img_a = sel_images.size() >= 1 ? sel_images[0] : nullptr;
-    const Image* img_b = sel_images.size() >= 2 ? sel_images[1] : nullptr;
-    const Image* disp_a = sel_display_images.size() >= 1 ? sel_display_images[0] : nullptr;
-    const Image* disp_b = sel_display_images.size() >= 2 ? sel_display_images[1] : nullptr;
-    const char* name_a = sel_names.size() >= 1 ? sel_names[0] : nullptr;
-    const char* name_b = sel_names.size() >= 2 ? sel_names[1] : nullptr;
+    auto get_entry = [&](int idx) -> const ImageEntry* {
+        if (idx < 0 || idx >= static_cast<int>(entries_.size())) return nullptr;
+        return &entries_[idx];
+    };
+    const ImageEntry* entry_a = get_entry(ab_idx[0]);
+    const ImageEntry* entry_b = get_entry(ab_idx[1]);
+
+    const Image* img_a = entry_a ? entry_a->image.get() : nullptr;
+    const Image* img_b = entry_b ? entry_b->image.get() : nullptr;
+    const Image* disp_a = entry_a ? (entry_a->display_image ? entry_a->display_image.get()
+                                                            : entry_a->image.get())
+                                  : nullptr;
+    const Image* disp_b = entry_b ? (entry_b->display_image ? entry_b->display_image.get()
+                                                            : entry_b->image.get())
+                                  : nullptr;
+    const char* name_a = entry_a ? entry_a->display_label.c_str() : nullptr;
+    const char* name_b = entry_b ? entry_b->display_label.c_str() : nullptr;
 
     if (ImGui::BeginTabBar("##inspector_tabs")) {
         if (ImGui::BeginTabItem("Properties")) {
@@ -962,6 +1001,8 @@ void App::render_right_sidebar() {
         }
         if (ImGui::BeginTabItem("Metrics")) {
             if (state_->metrics_panel) {
+                // Metrics always compare A vs B in the same order as the
+                // inspector / viewport, so the swap flag propagates here too.
                 state_->metrics_panel->render_inline(disp_a, disp_b);
             }
             ImGui::EndTabItem();
@@ -984,18 +1025,33 @@ void App::render_status_bar() {
 
     if (ImGui::Begin("##statusbar", nullptr, flags)) {
         if (ImGui::BeginMenuBar()) {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
-                         entries_.size(), selected_.size());
-            for (int s : selected_) {
-                if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                    std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf),
-                                 " | %s", entries_[s].display_label.c_str());
-                }
+            char buf[512];
+            int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
+                                   entries_.size(), selected_.size());
+            auto append = [&](const char* fmt, ...) {
+                if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) return;
+                va_list ap;
+                va_start(ap, fmt);
+                int m = std::vsnprintf(buf + n, sizeof(buf) - n, fmt, ap);
+                va_end(ap);
+                if (m > 0) n += m;
+            };
+
+            int ab_idx[2] = {-1, -1};
+            get_ab_indices(ab_idx[0], ab_idx[1]);
+            if (ab_idx[0] >= 0 && ab_idx[0] < static_cast<int>(entries_.size())) {
+                append(" | A: %s", entries_[ab_idx[0]].display_label.c_str());
+            }
+            if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries_.size())) {
+                append(" | B: %s", entries_[ab_idx[1]].display_label.c_str());
+            }
+            int extra = static_cast<int>(selected_.size()) -
+                        ((ab_idx[0] >= 0 ? 1 : 0) + (ab_idx[1] >= 0 ? 1 : 0));
+            if (extra > 0) {
+                append(" (+%d shown, ignored by overlay/diff)", extra);
             }
             if (!state_->status_text.empty()) {
-                std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf),
-                             " | %s", state_->status_text.c_str());
+                append(" | %s", state_->status_text.c_str());
             }
             ImGui::TextUnformatted(buf);
             ImGui::EndMenuBar();
