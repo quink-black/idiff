@@ -66,6 +66,19 @@ public:
     ImVec2 viewport_origin() const noexcept { return vp_origin_; }
     ImVec2 viewport_size() const noexcept { return vp_size_; }
 
+    // Hover info computed during render().  Valid until the next render()
+    // call.  Consumers should check hover_valid() before using the values.
+    //
+    // In Split mode, hover_cell_index() identifies which texture slot
+    // (0..N-1, matching the tex_ptrs order passed to render) is under
+    // the cursor.  In Overlay / Difference modes the cell index is always
+    // 0 (overlay uses the composite) and the returned pixel coordinates
+    // are in the composite image's coordinate space.
+    bool hover_valid() const noexcept { return hover_valid_; }
+    int hover_cell_index() const noexcept { return hover_cell_idx_; }
+    int hover_pixel_x() const noexcept { return hover_px_x_; }
+    int hover_pixel_y() const noexcept { return hover_px_y_; }
+
 private:
     static ImTextureID to_tex_id(SDL_Texture* tex);
 
@@ -118,6 +131,12 @@ private:
     // In split mode, identifies which cell the point falls in.
     // In other modes, returns the full viewport.
     void cell_at(ImVec2 screen_pt, ImVec2& out_origin, ImVec2& out_size) const;
+
+    // Hover state populated during render()
+    bool hover_valid_ = false;
+    int hover_cell_idx_ = -1;
+    int hover_px_x_ = 0;
+    int hover_px_y_ = 0;
 };
 
 } // namespace idiff

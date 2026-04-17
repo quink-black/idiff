@@ -175,6 +175,13 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     vp_origin_ = ImGui::GetCursorScreenPos();
     vp_size_ = avail;
 
+    // Reset hover state; will be recomputed below if the cursor lies over
+    // a valid image cell.
+    hover_valid_ = false;
+    hover_cell_idx_ = -1;
+    hover_px_x_ = 0;
+    hover_px_y_ = 0;
+
     if (avail.x < 10 || avail.y < 10) return;
 
     // Track content dimensions for zoom_to_actual
@@ -221,6 +228,101 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
         case ComparisonMode::Difference:
             render_difference(tex_diff, tex_diff_w, tex_diff_h, labels);
             break;
+    }
+
+    // --- Compute hover pixel info ---
+    // We only report hover info when the cursor is actually inside the
+    // viewport rectangle.  The per-mode logic maps the screen-space cursor
+    // back to image pixel coordinates using the same layout math used to
+    // draw the image.
+    {
+        ImVec2 mp = ImGui::GetIO().MousePos;
+        bool inside_vp = mp.x >= vp_origin_.x && mp.x < vp_origin_.x + vp_size_.x &&
+                         mp.y >= vp_origin_.y && mp.y < vp_origin_.y + vp_size_.y;
+        if (inside_vp) {
+            if (mode_ == ComparisonMode::Split && !tex_ptrs.empty()) {
+                int n = static_cast<int>(tex_ptrs.size());
+                float cell_w = vp_size_.x / split_cols_;
+                float cell_h = vp_size_.y / split_rows_;
+                int col = static_cast<int>((mp.x - vp_origin_.x) / cell_w);
+                int row = static_cast<int>((mp.y - vp_origin_.y) / cell_h);
+                col = std::clamp(col, 0, split_cols_ - 1);
+                row = std::clamp(row, 0, split_rows_ - 1);
+                int idx = row * split_cols_ + col;
+                if (idx < n && tex_ptrs[idx] && tex_ws[idx] > 0 && tex_hs[idx] > 0) {
+                    float cell_x = vp_origin_.x + col * cell_w;
+                    float cell_y = vp_origin_.y + row * cell_h;
+                    float fit_scale = std::min(cell_w / tex_ws[idx],
+                                               cell_h / tex_hs[idx]);
+                    float scale = fit_scale * zoom_;
+                    float disp_w = tex_ws[idx] * scale;
+                    float disp_h = tex_hs[idx] * scale;
+                    float img_x = cell_x + (cell_w - disp_w) * 0.5f + pan_x_;
+                    float img_y = cell_y + (cell_h - disp_h) * 0.5f + pan_y_;
+                    if (scale > 0.0f) {
+                        int px = static_cast<int>((mp.x - img_x) / scale);
+                        int py = static_cast<int>((mp.y - img_y) / scale);
+                        if (px >= 0 && px < tex_ws[idx] &&
+                            py >= 0 && py < tex_hs[idx]) {
+                            hover_valid_ = true;
+                            hover_cell_idx_ = idx;
+                            hover_px_x_ = px;
+                            hover_px_y_ = py;
+                        }
+                    }
+                }
+            } else if (mode_ == ComparisonMode::Overlay && !tex_ptrs.empty()) {
+                // Overlay uses a composite based on max(A, B); compute the
+                // pixel in that composite space.  Cell index follows the
+                // slider: left half -> A (0), right half -> B (1, if any).
+                int img_w = tex_ws[0];
+                int img_h = tex_hs[0];
+                int cell = 0;
+                if (tex_ptrs.size() >= 2 && tex_ptrs[1]) {
+                    img_w = std::max(tex_ws[0], tex_ws[1]);
+                    img_h = std::max(tex_hs[0], tex_hs[1]);
+                    float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
+                    cell = (mp.x < slider_screen_x) ? 0 : 1;
+                }
+                if (img_w > 0 && img_h > 0) {
+                    ImVec2 pos, size;
+                    compute_image_rect(img_w, img_h, pos, size);
+                    if (size.x > 0.0f && size.y > 0.0f) {
+                        float scale = size.x / img_w;
+                        int px = static_cast<int>((mp.x - pos.x) / scale);
+                        int py = static_cast<int>((mp.y - pos.y) / scale);
+                        // Clamp to the specific image's real extent so the
+                        // reported value matches the actual source pixel.
+                        int real_w = (cell == 1 && tex_ptrs.size() >= 2)
+                                         ? tex_ws[1] : tex_ws[0];
+                        int real_h = (cell == 1 && tex_ptrs.size() >= 2)
+                                         ? tex_hs[1] : tex_hs[0];
+                        if (px >= 0 && px < real_w && py >= 0 && py < real_h) {
+                            hover_valid_ = true;
+                            hover_cell_idx_ = cell;
+                            hover_px_x_ = px;
+                            hover_px_y_ = py;
+                        }
+                    }
+                }
+            } else if (mode_ == ComparisonMode::Difference && tex_diff &&
+                       tex_diff_w > 0 && tex_diff_h > 0) {
+                ImVec2 pos, size;
+                compute_image_rect(tex_diff_w, tex_diff_h, pos, size);
+                if (size.x > 0.0f && size.y > 0.0f) {
+                    float scale = size.x / tex_diff_w;
+                    int px = static_cast<int>((mp.x - pos.x) / scale);
+                    int py = static_cast<int>((mp.y - pos.y) / scale);
+                    if (px >= 0 && px < tex_diff_w &&
+                        py >= 0 && py < tex_diff_h) {
+                        hover_valid_ = true;
+                        hover_cell_idx_ = 0;
+                        hover_px_x_ = px;
+                        hover_px_y_ = py;
+                    }
+                }
+            }
+        }
     }
 
     draw_selection_rect();

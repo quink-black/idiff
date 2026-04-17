@@ -88,6 +88,12 @@ private:
     int drag_source_idx_ = -1;
     int drag_target_idx_ = -1;
 
+    // Maps each slot index passed to Viewport::render (in order) back to
+    // the corresponding entries_ index.  Populated by render_viewport() and
+    // consumed by render_status_bar() to map the viewport's hover pixel
+    // back to a concrete image.
+    std::vector<int> viewport_slot_to_entry_;
+
     std::unique_ptr<Image> diff_image_;
     DiffTexture diff_texture_;
 };

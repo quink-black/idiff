@@ -792,6 +792,11 @@ void App::render_viewport() {
     std::vector<std::string> label_storage;
     label_storage.reserve(selected_.size());
 
+    // Reset the slot->entry mapping; repopulated below in lockstep with the
+    // vectors above so render_status_bar can map hovered slots back.
+    viewport_slot_to_entry_.clear();
+    viewport_slot_to_entry_.reserve(selected_.size());
+
     int ab_idx[2] = {-1, -1};
     get_ab_indices(ab_idx[0], ab_idx[1]);
 
@@ -805,6 +810,7 @@ void App::render_viewport() {
             : entries_[s].display_label;
         label_storage.push_back(std::move(lbl));
         labels.push_back(label_storage.back().c_str());
+        viewport_slot_to_entry_.push_back(s);
     };
 
     if (ab_idx[0] >= 0) push_entry(ab_idx[0], "A");
@@ -1050,6 +1056,62 @@ void App::render_status_bar() {
             if (extra > 0) {
                 append(" (+%d shown, ignored by overlay/diff)", extra);
             }
+
+            // Hover pixel readout — resolved against the display image that
+            // the viewport actually drew (so coordinates match what's on
+            // screen, even when one image was upscaled to match the other).
+            auto& vport = *state_->viewport;
+            if (vport.hover_valid()) {
+                int cell = vport.hover_cell_index();
+                int px = vport.hover_pixel_x();
+                int py = vport.hover_pixel_y();
+
+                const char* src_label = nullptr;
+                const Image* src_img = nullptr;
+
+                if (vport.mode() == ComparisonMode::Difference) {
+                    src_label = "Diff";
+                    src_img = diff_image_.get();
+                } else if (cell >= 0 &&
+                           cell < static_cast<int>(viewport_slot_to_entry_.size())) {
+                    int ent = viewport_slot_to_entry_[cell];
+                    if (ent >= 0 && ent < static_cast<int>(entries_.size())) {
+                        const auto& e = entries_[ent];
+                        // Prefer display_image because pixel coords from the
+                        // viewport correspond to the image that was rendered.
+                        src_img = e.display_image ? e.display_image.get()
+                                                  : e.image.get();
+                        src_label = e.display_label.c_str();
+                    }
+                }
+
+                append(" | %s @ (%d, %d)", src_label ? src_label : "?", px, py);
+
+                if (src_img) {
+                    const auto& m = src_img->mat();
+                    if (!m.empty() &&
+                        px >= 0 && px < m.cols && py >= 0 && py < m.rows) {
+                        int ch = m.channels();
+                        int depth = m.depth();  // CV_8U = 0, CV_16U = 2
+                        if (depth == 0) {  // 8-bit
+                            const uint8_t* p = m.ptr<uint8_t>(py) + px * ch;
+                            if (ch == 1)      append(" = %u", p[0]);
+                            else if (ch == 3) append(" = (%u, %u, %u)",
+                                                     p[0], p[1], p[2]);
+                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
+                                                     p[0], p[1], p[2], p[3]);
+                        } else if (depth == 2) {  // 16-bit
+                            const uint16_t* p = m.ptr<uint16_t>(py) + px * ch;
+                            if (ch == 1)      append(" = %u", p[0]);
+                            else if (ch == 3) append(" = (%u, %u, %u)",
+                                                     p[0], p[1], p[2]);
+                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
+                                                     p[0], p[1], p[2], p[3]);
+                        }
+                    }
+                }
+            }
+
             if (!state_->status_text.empty()) {
                 append(" | %s", state_->status_text.c_str());
             }
