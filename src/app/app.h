@@ -97,6 +97,16 @@ private:
     // Build a YuvRawSource for the given path+params and append it as a
     // new ImageEntry.  Returns true on success.
     bool add_yuv_entry(const std::string& path, const YuvStreamParams& params);
+    // Rebuild the YUV source for an existing entry with new decoder
+    // parameters.  Keeps the entry in place (preserving selection, A/B
+    // assignment, list order); refreshes cached frame, display label and
+    // marks textures / diff dirty.  Returns true on success; on failure
+    // the existing source is left intact and a status message is set.
+    bool update_yuv_entry_params(int index, const YuvStreamParams& params);
+    // Arm the YUV parameters dialog in "edit" mode for the given entry
+    // index.  Seeds the dialog with the entry's current parameters so the
+    // user can fix a misconfigured stream without reloading.
+    void begin_edit_yuv_entry(int index);
 
     // Timeline bar rendered above the status bar when at least one entry
     // exposes more than one frame.  Returns the bar height in pixels
