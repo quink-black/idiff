@@ -88,6 +88,12 @@ public:
     int hover_pixel_x() const noexcept { return hover_px_x_; }
     int hover_pixel_y() const noexcept { return hover_px_y_; }
 
+    // Ruler and grid overlay toggles
+    bool show_ruler() const noexcept { return show_ruler_; }
+    void set_show_ruler(bool v) { show_ruler_ = v; }
+    bool show_grid() const noexcept { return show_grid_; }
+    void set_show_grid(bool v) { show_grid_ = v; }
+
 private:
     static ImTextureID to_tex_id(SDL_Texture* tex);
 
@@ -109,6 +115,18 @@ private:
                         const std::vector<const char*>& labels);
     void render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_diff_h,
                            const std::vector<const char*>& labels);
+
+    // Ruler and grid drawing
+    // img_pos: top-left screen corner of the displayed image
+    // img_size: displayed image size in screen pixels
+    // img_w/img_h: original image dimensions in pixels
+    // scale: display pixels per original image pixel
+    void draw_ruler(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale);
+    void draw_grid(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale);
+
+    // Find a "nice" tick interval (in image pixels) such that ticks are at
+    // least min_screen_spacing pixels apart on screen.
+    static int compute_nice_interval(float scale, float min_screen_spacing);
 
     ComparisonMode mode_ = ComparisonMode::Split;
     float zoom_ = 1.0f;
@@ -149,6 +167,10 @@ private:
 
     // True when the overlay slider InvisibleButton is being dragged
     bool slider_dragging_ = false;
+
+    // Overlay toggles
+    bool show_ruler_ = false;
+    bool show_grid_ = false;
 };
 
 } // namespace idiff

@@ -23,15 +23,9 @@ void Viewport::zoom_around(float new_zoom, ImVec2 anchor) {
     new_zoom = std::clamp(new_zoom, 0.05f, 64.0f);
     if (new_zoom == zoom_) return;
 
-    // Use the cell that contains the anchor point as the reference frame.
-    // In non-split modes cell == viewport.
     ImVec2 cell_org, cell_sz;
     cell_at(anchor, cell_org, cell_sz);
 
-    // cx/cy = center of the cell + current pan offset.
-    // The image in each cell is rendered at:
-    //   img_x = cell_org.x + (cell_sz.x - disp_w)/2 + pan_x_
-    // So the "neutral center" for pan is cell_org + cell_sz/2.
     float cx = cell_org.x + cell_sz.x * 0.5f + pan_x_;
     float cy = cell_org.y + cell_sz.y * 0.5f + pan_y_;
 
@@ -47,7 +41,6 @@ void Viewport::zoom_to_rect(ImVec2 rect_min, ImVec2 rect_max) {
     float rh = rect_max.y - rect_min.y;
     if (rw < 4.0f || rh < 4.0f || vp_size_.x < 1.0f || vp_size_.y < 1.0f) return;
 
-    // Use the cell that contains the selection center as the reference frame.
     ImVec2 sel_center((rect_min.x + rect_max.x) * 0.5f,
                       (rect_min.y + rect_max.y) * 0.5f);
     ImVec2 cell_org, cell_sz;
@@ -56,11 +49,9 @@ void Viewport::zoom_to_rect(ImVec2 rect_min, ImVec2 rect_max) {
     float sel_cx = sel_center.x;
     float sel_cy = sel_center.y;
 
-    // Center of the cell (the neutral pan origin for this cell)
     float cell_cx = cell_org.x + cell_sz.x * 0.5f;
     float cell_cy = cell_org.y + cell_sz.y * 0.5f;
 
-    // Scale so the selection fills the cell (not the whole viewport)
     float scale_factor = std::min(cell_sz.x / rw, cell_sz.y / rh);
 
     float new_zoom = std::clamp(zoom_ * scale_factor, 0.05f, 64.0f);
@@ -78,8 +69,6 @@ void Viewport::fit_to_content() {
 }
 
 void Viewport::zoom_to_actual() {
-    // 1:1 pixel mapping: the fit_scale in render is min(area/img),
-    // so actual pixels means zoom = 1/fit_scale.
     if (content_w_ <= 0 || content_h_ <= 0 || vp_size_.x <= 0 || vp_size_.y <= 0) {
         zoom_ = 1.0f;
         pan_x_ = 0.0f;
@@ -87,7 +76,6 @@ void Viewport::zoom_to_actual() {
         return;
     }
 
-    // In split mode, fit_scale is based on cell size, not viewport size.
     float area_w = vp_size_.x / split_cols_;
     float area_h = vp_size_.y / split_rows_;
     float fit_scale = std::min(area_w / content_w_, area_h / content_h_);
@@ -134,8 +122,6 @@ void Viewport::draw_image_label(const char* label, ImVec2 anchor_pos, ImVec2 /*a
     ImVec2 text_size = ImGui::CalcTextSize(label);
     float pad_x = 6.0f, pad_y = 4.0f;
 
-    // Label is pinned to the anchor area (viewport / cell top-left),
-    // so it stays visible regardless of zoom or pan.
     ImVec2 rect_min(anchor_pos.x + 4, anchor_pos.y + 4);
     ImVec2 rect_max(rect_min.x + text_size.x + pad_x * 2,
                     rect_min.y + text_size.y + pad_y * 2);
@@ -149,19 +135,153 @@ void Viewport::draw_image_label(const char* label, ImVec2 anchor_pos, ImVec2 /*a
 
 void Viewport::compute_image_rect(int img_w, int img_h,
                                    ImVec2& out_pos, ImVec2& out_size) const {
-    // fit_scale: scale so the image fits the viewport at zoom=1
     float fit_scale = std::min(vp_size_.x / img_w, vp_size_.y / img_h);
     float scale = fit_scale * zoom_;
 
     float disp_w = img_w * scale;
     float disp_h = img_h * scale;
 
-    // Center in viewport, then apply pan
     float x = vp_origin_.x + (vp_size_.x - disp_w) * 0.5f + pan_x_;
     float y = vp_origin_.y + (vp_size_.y - disp_h) * 0.5f + pan_y_;
 
     out_pos = ImVec2(x, y);
     out_size = ImVec2(disp_w, disp_h);
+}
+
+// --- Ruler and Grid ---
+
+int Viewport::compute_nice_interval(float scale, float min_screen_spacing) {
+    // Use 1-2-5 sequence to find the smallest interval whose screen size
+    // is at least min_screen_spacing pixels.
+    static const int bases[] = {1, 2, 5};
+    int magnitude = 1;
+    while (true) {
+        for (int b : bases) {
+            int interval = b * magnitude;
+            if (interval * scale >= min_screen_spacing) {
+                return interval;
+            }
+        }
+        magnitude *= 10;
+    }
+}
+
+void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
+                           int img_w, int img_h, float scale) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    constexpr float ruler_thickness = 18.0f;
+    constexpr float min_tick_spacing = 50.0f;
+    ImU32 bg_color = IM_COL32(40, 40, 40, 200);
+    ImU32 tick_color = IM_COL32(180, 180, 180, 220);
+    ImU32 label_color = IM_COL32(200, 200, 200, 255);
+    ImU32 border_color = IM_COL32(80, 80, 80, 255);
+
+    int interval = compute_nice_interval(scale, min_tick_spacing);
+
+    // Horizontal ruler (top edge)
+    {
+        float ruler_y = img_pos.y - ruler_thickness;
+        dl->AddRectFilled(ImVec2(img_pos.x, ruler_y),
+                          ImVec2(img_pos.x + img_size.x, img_pos.y),
+                          bg_color);
+        dl->AddLine(ImVec2(img_pos.x, img_pos.y),
+                    ImVec2(img_pos.x + img_size.x, img_pos.y),
+                    border_color);
+
+        int start_px = 0;
+        int end_px = img_w;
+        for (int px = start_px; px <= end_px; px += interval) {
+            float sx = img_pos.x + px * scale;
+
+            // Major tick
+            dl->AddLine(ImVec2(sx, img_pos.y - 8),
+                        ImVec2(sx, img_pos.y),
+                        tick_color);
+
+            // Label
+            if (px > 0 || true) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%d", px);
+                dl->AddText(ImVec2(sx + 2, ruler_y + 1), label_color, buf);
+            }
+        }
+
+        // Minor ticks at interval/5
+        int minor = std::max(1, interval / 5);
+        for (int px = 0; px <= end_px; px += minor) {
+            if (px % interval == 0) continue;
+            float sx = img_pos.x + px * scale;
+            dl->AddLine(ImVec2(sx, img_pos.y - 4),
+                        ImVec2(sx, img_pos.y),
+                        IM_COL32(120, 120, 120, 180));
+        }
+    }
+
+    // Vertical ruler (left edge)
+    {
+        float ruler_x = img_pos.x - ruler_thickness;
+        dl->AddRectFilled(ImVec2(ruler_x, img_pos.y),
+                          ImVec2(img_pos.x, img_pos.y + img_size.y),
+                          bg_color);
+        dl->AddLine(ImVec2(img_pos.x, img_pos.y),
+                    ImVec2(img_pos.x, img_pos.y + img_size.y),
+                    border_color);
+
+        int start_py = 0;
+        int end_py = img_h;
+        for (int py = start_py; py <= end_py; py += interval) {
+            float sy = img_pos.y + py * scale;
+
+            dl->AddLine(ImVec2(img_pos.x - 8, sy),
+                        ImVec2(img_pos.x, sy),
+                        tick_color);
+
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%d", py);
+            dl->AddText(ImVec2(ruler_x + 2, sy + 1), label_color, buf);
+        }
+
+        int minor = std::max(1, interval / 5);
+        for (int py = 0; py <= end_py; py += minor) {
+            if (py % interval == 0) continue;
+            float sy = img_pos.y + py * scale;
+            dl->AddLine(ImVec2(img_pos.x - 4, sy),
+                        ImVec2(img_pos.x, sy),
+                        IM_COL32(120, 120, 120, 180));
+        }
+    }
+
+    // Corner square
+    dl->AddRectFilled(ImVec2(img_pos.x - ruler_thickness, img_pos.y - ruler_thickness),
+                      ImVec2(img_pos.x, img_pos.y),
+                      bg_color);
+}
+
+void Viewport::draw_grid(ImVec2 img_pos, ImVec2 img_size,
+                          int img_w, int img_h, float scale) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    constexpr float min_line_spacing = 40.0f;
+    ImU32 grid_color = IM_COL32(255, 255, 255, 30);
+
+    int interval = compute_nice_interval(scale, min_line_spacing);
+
+    // Vertical lines
+    for (int px = interval; px < img_w; px += interval) {
+        float sx = img_pos.x + px * scale;
+        if (sx < img_pos.x || sx > img_pos.x + img_size.x) continue;
+        dl->AddLine(ImVec2(sx, img_pos.y),
+                    ImVec2(sx, img_pos.y + img_size.y),
+                    grid_color);
+    }
+
+    // Horizontal lines
+    for (int py = interval; py < img_h; py += interval) {
+        float sy = img_pos.y + py * scale;
+        if (sy < img_pos.y || sy > img_pos.y + img_size.y) continue;
+        dl->AddLine(ImVec2(img_pos.x, sy),
+                    ImVec2(img_pos.x + img_size.x, sy),
+                    grid_color);
+    }
 }
 
 // --- Render ---
@@ -175,8 +295,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     vp_origin_ = ImGui::GetCursorScreenPos();
     vp_size_ = avail;
 
-    // Reset hover state; will be recomputed below if the cursor lies over
-    // a valid image cell.
     hover_valid_ = false;
     hover_cell_idx_ = -1;
     hover_px_x_ = 0;
@@ -184,7 +302,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
 
     if (avail.x < 10 || avail.y < 10) return;
 
-    // Track content dimensions for zoom_to_actual
     content_w_ = 0;
     content_h_ = 0;
     for (size_t i = 0; i < tex_ws.size(); i++) {
@@ -207,12 +324,10 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
         return;
     }
 
-    // Clip rendering to the viewport area
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(vp_origin_, ImVec2(vp_origin_.x + vp_size_.x,
                                          vp_origin_.y + vp_size_.y), true);
 
-    // Reset split layout for non-split modes (render_split will set them)
     if (mode_ != ComparisonMode::Split) {
         split_cols_ = 1;
         split_rows_ = 1;
@@ -232,10 +347,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     }
 
     // --- Compute hover pixel info ---
-    // We only report hover info when the cursor is actually inside the
-    // viewport rectangle.  The per-mode logic maps the screen-space cursor
-    // back to image pixel coordinates using the same layout math used to
-    // draw the image.
     {
         ImVec2 mp = ImGui::GetIO().MousePos;
         bool inside_vp = mp.x >= vp_origin_.x && mp.x < vp_origin_.x + vp_size_.x &&
@@ -273,9 +384,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                     }
                 }
             } else if (mode_ == ComparisonMode::Overlay && !tex_ptrs.empty()) {
-                // Overlay uses a composite based on max(A, B); compute the
-                // pixel in that composite space.  Cell index follows the
-                // slider: left half -> A (0), right half -> B (1, if any).
                 int img_w = tex_ws[0];
                 int img_h = tex_hs[0];
                 int cell = 0;
@@ -292,8 +400,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                         float scale = size.x / img_w;
                         int px = static_cast<int>((mp.x - pos.x) / scale);
                         int py = static_cast<int>((mp.y - pos.y) / scale);
-                        // Clamp to the specific image's real extent so the
-                        // reported value matches the actual source pixel.
                         int real_w = (cell == 1 && tex_ptrs.size() >= 2)
                                          ? tex_ws[1] : tex_ws[0];
                         int real_h = (cell == 1 && tex_ptrs.size() >= 2)
@@ -330,7 +436,6 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
 
     dl->PopClipRect();
 
-    // Reserve the space so ImGui layout knows we used it
     ImGui::Dummy(avail);
 }
 
@@ -350,7 +455,6 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
     else if (n <= 6) { cols = 3; rows = 2; }
     else { cols = 3; rows = (n + cols - 1) / cols; }
 
-    // Record layout so zoom helpers can use cell dimensions
     split_cols_ = cols;
     split_rows_ = rows;
 
@@ -361,12 +465,10 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
         int col = i % cols;
         int row = i / cols;
 
-        // Cell origin in screen coords
         float cell_x = vp_origin_.x + col * cell_w;
         float cell_y = vp_origin_.y + row * cell_h;
 
         if (!tex_ptrs[i]) {
-            // Draw "Empty" text centered in cell
             ImVec2 text_size = ImGui::CalcTextSize("Empty");
             dl->AddText(ImVec2(cell_x + (cell_w - text_size.x) * 0.5f,
                                cell_y + (cell_h - text_size.y) * 0.5f),
@@ -374,7 +476,6 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
             continue;
         }
 
-        // Fit image into cell, then apply zoom and pan
         float fit_scale = std::min(cell_w / tex_ws[i], cell_h / tex_hs[i]);
         float scale = fit_scale * zoom_;
         float disp_w = tex_ws[i] * scale;
@@ -386,15 +487,26 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
         ImVec2 img_min(img_x, img_y);
         ImVec2 img_max(img_x + disp_w, img_y + disp_h);
 
-        // Clip to cell
         dl->PushClipRect(ImVec2(cell_x, cell_y),
                          ImVec2(cell_x + cell_w, cell_y + cell_h), true);
         dl->AddImage(to_tex_id(tex_ptrs[i]), img_min, img_max);
+
+        if (show_grid_ && scale > 0.0f) {
+            draw_grid(img_min, ImVec2(disp_w, disp_h), tex_ws[i], tex_hs[i], scale);
+        }
 
         if (labels[i]) {
             draw_image_label(labels[i], ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
         }
         dl->PopClipRect();
+
+        // Rulers are drawn outside the clip rect (above/left of image)
+        if (show_ruler_ && scale > 0.0f) {
+            dl->PushClipRect(ImVec2(cell_x, cell_y - 20),
+                             ImVec2(cell_x + cell_w, cell_y + cell_h), true);
+            draw_ruler(img_min, ImVec2(disp_w, disp_h), tex_ws[i], tex_hs[i], scale);
+            dl->PopClipRect();
+        }
     }
 
     // Draw cell dividers
@@ -426,6 +538,9 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
             dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
                          ImVec2(pos.x + size.x, pos.y + size.y));
+            float scale = size.x / tex_ws[0];
+            if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
+            if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale);
             if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
@@ -440,6 +555,9 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
         dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
                      ImVec2(pos.x + size.x, pos.y + size.y));
+        float scale = size.x / tex_ws[0];
+        if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
+        if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale);
         if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         return;
     }
@@ -451,15 +569,12 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     ImVec2 pos, size;
     compute_image_rect(img_w, img_h, pos, size);
 
-    // The slider line is anchored to the VIEWPORT, not the image.
-    // This ensures it stays visible and draggable regardless of zoom/pan.
     float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
 
-    // UV scale for images that may be smaller than the composite
     float uv_a_scale_x = static_cast<float>(tex_ws[0]) / img_w;
     float uv_b_scale_x = static_cast<float>(tex_ws[1]) / img_w;
 
-    // Draw image B (right side of slider) — clip to right of the line
+    // Draw image B (right side)
     {
         dl->PushClipRect(ImVec2(line_x, vp_origin_.y),
                          ImVec2(vp_origin_.x + vp_size_.x, vp_origin_.y + vp_size_.y), true);
@@ -470,7 +585,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         dl->PopClipRect();
     }
 
-    // Draw image A (left side of slider) — clip to left of the line
+    // Draw image A (left side)
     {
         dl->PushClipRect(vp_origin_, ImVec2(line_x, vp_origin_.y + vp_size_.y), true);
         ImVec2 uv0(0, 0);
@@ -480,7 +595,19 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         dl->PopClipRect();
     }
 
-    // Slider line — drawn at the viewport-relative position
+    // Grid overlay (drawn on the composite image)
+    if (show_grid_ && size.x > 0.0f) {
+        float scale = size.x / img_w;
+        draw_grid(pos, size, img_w, img_h, scale);
+    }
+
+    // Ruler
+    if (show_ruler_ && size.x > 0.0f) {
+        float scale = size.x / img_w;
+        draw_ruler(pos, size, img_w, img_h, scale);
+    }
+
+    // Slider line
     {
         float vp_top = vp_origin_.y;
         float vp_bot = vp_origin_.y + vp_size_.y;
@@ -501,19 +628,14 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             IM_COL32(255, 255, 255, 220));
     }
 
-    // Handle slider dragging — only capture the mouse when the cursor is
-    // near the split line (±slider_hit_radius px).  Outside that zone the
-    // left-click falls through so the App-level pan handler can move the
-    // image instead.
+    // Slider interaction
     {
         constexpr float slider_hit_radius = 12.0f;
         float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
 
-        // Narrow hit-test strip centred on the slider line
         ImVec2 strip_pos(vp_origin_.x + std::max(0.0f, line_x - slider_hit_radius - vp_origin_.x),
                          vp_origin_.y);
         float strip_x_local = line_x - vp_origin_.x - slider_hit_radius;
-        // Clamp strip so it stays inside the viewport
         if (strip_x_local < 0) strip_x_local = 0;
         float strip_w = slider_hit_radius * 2.0f;
         if (strip_x_local + strip_w > vp_size_.x)
@@ -531,12 +653,11 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         }
     }
 
-    // Labels — anchored to viewport edges, not to the (zoomed/panned) image
+    // Labels
     if (labels[0]) {
         draw_image_label(labels[0], vp_origin_, vp_size_);
     }
     if (labels[1]) {
-        // Right-side label anchored at the slider position within the viewport
         float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
         ImVec2 b_anchor(slider_screen_x, vp_origin_.y);
         draw_image_label(labels[1], b_anchor, ImVec2(vp_size_.x - slider_screen_x, vp_size_.y));
@@ -562,6 +683,16 @@ void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddImage(to_tex_id(tex_diff), pos, ImVec2(pos.x + size.x, pos.y + size.y));
 
+    if (show_grid_ && size.x > 0.0f) {
+        float scale = size.x / tex_diff_w;
+        draw_grid(pos, size, tex_diff_w, tex_diff_h, scale);
+    }
+
+    if (show_ruler_ && size.x > 0.0f) {
+        float scale = size.x / tex_diff_w;
+        draw_ruler(pos, size, tex_diff_w, tex_diff_h, scale);
+    }
+
     if (labels.size() >= 2 && labels[0] && labels[1]) {
         std::string diff_label = std::string("Diff: ") + labels[0] + " vs " + labels[1];
         draw_image_label(diff_label.c_str(), vp_origin_, vp_size_);
@@ -572,7 +703,6 @@ void Viewport::cell_at(ImVec2 screen_pt, ImVec2& out_origin, ImVec2& out_size) c
     float cell_w = vp_size_.x / split_cols_;
     float cell_h = vp_size_.y / split_rows_;
 
-    // Determine which cell the point falls in
     int col = static_cast<int>((screen_pt.x - vp_origin_.x) / cell_w);
     int row = static_cast<int>((screen_pt.y - vp_origin_.y) / cell_h);
     col = std::clamp(col, 0, split_cols_ - 1);

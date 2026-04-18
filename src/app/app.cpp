@@ -2296,6 +2296,30 @@ void App::render_viewport() {
             }
         }
 
+        ImGui::SameLine();
+        ImGui::Spacing();
+        ImGui::SameLine();
+
+        {
+            bool ruler = vp.show_ruler();
+            if (ImGui::Checkbox("Ruler", &ruler)) {
+                vp.set_show_ruler(ruler);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Show coordinate rulers along image edges");
+            }
+        }
+        ImGui::SameLine();
+        {
+            bool grid = vp.show_grid();
+            if (ImGui::Checkbox("Grid", &grid)) {
+                vp.set_show_grid(grid);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Show grid overlay on images");
+            }
+        }
+
         if (sel_count > 0) {
             ImGui::SameLine();
             ImGui::Spacing();
