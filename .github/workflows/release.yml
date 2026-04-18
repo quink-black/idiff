@@ -15,10 +15,13 @@ permissions:
 jobs:
   # ----------------------------------------------------------------------
   # macOS -- build a self-contained .app, bundle every Homebrew dylib via
-  # scripts/macos_bundle_deps.sh, ship as a .dmg.
+  # scripts/macos_bundle_deps.sh, ship as a .dmg AND a .zip. The zip is
+  # the friendlier artifact for users who don't want to deal with
+  # quarantine on a dmg-mounted app; the dmg is kept for the classic
+  # drag-to-Applications flow.
   # ----------------------------------------------------------------------
   macos:
-    name: macOS (.dmg)
+    name: macOS (.dmg + .zip)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,31 +63,86 @@ jobs:
           fi
           echo 'Bundle is clean.'
 
+      - name: Stage distributable tree (.app + install.command)
+        # Lay out everything we'll ship next to the .app so both the dmg
+        # and the zip can share one tree. install.command is a
+        # double-clickable helper that strips com.apple.quarantine and
+        # copies the app to /Applications, which is the least painful
+        # workaround for users who don't have an Apple Developer ID.
+        run: |
+          set -e
+          mkdir -p dist/stage
+          cp -R build/src/app/idiff.app dist/stage/
+          cp scripts/macos_install.command dist/stage/install.command
+          chmod +x dist/stage/install.command
+
       - name: Build .dmg
         run: |
           mkdir -p dist
           create-dmg \
             --volname "idiff" \
-            --window-size 480 280 \
+            --window-size 520 320 \
             --icon-size 96 \
-            --icon idiff.app 120 120 \
-            --app-drop-link 360 120 \
+            --icon idiff.app 120 140 \
+            --icon install.command 260 140 \
+            --app-drop-link 400 140 \
             "dist/idiff-${{ github.ref_name }}-macos.dmg" \
-            build/src/app/idiff.app
+            dist/stage
+
+      - name: Build .zip
+        # `ditto -c -k --keepParent` preserves macOS resource forks and
+        # extended attributes and is what Apple recommends for zipping
+        # .app bundles. Compared to `zip -r`, the resulting archive is
+        # more likely to round-trip through Safari/Finder without losing
+        # the Info.plist / code signature.
+        run: |
+          set -e
+          ZIP="dist/idiff-${{ github.ref_name }}-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent dist/stage "$ZIP"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: idiff-macos
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.zip
           if-no-files-found: error
 
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.dmg
+          files: |
+            dist/*.dmg
+            dist/*.zip
           fail_on_unmatched_files: true
+          # Append a standard "how to launch on macOS" note to the
+          # release body. softprops/action-gh-release merges this with
+          # any body generated from the tag message.
+          append_body: true
+          body: |
+            ### macOS: first-launch instructions
+
+            This build is **ad-hoc signed** (no paid Apple Developer ID).
+            macOS Gatekeeper will mark the downloaded app as quarantined
+            and refuse to open it on first launch ("app is damaged" or
+            "cannot verify developer"). Pick one of the following:
+
+            1. **Easiest** — open the `.dmg`, double-click
+               `install.command`. It will install `idiff.app` into
+               `/Applications` and clear the quarantine flag. You can
+               then launch it normally.
+
+            2. **One-liner in Terminal** (after copying the app somewhere):
+
+               ```bash
+               xattr -dr com.apple.quarantine /Applications/idiff.app
+               ```
+
+            3. **Right-click → Open** the first time, then confirm "Open"
+               in the dialog. (If macOS still reports the app as
+               damaged, use option 1 or 2.)
 
   # ----------------------------------------------------------------------
   # Windows -- vcpkg for deps, OpenCV imgcodecs backend (no ImageMagick

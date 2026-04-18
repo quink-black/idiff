@@ -252,4 +252,10 @@ for f in "$FW_DIR"/*.dylib; do
     [[ -f "$f" ]] && codesign --force --sign - "$f"
 done
 
+# Finally, ad-hoc sign the bundle as a whole. `--deep` walks the bundle
+# and signs anything we may have missed (plugins, nested helpers, ...).
+# Without a bundle-level signature, Gatekeeper sometimes reports the app
+# as "damaged" even when every Mach-O inside is individually valid.
+codesign --deep --force --sign - "$APP"
+
 echo "Bundled $(ls "$FW_DIR" | wc -l | tr -d ' ') dylib(s) into $FW_DIR"
