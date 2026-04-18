@@ -97,6 +97,43 @@ std::optional<double> MetricsEngine::compute_mse(const Image& a, const Image& b)
     }
 }
 
+std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img) {
+    last_error_.clear();
+
+    const auto& mat = img.mat();
+    if (mat.empty()) {
+        last_error_ = "Empty image";
+        return std::nullopt;
+    }
+
+    try {
+        SingleImageMetrics result;
+
+        cv::Scalar mean, stddev;
+        cv::meanStdDev(mat, mean, stddev);
+
+        // OpenCV stores as BGR; map indices to our RGB fields
+        if (mat.channels() >= 3) {
+            int b_idx = 0, g_idx = 1, r_idx = 2;
+            result.mean_r = mean[r_idx];
+            result.mean_g = mean[g_idx];
+            result.mean_b = mean[b_idx];
+            result.var_r  = stddev[r_idx] * stddev[r_idx];
+            result.var_g  = stddev[g_idx] * stddev[g_idx];
+            result.var_b  = stddev[b_idx] * stddev[b_idx];
+        } else {
+            // Single channel: R = G = B
+            result.mean_r = result.mean_g = result.mean_b = mean[0];
+            result.var_r  = result.var_g  = result.var_b  = stddev[0] * stddev[0];
+        }
+
+        return result;
+    } catch (const cv::Exception& e) {
+        last_error_ = e.what();
+        return std::nullopt;
+    }
+}
+
 std::optional<Histogram> MetricsEngine::compute_histogram(const Image& img) {
     last_error_.clear();
 

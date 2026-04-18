@@ -2362,6 +2362,15 @@ void App::render_right_sidebar() {
             }
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Statistics")) {
+            if (state_->metrics_panel) {
+                // Show single-image statistics for the primary (A) image,
+                // or B when only B is loaded.
+                const Image* single = disp_a ? disp_a : disp_b;
+                state_->metrics_panel->render_single(single);
+            }
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
 

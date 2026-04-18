@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include <cmath>
 #include <cstdio>
 
 #include "core/image.h"
@@ -63,6 +64,54 @@ void MetricsPanel::render_inline(const Image* image_a, const Image* image_b) {
         }
     } else {
         ImGui::TextDisabled("Click 'Compute Metrics' to analyze");
+    }
+}
+
+void MetricsPanel::render_single(const Image* image) {
+    if (!image) {
+        ImGui::TextDisabled("No image selected");
+        return;
+    }
+
+    if (ImGui::Button("Compute Statistics", ImVec2(-1, 0))) {
+        MetricsEngine engine;
+        auto result = engine.compute_single(*image);
+        if (result) {
+            mean_r_ = result->mean_r;
+            mean_g_ = result->mean_g;
+            mean_b_ = result->mean_b;
+            var_r_  = result->var_r;
+            var_g_  = result->var_g;
+            var_b_  = result->var_b;
+            single_computed_ = true;
+        }
+    }
+
+    ImGui::Separator();
+
+    if (single_computed_) {
+        if (ImGui::BeginTable("##single_metrics_table", 4,
+                              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("Channel", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+            ImGui::TableSetupColumn("Mean", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Var", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Std", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            auto row = [&](const char* label, double mean, double var) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(label);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", mean);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", var);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", std::sqrt(var));
+            };
+
+            row("R", mean_r_, var_r_);
+            row("G", mean_g_, var_g_);
+            row("B", mean_b_, var_b_);
+
+            ImGui::EndTable();
+        }
     }
 }
 
