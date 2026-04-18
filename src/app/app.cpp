@@ -225,6 +225,9 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Seed the dialog with whatever the user last confirmed so they do
     // not have to retype resolution / pixel-format for each file.
     state_->yuv_dialog_params = state_->settings.last_yuv_params;
+    // Restore viewport overlay toggles from the last session.
+    state_->viewport->set_show_ruler(state_->settings.show_ruler);
+    state_->viewport->set_show_grid(state_->settings.show_grid);
 
     NFD_Init();
 
@@ -2308,6 +2311,8 @@ void App::render_viewport() {
             bool ruler = vp.show_ruler();
             if (ImGui::Checkbox("Ruler", &ruler)) {
                 vp.set_show_ruler(ruler);
+                state_->settings.show_ruler = ruler;
+                state_->settings.save();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Show coordinate rulers along image edges");
@@ -2318,6 +2323,8 @@ void App::render_viewport() {
             bool grid = vp.show_grid();
             if (ImGui::Checkbox("Grid", &grid)) {
                 vp.set_show_grid(grid);
+                state_->settings.show_grid = grid;
+                state_->settings.save();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Show grid overlay on images");

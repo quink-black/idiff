@@ -51,6 +51,15 @@ YuvColorRange parse_yuv_range(const std::string& s, YuvColorRange fallback) {
     return fallback;
 }
 
+// Accept a handful of common spellings so hand-edited files still load.
+bool parse_bool(const std::string& s, bool fallback) {
+    if (s == "1" || s == "true"  || s == "True"  || s == "TRUE"
+                 || s == "yes"   || s == "on")   return true;
+    if (s == "0" || s == "false" || s == "False" || s == "FALSE"
+                 || s == "no"    || s == "off")  return false;
+    return fallback;
+}
+
 // Pick a platform-appropriate directory for persistent app settings.
 std::filesystem::path settings_dir() {
 #ifdef _WIN32
@@ -110,6 +119,10 @@ AppSettings AppSettings::load(const std::string& path) {
         } else if (key == "yuv.color_range") {
             s.last_yuv_params.color_range =
                 parse_yuv_range(val, s.last_yuv_params.color_range);
+        } else if (key == "viewport.show_ruler") {
+            s.show_ruler = parse_bool(val, s.show_ruler);
+        } else if (key == "viewport.show_grid") {
+            s.show_grid = parse_bool(val, s.show_grid);
         }
     }
     return s;
@@ -142,6 +155,8 @@ bool AppSettings::save(const std::string& path) const {
         << yuv_pixel_format_name(last_yuv_params.pixel_format) << "\n";
     out << "yuv.color_range="
         << yuv_color_range_name(last_yuv_params.color_range) << "\n";
+    out << "viewport.show_ruler=" << (show_ruler ? "true" : "false") << "\n";
+    out << "viewport.show_grid="  << (show_grid  ? "true" : "false") << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;

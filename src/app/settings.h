@@ -18,6 +18,11 @@ namespace idiff {
 struct AppSettings {
     YuvStreamParams last_yuv_params{};
 
+    // Viewport overlay toggles.  Persisted so the user does not have
+    // to re-enable them every launch.
+    bool show_ruler = false;
+    bool show_grid = false;
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)
