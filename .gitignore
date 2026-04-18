@@ -1,5 +1,6 @@
 # Build
 build/
+build-*/
 cmake-build-*/
 out/
 
@@ -34,3 +35,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 compile_commands.json
+
+# ImGui runtime state dump (generated next to the working dir on launch)
+imgui.ini
