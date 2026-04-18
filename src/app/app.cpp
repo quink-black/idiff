@@ -58,6 +58,10 @@ struct App::State {
     bool show_image_list = true;
     int sidebar_tab = 0;
 
+    // Difference-mode options (heatmap color scheme and amplification).
+    HeatmapColor heatmap_color = HeatmapColor::Inferno;
+    double diff_amplification = 5.0;
+
     // Persistent cross-session settings (currently just last-used YUV
     // parameters).  Loaded in App::init(), saved whenever a YUV file is
     // successfully added.
@@ -230,6 +234,9 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->viewport->set_show_grid(state_->settings.show_grid);
     state_->viewport->set_grid_layout(static_cast<GridLayout>(state_->settings.grid_layout));
     state_->viewport->set_grid_cols(state_->settings.grid_cols);
+    // Restore difference-mode options from the last session.
+    state_->heatmap_color = static_cast<HeatmapColor>(state_->settings.heatmap_color);
+    state_->diff_amplification = state_->settings.diff_amplification;
 
     NFD_Init();
 
@@ -1815,8 +1822,8 @@ void App::update_diff_texture() {
 
     ImageComparator comparator;
     DifferenceOptions opts;
-    opts.amplification = 5.0;
-    opts.heatmap_color = HeatmapColor::Inferno;
+    opts.amplification = state_->diff_amplification;
+    opts.heatmap_color = state_->heatmap_color;
 
     for (int partner : partners) {
         if (partner < 0 || partner >= static_cast<int>(entries_.size())) continue;
@@ -2347,6 +2354,41 @@ void App::render_viewport() {
                     state_->settings.save();
                 }
                 ImGui::PopItemWidth();
+            }
+        }
+
+        // Difference-mode options (heatmap color + amplification)
+        if (current_mode == ComparisonMode::Difference) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ImGui::Text("Heatmap:");
+            ImGui::SameLine();
+            int hc_int = static_cast<int>(state_->heatmap_color);
+            ImGui::PushItemWidth(70);
+            if (ImGui::Combo("##heatmap_color", &hc_int, "Gray\0Inferno\0Viridis\0Coolwarm\0")) {
+                state_->heatmap_color = static_cast<HeatmapColor>(hc_int);
+                diff_dirty_ = true;
+                state_->settings.heatmap_color = hc_int;
+                state_->settings.save();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Heatmap color scheme");
+            }
+
+            ImGui::SameLine();
+            float amp = static_cast<float>(state_->diff_amplification);
+            ImGui::PushItemWidth(60);
+            if (ImGui::SliderFloat("Amp##diff_amp", &amp, 1.0f, 50.0f, "%.1fx")) {
+                state_->diff_amplification = static_cast<double>(amp);
+                diff_dirty_ = true;
+                state_->settings.diff_amplification = state_->diff_amplification;
+                state_->settings.save();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Difference amplification factor");
             }
         }
 

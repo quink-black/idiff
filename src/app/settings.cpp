@@ -127,6 +127,10 @@ AppSettings AppSettings::load(const std::string& path) {
             s.grid_layout = std::atoi(val.c_str());
         } else if (key == "viewport.grid_cols") {
             s.grid_cols = std::atoi(val.c_str());
+        } else if (key == "diff.heatmap_color") {
+            s.heatmap_color = std::atoi(val.c_str());
+        } else if (key == "diff.amplification") {
+            s.diff_amplification = std::atof(val.c_str());
         }
     }
     return s;
@@ -163,6 +167,8 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.show_grid="  << (show_grid  ? "true" : "false") << "\n";
     out << "viewport.grid_layout=" << grid_layout << "\n";
     out << "viewport.grid_cols="   << grid_cols   << "\n";
+    out << "diff.heatmap_color="   << heatmap_color << "\n";
+    out << "diff.amplification="   << diff_amplification << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;

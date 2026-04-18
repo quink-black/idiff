@@ -28,6 +28,11 @@ struct AppSettings {
     int grid_layout = 0;
     int grid_cols = 3;
 
+    // Difference-mode options.
+    // heatmap_color: 0 = Gray, 1 = Inferno, 2 = Viridis, 3 = Coolwarm
+    int heatmap_color = 1;
+    double diff_amplification = 5.0;
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)
