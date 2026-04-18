@@ -125,10 +125,6 @@ private:
                     ImVec2 cell_origin, ImVec2 cell_size);
     void draw_grid(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale);
 
-    // Find a "nice" tick interval (in image pixels) such that ticks are at
-    // least min_screen_spacing pixels apart on screen.
-    static int compute_nice_interval(float scale, float min_screen_spacing);
-
     ComparisonMode mode_ = ComparisonMode::Split;
     float zoom_ = 1.0f;
     float pan_x_ = 0.0f;

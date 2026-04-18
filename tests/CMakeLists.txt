@@ -5,6 +5,7 @@ add_executable(idiff_tests
     test_image_comparator.cpp
     test_media_source.cpp
     test_metrics_engine.cpp
+    test_ruler_utils.cpp
     test_yuv_source.cpp
 )
 

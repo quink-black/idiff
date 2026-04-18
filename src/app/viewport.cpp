@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/ruler_utils.h"
+
 namespace idiff {
 
 Viewport::Viewport() = default;
@@ -149,22 +151,6 @@ void Viewport::compute_image_rect(int img_w, int img_h,
 }
 
 // --- Ruler and Grid ---
-
-int Viewport::compute_nice_interval(float scale, float min_screen_spacing) {
-    // Use 1-2-5 sequence to find the smallest interval whose screen size
-    // is at least min_screen_spacing pixels.
-    static const int bases[] = {1, 2, 5};
-    int magnitude = 1;
-    while (true) {
-        for (int b : bases) {
-            int interval = b * magnitude;
-            if (interval * scale >= min_screen_spacing) {
-                return interval;
-            }
-        }
-        magnitude *= 10;
-    }
-}
 
 void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
                            int img_w, int img_h, float scale,
