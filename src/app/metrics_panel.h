@@ -24,7 +24,6 @@ public:
     MetricsPanel();
     ~MetricsPanel();
 
-    void render(const Image* image_a, const Image* image_b);
     void render_inline(const Image* image_a, const Image* image_b);
 
     // Multi-image statistics: each entry is (name, Image*).

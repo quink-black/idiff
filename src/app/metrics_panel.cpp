@@ -14,16 +14,6 @@ namespace idiff {
 MetricsPanel::MetricsPanel() = default;
 MetricsPanel::~MetricsPanel() = default;
 
-void MetricsPanel::render(const Image* image_a, const Image* image_b) {
-    ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Metrics")) {
-        ImGui::End();
-        return;
-    }
-    render_inline(image_a, image_b);
-    ImGui::End();
-}
-
 void MetricsPanel::render_inline(const Image* image_a, const Image* image_b) {
     if (!image_a || !image_b) {
         ImGui::TextDisabled("Load both images to compute metrics");

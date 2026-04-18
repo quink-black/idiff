@@ -654,10 +654,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     // Slider interaction
     {
         constexpr float slider_hit_radius = 12.0f;
-        float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
 
-        ImVec2 strip_pos(vp_origin_.x + std::max(0.0f, line_x - slider_hit_radius - vp_origin_.x),
-                         vp_origin_.y);
         float strip_x_local = line_x - vp_origin_.x - slider_hit_radius;
         if (strip_x_local < 0) strip_x_local = 0;
         float strip_w = slider_hit_radius * 2.0f;
