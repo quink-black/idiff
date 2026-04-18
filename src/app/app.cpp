@@ -2303,9 +2303,9 @@ void App::render_viewport() {
 
         ImGui::Separator();
 
-        // Hint about right-click selection zoom
+        // Hint about mouse interactions
         ImGui::TextColored(ImVec4(0.60f, 0.60f, 0.60f, 1.00f),
-                           "Right-drag: zoom to selection");
+                           "Drag: pan | Right-drag: zoom to selection");
     }
 
     // Render viewport content

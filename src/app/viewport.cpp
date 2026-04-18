@@ -501,10 +501,26 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             IM_COL32(255, 255, 255, 220));
     }
 
-    // Handle slider dragging — use an invisible button over the VIEWPORT area
+    // Handle slider dragging — only capture the mouse when the cursor is
+    // near the split line (±slider_hit_radius px).  Outside that zone the
+    // left-click falls through so the App-level pan handler can move the
+    // image instead.
     {
-        ImGui::SetCursorScreenPos(vp_origin_);
-        ImGui::InvisibleButton("##overlay_slider", vp_size_);
+        constexpr float slider_hit_radius = 12.0f;
+        float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
+
+        // Narrow hit-test strip centred on the slider line
+        ImVec2 strip_pos(vp_origin_.x + std::max(0.0f, line_x - slider_hit_radius - vp_origin_.x),
+                         vp_origin_.y);
+        float strip_x_local = line_x - vp_origin_.x - slider_hit_radius;
+        // Clamp strip so it stays inside the viewport
+        if (strip_x_local < 0) strip_x_local = 0;
+        float strip_w = slider_hit_radius * 2.0f;
+        if (strip_x_local + strip_w > vp_size_.x)
+            strip_w = vp_size_.x - strip_x_local;
+
+        ImGui::SetCursorScreenPos(ImVec2(vp_origin_.x + strip_x_local, vp_origin_.y));
+        ImGui::InvisibleButton("##overlay_slider", ImVec2(strip_w, vp_size_.y));
         slider_dragging_ = ImGui::IsItemActive();
         if (slider_dragging_ || ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
