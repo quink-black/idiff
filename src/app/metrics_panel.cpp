@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -113,6 +114,64 @@ void MetricsPanel::render_single(const Image* image) {
             ImGui::EndTable();
         }
     }
+
+    // --- Histogram ---
+    ImGui::Separator();
+
+    ImGui::Checkbox("Show Histogram", &hist_show_);
+    if (hist_show_) {
+        if (ImGui::Button("Compute Histogram", ImVec2(-1, 0))) {
+            MetricsEngine engine;
+            auto hist = engine.compute_histogram(*image);
+            if (hist) {
+                cached_hist_ = std::move(*hist);
+                hist_cache_valid_ = true;
+            }
+        }
+
+        if (hist_cache_valid_) {
+            draw_histogram(cached_hist_);
+        }
+    }
+}
+
+void MetricsPanel::draw_histogram(const Histogram& hist) {
+    // Find the max value across all channels for normalisation
+    uint32_t max_val = 1;
+    for (int i = 0; i < 256; i++) {
+        max_val = std::max({max_val, hist.r[i], hist.g[i], hist.b[i]});
+    }
+
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    float canvas_w = ImGui::GetContentRegionAvail().x;
+    float canvas_h = 100.0f;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Background
+    dl->AddRectFilled(canvas_pos,
+                      ImVec2(canvas_pos.x + canvas_w, canvas_pos.y + canvas_h),
+                      IM_COL32(30, 30, 30, 255));
+
+    float bar_w = canvas_w / 256.0f;
+
+    auto draw_channel = [&](const std::array<uint32_t, 256>& data, ImU32 color) {
+        for (int i = 0; i < 256; i++) {
+            float h = (static_cast<float>(data[i]) / max_val) * canvas_h;
+            float x = canvas_pos.x + i * bar_w;
+            dl->AddRectFilled(
+                ImVec2(x, canvas_pos.y + canvas_h - h),
+                ImVec2(x + bar_w, canvas_pos.y + canvas_h),
+                color);
+        }
+    };
+
+    draw_channel(hist.r, IM_COL32(255, 80, 80, 160));   // Red
+    draw_channel(hist.g, IM_COL32(80, 255, 80, 160));   // Green
+    draw_channel(hist.b, IM_COL32(80, 120, 255, 160));  // Blue
+
+    // Reserve the space so ImGui knows we drew something
+    ImGui::Dummy(ImVec2(canvas_w, canvas_h));
 }
 
 } // namespace idiff
