@@ -23,6 +23,12 @@ struct SingleImageMetrics {
     double var_r = 0.0;
     double var_g = 0.0;
     double var_b = 0.0;
+    double min_r = 0.0;
+    double min_g = 0.0;
+    double min_b = 0.0;
+    double max_r = 0.0;
+    double max_g = 0.0;
+    double max_b = 0.0;
 };
 
 struct Histogram {

@@ -103,3 +103,65 @@ TEST_CASE("MetricsEngine: histogram on empty image returns nullopt", "[metrics]"
     auto hist = engine.compute_histogram(empty_img);
     REQUIRE_FALSE(hist.has_value());
 }
+
+TEST_CASE("MetricsEngine: compute_single returns mean/var/min/max", "[metrics]")
+{
+    // BGR order in OpenCV: Scalar(B, G, R)
+    cv::Mat data(4, 4, CV_8UC3, cv::Scalar(30, 60, 90));
+    auto img = make_image(data);
+
+    MetricsEngine engine;
+    auto result = engine.compute_single(*img);
+    REQUIRE(result.has_value());
+
+    // All pixels are identical, so mean = pixel value, var = 0, min = max = pixel value
+    REQUIRE_THAT(result->mean_r, WithinAbs(90.0, 1e-3));
+    REQUIRE_THAT(result->mean_g, WithinAbs(60.0, 1e-3));
+    REQUIRE_THAT(result->mean_b, WithinAbs(30.0, 1e-3));
+
+    REQUIRE_THAT(result->var_r, WithinAbs(0.0, 1e-6));
+    REQUIRE_THAT(result->var_g, WithinAbs(0.0, 1e-6));
+    REQUIRE_THAT(result->var_b, WithinAbs(0.0, 1e-6));
+
+    REQUIRE_THAT(result->min_r, WithinAbs(90.0, 1e-3));
+    REQUIRE_THAT(result->max_r, WithinAbs(90.0, 1e-3));
+    REQUIRE_THAT(result->min_g, WithinAbs(60.0, 1e-3));
+    REQUIRE_THAT(result->max_g, WithinAbs(60.0, 1e-3));
+    REQUIRE_THAT(result->min_b, WithinAbs(30.0, 1e-3));
+    REQUIRE_THAT(result->max_b, WithinAbs(30.0, 1e-3));
+}
+
+TEST_CASE("MetricsEngine: compute_single min/max on varying image", "[metrics]")
+{
+    // Create an image with known range per channel using a gradient
+    cv::Mat data(2, 2, CV_8UC3);
+    // BGR: top-left (0,0,0), top-right (255,0,0), bottom-left (0,255,0), bottom-right (0,0,255)
+    data.at<cv::Vec3b>(0, 0) = cv::Vec3b(0, 0, 0);
+    data.at<cv::Vec3b>(0, 1) = cv::Vec3b(255, 0, 0);
+    data.at<cv::Vec3b>(1, 0) = cv::Vec3b(0, 255, 0);
+    data.at<cv::Vec3b>(1, 1) = cv::Vec3b(0, 0, 255);
+
+    auto img = make_image(data);
+
+    MetricsEngine engine;
+    auto result = engine.compute_single(*img);
+    REQUIRE(result.has_value());
+
+    // B=channel: values 0,255,0,0 -> min=0, max=255
+    // G=channel: values 0,0,255,0 -> min=0, max=255
+    // R=channel: values 0,0,0,255 -> min=0, max=255
+    REQUIRE_THAT(result->min_r, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(result->max_r, WithinAbs(255.0, 1e-3));
+    REQUIRE_THAT(result->min_g, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(result->max_g, WithinAbs(255.0, 1e-3));
+    REQUIRE_THAT(result->min_b, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(result->max_b, WithinAbs(255.0, 1e-3));
+}
+
+TEST_CASE("MetricsEngine: compute_single on empty image returns nullopt", "[metrics]")
+{
+    Image empty_img;
+    MetricsEngine engine;
+    auto result = engine.compute_single(empty_img);
+    REQUIRE_FALSE(result.has_value());
+}

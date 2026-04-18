@@ -112,6 +112,27 @@ std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img
         cv::Scalar mean, stddev;
         cv::meanStdDev(mat, mean, stddev);
 
+        // Per-channel min/max
+        std::vector<cv::Mat> channels;
+        cv::split(mat, channels);
+
+        double ch_min[3] = {}, ch_max[3] = {};
+
+        if (mat.channels() >= 3) {
+            for (int c = 0; c < 3; c++) {
+                double lo, hi;
+                cv::minMaxLoc(channels[c], &lo, &hi);
+                // OpenCV BGR order: channels[0]=B, [1]=G, [2]=R
+                ch_min[2 - c] = lo;
+                ch_max[2 - c] = hi;
+            }
+        } else {
+            double lo, hi;
+            cv::minMaxLoc(channels[0], &lo, &hi);
+            ch_min[0] = ch_min[1] = ch_min[2] = lo;
+            ch_max[0] = ch_max[1] = ch_max[2] = hi;
+        }
+
         // OpenCV stores as BGR; map indices to our RGB fields
         if (mat.channels() >= 3) {
             int b_idx = 0, g_idx = 1, r_idx = 2;
@@ -126,6 +147,9 @@ std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img
             result.mean_r = result.mean_g = result.mean_b = mean[0];
             result.var_r  = result.var_g  = result.var_b  = stddev[0] * stddev[0];
         }
+
+        result.min_r = ch_min[0]; result.min_g = ch_min[1]; result.min_b = ch_min[2];
+        result.max_r = ch_max[0]; result.max_g = ch_max[1]; result.max_b = ch_max[2];
 
         return result;
     } catch (const cv::Exception& e) {
