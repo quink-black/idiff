@@ -26,6 +26,16 @@ public:
 
     void render_inline(const Image* image_a, const Image* image_b);
 
+    // Multi-partner "A vs each" metrics.  Renders a table with one row per
+    // partner (by display name) containing PSNR / SSIM / MSE computed
+    // against the shared reference image_a.  Results are cached keyed by
+    // (a, partner) pointer pairs so flipping tabs or idle re-renders do
+    // not trigger recomputation; invalidation follows the same Image*
+    // lifecycle as render_statistics.
+    void render_pair_metrics(const Image* image_a,
+                             const std::vector<std::pair<std::string,
+                                                          const Image*>>& partners);
+
     // Multi-image statistics: each entry is (name, Image*).
     // Shows per-image stats with labels, lazy computation, and caching.
     // The cache is keyed by Image pointer, so it naturally invalidates when
@@ -58,6 +68,18 @@ private:
     //   * two different entries that happen to share a display label do
     //     not collide.
     std::unordered_map<const Image*, PerImageStats> stats_cache_;
+    // Cache for multi-partner A-vs-X metrics.  Keyed by the partner Image*
+    // only: the shared reference A is invalidated implicitly by bumping
+    // cached_ref_ below whenever A changes, which wipes the map.  That
+    // keeps the key small and the invalidation rule obvious.
+    struct PairMetrics {
+        double psnr = 0.0;
+        double ssim = 0.0;
+        double mse = 0.0;
+        bool computed = false;
+    };
+    std::unordered_map<const Image*, PairMetrics> pair_cache_;
+    const Image* cached_ref_ = nullptr;
     // Hard cap to protect against pathological long sessions.  Any excess
     // entries beyond the images currently displayed are evicted.
     static constexpr std::size_t kMaxCacheEntries = 64;

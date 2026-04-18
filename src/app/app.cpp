@@ -245,11 +245,10 @@ void App::shutdown() {
     }
     entries_.clear();
 
-    if (diff_texture_.texture) {
-        SDL_DestroyTexture(diff_texture_.texture);
-        diff_texture_.texture = nullptr;
+    for (auto& slot : diff_slots_) {
+        if (slot.texture) SDL_DestroyTexture(slot.texture);
     }
-    diff_image_.reset();
+    diff_slots_.clear();
 
     state_->viewport.reset();
     state_->metrics_panel.reset();
@@ -429,7 +428,7 @@ void App::load_images(const std::vector<std::string>& paths) {
 
     sort_entries_by_name();
     compute_display_labels();
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 
     // Convenience: on the first successful load, auto-select up to the first
     // two images and switch to Overlay mode.  This removes the need for the
@@ -447,7 +446,7 @@ void App::load_images(const std::vector<std::string>& paths) {
                 entries_[s].texture_dirty = true;
             }
         }
-        diff_texture_.dirty = true;
+diff_dirty_ = true;
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
@@ -487,7 +486,7 @@ void App::reload_all_images() {
             last_fail = entry.filename + " (" + err + ")";
         }
     }
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 
     const char* name = ImageLoader::backend_name(state_->loader_backend);
     if (failed == 0) {
@@ -548,7 +547,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
 
     sort_entries_by_name();
     compute_display_labels();
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 
     // Persist parameters so the next .yuv file starts with the same
     // defaults in the dialog.
@@ -568,7 +567,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
                 entries_[s].texture_dirty = true;
             }
         }
-        diff_texture_.dirty = true;
+diff_dirty_ = true;
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
@@ -635,7 +634,7 @@ bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
     }
     compute_display_labels();
 
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 
     // Remember the successful parameters as the new load-dialog default.
     state_->settings.last_yuv_params = params;
@@ -831,7 +830,7 @@ void App::sync_entries_to_timeline() {
         any_changed = true;
     }
     if (any_changed) {
-        diff_texture_.dirty = true;
+diff_dirty_ = true;
     }
 }
 
@@ -1140,12 +1139,11 @@ void App::load_comparison_config_from_path(const std::string& path) {
     entries_.clear();
     selected_.clear();
     swap_ab_ = false;
-    if (diff_texture_.texture) {
-        SDL_DestroyTexture(diff_texture_.texture);
-        diff_texture_.texture = nullptr;
+    for (auto& slot : diff_slots_) {
+        if (slot.texture) SDL_DestroyTexture(slot.texture);
     }
-    diff_image_.reset();
-    diff_texture_.dirty = true;
+    diff_slots_.clear();
+    diff_dirty_ = true;
 
     state_->comparison_config = std::move(cfg);
     state_->current_group_idx = -1;
@@ -1236,12 +1234,11 @@ void App::switch_to_comparison_group(int group_idx) {
     entries_.clear();
     selected_.clear();
     swap_ab_ = false;
-    if (diff_texture_.texture) {
-        SDL_DestroyTexture(diff_texture_.texture);
-        diff_texture_.texture = nullptr;
+    for (auto& slot : diff_slots_) {
+        if (slot.texture) SDL_DestroyTexture(slot.texture);
     }
-    diff_image_.reset();
-    diff_texture_.dirty = true;
+    diff_slots_.clear();
+    diff_dirty_ = true;
 
     const auto& group = state_->comparison_config.groups[group_idx];
 
@@ -1402,7 +1399,7 @@ void App::save_viewport_dialog() {
     }
 
     if (slot_mats.empty() &&
-        !(mode == ComparisonMode::Difference && diff_image_)) {
+        !(mode == ComparisonMode::Difference && !diff_slots_.empty())) {
         state_->status_text = "Save: nothing to save (no images selected)";
         return;
     }
@@ -1433,12 +1430,59 @@ void App::save_viewport_dialog() {
     cv::Mat composed;  // final image to write (BGRA-8)
 
     if (mode == ComparisonMode::Difference) {
-        if (!diff_image_) {
+        // Compose every diff heatmap (A vs partner_i) onto one canvas
+        // using the same grid layout Viewport::render_difference draws
+        // on screen, so the saved PNG matches what the user sees.
+        if (diff_slots_.empty()) {
             state_->status_text = "Save: no diff map available "
-                                  "(select exactly 2 images first)";
+                                  "(select at least 2 images first)";
             return;
         }
-        composed = to_bgra8(diff_image_->mat());
+
+        int n = static_cast<int>(diff_slots_.size());
+        int cols, rows;
+        if (n == 1) { cols = 1; rows = 1; }
+        else if (n == 2) { cols = 2; rows = 1; }
+        else if (n <= 4) { cols = 2; rows = 2; }
+        else if (n <= 6) { cols = 3; rows = 2; }
+        else { cols = 3; rows = (n + cols - 1) / cols; }
+
+        int cell_w = 0, cell_h = 0;
+        for (const auto& slot : diff_slots_) {
+            if (!slot.image) continue;
+            cell_w = std::max(cell_w, slot.image->mat().cols);
+            cell_h = std::max(cell_h, slot.image->mat().rows);
+        }
+        if (cell_w <= 0 || cell_h <= 0) {
+            state_->status_text = "Save: diff image has zero dimensions";
+            return;
+        }
+
+        int out_w = cell_w * cols;
+        int out_h = cell_h * rows;
+        cv::Mat canvas = cv::Mat::zeros(out_h, out_w, CV_8UC4);
+
+        for (int i = 0; i < n; i++) {
+            if (!diff_slots_[i].image) continue;
+            cv::Mat m = to_bgra8(diff_slots_[i].image->mat());
+            if (m.empty()) continue;
+            int col = i % cols;
+            int row = i / cols;
+            int x = col * cell_w + (cell_w - m.cols) / 2;
+            int y = row * cell_h + (cell_h - m.rows) / 2;
+            m.copyTo(canvas(cv::Rect(x, y, m.cols, m.rows)));
+        }
+
+        cv::Scalar divider(255, 255, 255, 80);
+        for (int c = 1; c < cols; c++) {
+            cv::line(canvas, {c * cell_w, 0},
+                     {c * cell_w, out_h - 1}, divider, 1);
+        }
+        for (int r = 1; r < rows; r++) {
+            cv::line(canvas, {0, r * cell_h},
+                     {out_w - 1, r * cell_h}, divider, 1);
+        }
+        composed = canvas;
     } else if (mode == ComparisonMode::Overlay) {
         // Reproduce the viewport's A/B slider.  The slider is anchored to
         // the viewport, so in image-pixel space the split column is just
@@ -1603,7 +1647,7 @@ void App::remove_entry(int index) {
     selected_ = std::move(new_selected);
 
     compute_display_labels();
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 }
 
 void App::compute_display_labels() {
@@ -1667,7 +1711,7 @@ void App::update_display_image(int index) {
     }
 
     entry.texture_dirty = true;
-    diff_texture_.dirty = true;
+diff_dirty_ = true;
 }
 
 void App::upload_texture(ImageEntry& entry) {
@@ -1731,54 +1775,83 @@ void App::upload_texture(ImageEntry& entry) {
 }
 
 void App::update_diff_texture() {
-    if (!diff_texture_.dirty) return;
-    diff_texture_.dirty = false;
+    if (!diff_dirty_) return;
+    diff_dirty_ = false;
 
-    diff_image_.reset();
+    // Tear down any previously-uploaded textures before recomputing.  The
+    // full vector is discarded every refresh because the set of partners
+    // (and their A counterpart) is tiny (typically <= 6) and always
+    // reconstructed from selected_ anyway.
+    for (auto& slot : diff_slots_) {
+        if (slot.texture) {
+            SDL_DestroyTexture(slot.texture);
+            slot.texture = nullptr;
+        }
+    }
+    diff_slots_.clear();
 
-    if (selected_.size() != 2) return;
+    if (selected_.size() < 2) return;
 
-    int idx_a = -1, idx_b = -1;
-    get_ab_indices(idx_a, idx_b);
-    if (idx_a < 0 || idx_b < 0) return;
-
-    if (idx_a >= static_cast<int>(entries_.size())) return;
-    if (idx_b >= static_cast<int>(entries_.size())) return;
+    int idx_a = -1, idx_b_unused = -1;
+    get_ab_indices(idx_a, idx_b_unused);
+    if (idx_a < 0 || idx_a >= static_cast<int>(entries_.size())) return;
 
     const auto* img_a = entries_[idx_a].display_image
                             ? entries_[idx_a].display_image.get()
                             : entries_[idx_a].image.get();
-    const auto* img_b = entries_[idx_b].display_image
-                            ? entries_[idx_b].display_image.get()
-                            : entries_[idx_b].image.get();
+    if (!img_a) return;
 
-    if (!img_a || !img_b) return;
+    // Build the partner order to match render_viewport()'s slot order:
+    // B first (the second entry from get_ab_indices), then any other
+    // selected entries in their natural selection order.  This keeps the
+    // visual/spatial layout predictable across modes and makes the
+    // metrics table row order match what the viewport shows.
+    std::vector<int> partners;
+    partners.reserve(selected_.size());
+    if (idx_b_unused >= 0 && idx_b_unused < static_cast<int>(entries_.size())) {
+        partners.push_back(idx_b_unused);
+    }
+    for (int s : selected_) {
+        if (s == idx_a) continue;
+        if (s == idx_b_unused) continue;
+        partners.push_back(s);
+    }
 
     ImageComparator comparator;
     DifferenceOptions opts;
     opts.amplification = 5.0;
     opts.heatmap_color = HeatmapColor::Inferno;
 
-    auto diff = comparator.compute_difference(*img_a, *img_b, opts);
-    if (!diff) {
-        state_->status_text = "Diff: " + comparator.last_error();
-        return;
-    }
+    for (int partner : partners) {
+        if (partner < 0 || partner >= static_cast<int>(entries_.size())) continue;
+        const auto* img_p = entries_[partner].display_image
+                                ? entries_[partner].display_image.get()
+                                : entries_[partner].image.get();
+        if (!img_p) continue;
 
-    auto heatmap = comparator.compute_heatmap(*diff, opts);
-    if (!heatmap) {
-        state_->status_text = "Heatmap: " + comparator.last_error();
-        return;
-    }
+        auto diff = comparator.compute_difference(*img_a, *img_p, opts);
+        if (!diff) {
+            state_->status_text = "Diff: " + comparator.last_error();
+            continue;
+        }
+        auto heatmap = comparator.compute_heatmap(*diff, opts);
+        if (!heatmap) {
+            state_->status_text = "Heatmap: " + comparator.last_error();
+            continue;
+        }
 
-    diff_image_ = std::move(heatmap);
-    upload_diff_texture();
+        DiffSlot slot;
+        slot.partner_entry_idx = partner;
+        slot.image = std::move(heatmap);
+        diff_slots_.push_back(std::move(slot));
+        upload_diff_slot_texture(diff_slots_.back());
+    }
 }
 
-void App::upload_diff_texture() {
-    if (!diff_image_) return;
+void App::upload_diff_slot_texture(DiffSlot& slot) {
+    if (!slot.image) return;
 
-    const auto& mat = diff_image_->mat();
+    const auto& mat = slot.image->mat();
     if (mat.empty()) return;
 
     int w = mat.cols;
@@ -1801,34 +1874,35 @@ void App::upload_diff_texture() {
 
     Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
 
-    if (diff_texture_.texture) {
-        SDL_DestroyTexture(diff_texture_.texture);
+    if (slot.texture) {
+        SDL_DestroyTexture(slot.texture);
+        slot.texture = nullptr;
     }
 
-    diff_texture_.texture = SDL_CreateTexture(state_->renderer, sdl_format,
-                                               SDL_TEXTUREACCESS_STREAMING,
-                                               w, h);
-    if (!diff_texture_.texture) return;
+    slot.texture = SDL_CreateTexture(state_->renderer, sdl_format,
+                                      SDL_TEXTUREACCESS_STREAMING, w, h);
+    if (!slot.texture) return;
 
     void* pixels = nullptr;
     int pitch = 0;
-    if (SDL_LockTexture(diff_texture_.texture, nullptr, &pixels, &pitch) == 0) {
+    if (SDL_LockTexture(slot.texture, nullptr, &pixels, &pitch) == 0) {
         size_t src_row_bytes = static_cast<size_t>(w * channels);
         size_t dst_pitch = static_cast<size_t>(pitch);
 
         if (dst_pitch == src_row_bytes && upload_mat.isContinuous()) {
-            std::memcpy(pixels, upload_mat.ptr(), static_cast<size_t>(h) * src_row_bytes);
+            std::memcpy(pixels, upload_mat.ptr(),
+                        static_cast<size_t>(h) * src_row_bytes);
         } else {
             for (int y = 0; y < h; y++) {
                 std::memcpy(static_cast<uint8_t*>(pixels) + y * pitch,
-                           upload_mat.ptr(y), src_row_bytes);
+                            upload_mat.ptr(y), src_row_bytes);
             }
         }
-        SDL_UnlockTexture(diff_texture_.texture);
+        SDL_UnlockTexture(slot.texture);
     }
 
-    diff_texture_.tex_w = w;
-    diff_texture_.tex_h = h;
+    slot.tex_w = w;
+    slot.tex_h = h;
 }
 
 void App::render_toolbar() {
@@ -1965,7 +2039,7 @@ void App::render_image_list() {
         if (ImGui::SmallButton("Clear")) {
             selected_.clear();
             swap_ab_ = false;
-            diff_texture_.dirty = true;
+diff_dirty_ = true;
         }
     }
 
@@ -2011,7 +2085,7 @@ void App::render_image_list() {
                         entries_[s].texture_dirty = true;
                     }
                 }
-                diff_texture_.dirty = true;
+diff_dirty_ = true;
                 // Statistics panel cache is pointer-keyed and self-prunes,
                 // so no explicit invalidation is needed on selection change.
             }
@@ -2278,7 +2352,7 @@ void App::render_viewport() {
         ImGui::SameLine();
         bool can_save = !entries_.empty() &&
                         (!selected_.empty() ||
-                         (vp.mode() == ComparisonMode::Difference && diff_image_));
+                         (vp.mode() == ComparisonMode::Difference && !diff_slots_.empty()));
         ImGui::BeginDisabled(!can_save);
         if (ImGui::SmallButton("Save...")) {
             save_viewport_dialog();
@@ -2296,7 +2370,7 @@ void App::render_viewport() {
             ImGui::SameLine();
             if (ImGui::SmallButton("Swap A/B")) {
                 swap_ab_ = !swap_ab_;
-                diff_texture_.dirty = true;
+diff_dirty_ = true;
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Swap which selected image acts as A and B");
@@ -2346,9 +2420,44 @@ void App::render_viewport() {
                            "Drag: pan | Right-drag: zoom to selection");
     }
 
+    // Build diff texture/label vectors for Difference mode.  Each slot
+    // is "A vs <partner>", in the same order update_diff_texture()
+    // populated diff_slots_, so metrics rows and viewport cells align.
+    std::vector<SDL_Texture*> diff_tex_ptrs;
+    std::vector<int> diff_tex_ws, diff_tex_hs;
+    std::vector<const char*> diff_labels;
+    std::vector<std::string> diff_label_storage;
+    diff_tex_ptrs.reserve(diff_slots_.size());
+    diff_tex_ws.reserve(diff_slots_.size());
+    diff_tex_hs.reserve(diff_slots_.size());
+    diff_labels.reserve(diff_slots_.size());
+    diff_label_storage.reserve(diff_slots_.size());
+    {
+        int a_lbl_idx = -1, b_unused = -1;
+        get_ab_indices(a_lbl_idx, b_unused);
+        std::string a_name = (a_lbl_idx >= 0 &&
+                              a_lbl_idx < static_cast<int>(entries_.size()))
+                                  ? entries_[a_lbl_idx].display_label
+                                  : std::string("A");
+        for (const auto& slot : diff_slots_) {
+            diff_tex_ptrs.push_back(slot.texture);
+            diff_tex_ws.push_back(slot.tex_w);
+            diff_tex_hs.push_back(slot.tex_h);
+            std::string partner_name;
+            if (slot.partner_entry_idx >= 0 &&
+                slot.partner_entry_idx < static_cast<int>(entries_.size())) {
+                partner_name = entries_[slot.partner_entry_idx].display_label;
+            } else {
+                partner_name = "?";
+            }
+            diff_label_storage.push_back("Diff: " + a_name + " vs " + partner_name);
+            diff_labels.push_back(diff_label_storage.back().c_str());
+        }
+    }
+
     // Render viewport content
     vp.render(tex_ptrs, tex_ws, tex_hs, labels,
-              diff_texture_.texture, diff_texture_.tex_w, diff_texture_.tex_h);
+              diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
 
     ImGui::End();
     ImGui::PopStyleVar();
@@ -2394,9 +2503,28 @@ void App::render_right_sidebar() {
         }
         if (ImGui::BeginTabItem("Metrics")) {
             if (state_->metrics_panel) {
-                // Metrics always compare A vs B in the same order as the
-                // inspector / viewport, so the swap flag propagates here too.
-                state_->metrics_panel->render_inline(disp_a, disp_b);
+                // Multi-image metrics: compare A against every other
+                // selected entry (B, C, D, ...).  Rows follow the same
+                // order as the viewport cells and as diff_slots_, so the
+                // visual/spatial layout and the metrics table stay in
+                // lockstep.
+                std::vector<std::pair<std::string, const Image*>> partners;
+                auto add_partner = [&](int idx) {
+                    if (idx < 0 ||
+                        idx >= static_cast<int>(entries_.size())) return;
+                    const auto& e = entries_[idx];
+                    const Image* disp = e.display_image
+                                            ? e.display_image.get()
+                                            : e.image.get();
+                    if (!disp) return;
+                    partners.emplace_back(e.display_label, disp);
+                };
+                if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
+                for (int s : selected_) {
+                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    add_partner(s);
+                }
+                state_->metrics_panel->render_pair_metrics(disp_a, partners);
             }
             ImGui::EndTabItem();
         }
@@ -2505,8 +2633,32 @@ void App::render_status_bar() {
                 const Image* src_img = nullptr;
 
                 if (vport.mode() == ComparisonMode::Difference) {
-                    src_label = "Diff";
-                    src_img = diff_image_.get();
+                    // Map the hovered cell back to its diff slot so the
+                    // status bar shows "A vs <partner>" and the pixel
+                    // value comes from the heatmap the user is looking at.
+                    if (cell >= 0 &&
+                        cell < static_cast<int>(diff_slots_.size())) {
+                        const auto& slot = diff_slots_[cell];
+                        src_img = slot.image.get();
+                        static thread_local std::string diff_label;
+                        std::string partner = "?";
+                        if (slot.partner_entry_idx >= 0 &&
+                            slot.partner_entry_idx <
+                                static_cast<int>(entries_.size())) {
+                            partner =
+                                entries_[slot.partner_entry_idx].display_label;
+                        }
+                        int a_idx = -1, b_unused = -1;
+                        get_ab_indices(a_idx, b_unused);
+                        std::string a_name = (a_idx >= 0 &&
+                                              a_idx < static_cast<int>(entries_.size()))
+                                                  ? entries_[a_idx].display_label
+                                                  : std::string("A");
+                        diff_label = "Diff: " + a_name + " vs " + partner;
+                        src_label = diff_label.c_str();
+                    } else {
+                        src_label = "Diff";
+                    }
                 } else if (cell >= 0 &&
                            cell < static_cast<int>(viewport_slot_to_entry_.size())) {
                     int ent = viewport_slot_to_entry_[cell];

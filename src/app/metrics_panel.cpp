@@ -57,6 +57,92 @@ void MetricsPanel::render_inline(const Image* image_a, const Image* image_b) {
     }
 }
 
+void MetricsPanel::render_pair_metrics(
+        const Image* image_a,
+        const std::vector<std::pair<std::string, const Image*>>& partners) {
+    if (!image_a) {
+        ImGui::TextDisabled("Select at least one image (A) to compute metrics");
+        return;
+    }
+
+    // When A changes, invalidate all cached pair results: the key is only
+    // the partner pointer, so keeping the previous map would silently
+    // return metrics against the old A.
+    if (cached_ref_ != image_a) {
+        pair_cache_.clear();
+        cached_ref_ = image_a;
+    }
+
+    // Prune cache entries for partners that are no longer displayed so the
+    // map stays bounded over long sessions.
+    {
+        std::unordered_set<const Image*> live;
+        live.reserve(partners.size());
+        for (const auto& [_, img] : partners) {
+            if (img) live.insert(img);
+        }
+        for (auto it = pair_cache_.begin(); it != pair_cache_.end();) {
+            if (live.find(it->first) == live.end()) {
+                it = pair_cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (partners.empty()) {
+        ImGui::TextDisabled("Select a second image to compute A vs B/C/D...");
+        return;
+    }
+
+    if (ImGui::Button("Compute All", ImVec2(-1, 0))) {
+        MetricsEngine engine;
+        for (const auto& [_, img] : partners) {
+            if (!img) continue;
+            auto result = engine.compute(*image_a, *img);
+            if (result) {
+                PairMetrics pm;
+                pm.psnr = result->psnr;
+                pm.ssim = result->ssim;
+                pm.mse = result->mse;
+                pm.computed = true;
+                pair_cache_[img] = pm;
+            }
+        }
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::BeginTable("##pair_metrics_table", 4,
+                          ImGuiTableFlags_BordersInnerV |
+                          ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Vs", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+        ImGui::TableSetupColumn("PSNR (dB)", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("SSIM", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("MSE", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableHeadersRow();
+
+        for (const auto& [name, img] : partners) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(name.c_str());
+            auto it = img ? pair_cache_.find(img) : pair_cache_.end();
+            if (it != pair_cache_.end() && it->second.computed) {
+                const auto& m = it->second;
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", m.psnr);
+                ImGui::TableNextColumn(); ImGui::Text("%.4f", m.ssim);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", m.mse);
+            } else {
+                for (int c = 0; c < 3; c++) {
+                    ImGui::TableNextColumn();
+                    ImGui::TextDisabled("-");
+                }
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
 void MetricsPanel::render_statistics(
         const std::vector<std::pair<std::string, const Image*>>& images) {
     if (images.empty()) {

@@ -49,11 +49,15 @@ struct ImageEntry {
     int cached_frame = 0;
 };
 
-struct DiffTexture {
+// One heatmap comparing A to a specific partner entry.  The partner index
+// (into entries_) is kept alongside the texture so the status bar and Save
+// flow can map a hovered cell back to "A vs <partner>" without recomputing.
+struct DiffSlot {
+    int partner_entry_idx = -1;
+    std::unique_ptr<Image> image;
     SDL_Texture* texture = nullptr;
     int tex_w = 0;
     int tex_h = 0;
-    bool dirty = true;
 };
 
 class App {
@@ -114,7 +118,7 @@ private:
     void update_display_image(int index);
     void upload_texture(ImageEntry& entry);
     void update_diff_texture();
-    void upload_diff_texture();
+    void upload_diff_slot_texture(DiffSlot& slot);
     void compute_display_labels();
     void sort_entries_by_name();
     void move_entry(int from, int to);
@@ -177,8 +181,15 @@ private:
     // back to a concrete image.
     std::vector<int> viewport_slot_to_entry_;
 
-    std::unique_ptr<Image> diff_image_;
-    DiffTexture diff_texture_;
+    // Difference-mode state.  Each slot compares A (the first selected
+    // entry, modulo swap_ab_) against one other selected entry.  With N
+    // selected entries there are N-1 slots (0 when fewer than 2 selected).
+    // The whole vector is treated as a single cache unit invalidated by
+    // diff_dirty_; individual slot invalidation is not needed because
+    // every trigger (selection change, frame step, decoder reload, ...)
+    // forces a full recompute anyway.
+    std::vector<DiffSlot> diff_slots_;
+    bool diff_dirty_ = true;
 };
 
 } // namespace idiff

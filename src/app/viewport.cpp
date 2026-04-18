@@ -348,7 +348,10 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                       const std::vector<int>& tex_ws,
                       const std::vector<int>& tex_hs,
                       const std::vector<const char*>& labels,
-                      SDL_Texture* tex_diff, int tex_diff_w, int tex_diff_h) {
+                      const std::vector<SDL_Texture*>& diff_tex_ptrs,
+                      const std::vector<int>& diff_tex_ws,
+                      const std::vector<int>& diff_tex_hs,
+                      const std::vector<const char*>& diff_labels) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     vp_origin_ = ImGui::GetCursorScreenPos();
     vp_size_ = avail;
@@ -366,12 +369,12 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
         content_w_ = std::max(content_w_, tex_ws[i]);
         content_h_ = std::max(content_h_, tex_hs[i]);
     }
-    if (tex_diff) {
-        content_w_ = std::max(content_w_, tex_diff_w);
-        content_h_ = std::max(content_h_, tex_diff_h);
+    for (size_t i = 0; i < diff_tex_ws.size(); i++) {
+        content_w_ = std::max(content_w_, diff_tex_ws[i]);
+        content_h_ = std::max(content_h_, diff_tex_hs[i]);
     }
 
-    if (tex_ptrs.empty() && !tex_diff) {
+    if (tex_ptrs.empty() && diff_tex_ptrs.empty()) {
         ImVec2 center(avail.x * 0.5f, avail.y * 0.5f);
         ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + center.x - 100,
                                     ImGui::GetCursorPosY() + center.y - 30));
@@ -400,7 +403,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
             render_overlay(tex_ptrs, tex_ws, tex_hs, labels);
             break;
         case ComparisonMode::Difference:
-            render_difference(tex_diff, tex_diff_w, tex_diff_h, labels);
+            render_difference(diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
             break;
     }
 
@@ -470,20 +473,36 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                         }
                     }
                 }
-            } else if (mode_ == ComparisonMode::Difference && tex_diff &&
-                       tex_diff_w > 0 && tex_diff_h > 0) {
-                ImVec2 pos, size;
-                compute_image_rect(tex_diff_w, tex_diff_h, pos, size);
-                if (size.x > 0.0f && size.y > 0.0f) {
-                    float scale = size.x / tex_diff_w;
-                    int px = static_cast<int>((mp.x - pos.x) / scale);
-                    int py = static_cast<int>((mp.y - pos.y) / scale);
-                    if (px >= 0 && px < tex_diff_w &&
-                        py >= 0 && py < tex_diff_h) {
-                        hover_valid_ = true;
-                        hover_cell_idx_ = 0;
-                        hover_px_x_ = px;
-                        hover_px_y_ = py;
+            } else if (mode_ == ComparisonMode::Difference && !diff_tex_ptrs.empty()) {
+                int n = static_cast<int>(diff_tex_ptrs.size());
+                float cell_w = vp_size_.x / split_cols_;
+                float cell_h = vp_size_.y / split_rows_;
+                int col = static_cast<int>((mp.x - vp_origin_.x) / cell_w);
+                int row = static_cast<int>((mp.y - vp_origin_.y) / cell_h);
+                col = std::clamp(col, 0, split_cols_ - 1);
+                row = std::clamp(row, 0, split_rows_ - 1);
+                int idx = row * split_cols_ + col;
+                if (idx < n && diff_tex_ptrs[idx] &&
+                    diff_tex_ws[idx] > 0 && diff_tex_hs[idx] > 0) {
+                    float cell_x = vp_origin_.x + col * cell_w;
+                    float cell_y = vp_origin_.y + row * cell_h;
+                    float fit_scale = std::min(cell_w / diff_tex_ws[idx],
+                                               cell_h / diff_tex_hs[idx]);
+                    float scale = fit_scale * zoom_;
+                    float disp_w = diff_tex_ws[idx] * scale;
+                    float disp_h = diff_tex_hs[idx] * scale;
+                    float img_x = cell_x + (cell_w - disp_w) * 0.5f + pan_x_;
+                    float img_y = cell_y + (cell_h - disp_h) * 0.5f + pan_y_;
+                    if (scale > 0.0f) {
+                        int px = static_cast<int>((mp.x - img_x) / scale);
+                        int py = static_cast<int>((mp.y - img_y) / scale);
+                        if (px >= 0 && px < diff_tex_ws[idx] &&
+                            py >= 0 && py < diff_tex_hs[idx]) {
+                            hover_valid_ = true;
+                            hover_cell_idx_ = idx;
+                            hover_px_x_ = px;
+                            hover_px_y_ = py;
+                        }
                     }
                 }
             }
@@ -731,38 +750,104 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     }
 }
 
-void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_diff_h,
-                                  const std::vector<const char*>& labels) {
-    if (!tex_diff) {
+void Viewport::render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
+                                  const std::vector<int>& diff_tex_ws,
+                                  const std::vector<int>& diff_tex_hs,
+                                  const std::vector<const char*>& diff_labels) {
+    int n = static_cast<int>(diff_tex_ptrs.size());
+    if (n == 0) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 80,
                            vp_origin_.y + vp_size_.y * 0.5f - 10),
                     IM_COL32(255, 255, 255, 80), "No difference map available");
-        dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 110,
+        dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 140,
                            vp_origin_.y + vp_size_.y * 0.5f + 10),
-                    IM_COL32(255, 255, 255, 80), "Select exactly 2 images to compute diff");
+                    IM_COL32(255, 255, 255, 80),
+                    "Select at least 2 images to compute diff against A");
         return;
     }
 
-    ImVec2 pos, size;
-    compute_image_rect(tex_diff_w, tex_diff_h, pos, size);
-
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddImage(to_tex_id(tex_diff), pos, ImVec2(pos.x + size.x, pos.y + size.y));
 
-    if (show_grid_ && size.x > 0.0f) {
-        float scale = size.x / tex_diff_w;
-        draw_grid(pos, size, tex_diff_w, tex_diff_h, scale);
+    // Use the same grid layout as render_split so a single diff stays full-
+    // size (1x1) and multi-partner diffs (A vs B, A vs C, ...) tile out
+    // automatically.
+    int cols, rows;
+    if (n == 1) { cols = 1; rows = 1; }
+    else if (n == 2) { cols = 2; rows = 1; }
+    else if (n <= 4) { cols = 2; rows = 2; }
+    else if (n <= 6) { cols = 3; rows = 2; }
+    else { cols = 3; rows = (n + cols - 1) / cols; }
+
+    split_cols_ = cols;
+    split_rows_ = rows;
+
+    float cell_w = vp_size_.x / cols;
+    float cell_h = vp_size_.y / rows;
+
+    for (int i = 0; i < n; i++) {
+        int col = i % cols;
+        int row = i / cols;
+
+        float cell_x = vp_origin_.x + col * cell_w;
+        float cell_y = vp_origin_.y + row * cell_h;
+
+        if (!diff_tex_ptrs[i] || diff_tex_ws[i] <= 0 || diff_tex_hs[i] <= 0) {
+            ImVec2 text_size = ImGui::CalcTextSize("(empty)");
+            dl->AddText(ImVec2(cell_x + (cell_w - text_size.x) * 0.5f,
+                               cell_y + (cell_h - text_size.y) * 0.5f),
+                        IM_COL32(255, 255, 255, 80), "(empty)");
+            continue;
+        }
+
+        float fit_scale = std::min(cell_w / diff_tex_ws[i],
+                                   cell_h / diff_tex_hs[i]);
+        float scale = fit_scale * zoom_;
+        float disp_w = diff_tex_ws[i] * scale;
+        float disp_h = diff_tex_hs[i] * scale;
+
+        float img_x = cell_x + (cell_w - disp_w) * 0.5f + pan_x_;
+        float img_y = cell_y + (cell_h - disp_h) * 0.5f + pan_y_;
+
+        ImVec2 img_min(img_x, img_y);
+        ImVec2 img_max(img_x + disp_w, img_y + disp_h);
+
+        dl->PushClipRect(ImVec2(cell_x, cell_y),
+                         ImVec2(cell_x + cell_w, cell_y + cell_h), true);
+        dl->AddImage(to_tex_id(diff_tex_ptrs[i]), img_min, img_max);
+
+        if (show_grid_ && scale > 0.0f) {
+            draw_grid(img_min, ImVec2(disp_w, disp_h),
+                      diff_tex_ws[i], diff_tex_hs[i], scale);
+        }
+
+        const char* label = (i < static_cast<int>(diff_labels.size()))
+                                ? diff_labels[i] : nullptr;
+        if (label) {
+            draw_image_label(label,
+                              img_min, ImVec2(disp_w, disp_h),
+                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
+        }
+        dl->PopClipRect();
+
+        if (show_ruler_ && scale > 0.0f) {
+            draw_ruler(img_min, ImVec2(disp_w, disp_h),
+                       diff_tex_ws[i], diff_tex_hs[i], scale,
+                       ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
+        }
     }
 
-    if (show_ruler_ && size.x > 0.0f) {
-        float scale = size.x / tex_diff_w;
-        draw_ruler(pos, size, tex_diff_w, tex_diff_h, scale, vp_origin_, vp_size_);
+    // Cell dividers (match the look used in render_split).
+    ImU32 divider_col = IM_COL32(255, 255, 255, 40);
+    for (int c = 1; c < cols; c++) {
+        float x = vp_origin_.x + c * cell_w;
+        dl->AddLine(ImVec2(x, vp_origin_.y),
+                    ImVec2(x, vp_origin_.y + vp_size_.y), divider_col);
     }
-
-    if (labels.size() >= 2 && labels[0] && labels[1]) {
-        std::string diff_label = std::string("Diff: ") + labels[0] + " vs " + labels[1];
-        draw_image_label(diff_label.c_str(), pos, size, vp_origin_, vp_size_);
+    for (int r = 1; r < rows; r++) {
+        float y = vp_origin_.y + r * cell_h;
+        dl->AddLine(ImVec2(vp_origin_.x, y),
+                    ImVec2(vp_origin_.x + vp_size_.x, y), divider_col);
     }
 }
 

@@ -26,8 +26,10 @@ public:
                 const std::vector<int>& tex_ws,
                 const std::vector<int>& tex_hs,
                 const std::vector<const char*>& labels,
-                SDL_Texture* tex_diff = nullptr,
-                int tex_diff_w = 0, int tex_diff_h = 0);
+                const std::vector<SDL_Texture*>& diff_tex_ptrs = {},
+                const std::vector<int>& diff_tex_ws = {},
+                const std::vector<int>& diff_tex_hs = {},
+                const std::vector<const char*>& diff_labels = {});
 
     ComparisonMode mode() const noexcept { return mode_; }
     void set_mode(ComparisonMode mode) { mode_ = mode; }
@@ -115,8 +117,10 @@ private:
                         const std::vector<int>& tex_ws,
                         const std::vector<int>& tex_hs,
                         const std::vector<const char*>& labels);
-    void render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_diff_h,
-                           const std::vector<const char*>& labels);
+    void render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
+                           const std::vector<int>& diff_tex_ws,
+                           const std::vector<int>& diff_tex_hs,
+                           const std::vector<const char*>& diff_labels);
 
     // Ruler and grid drawing
     // img_pos: top-left screen corner of the displayed image
