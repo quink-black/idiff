@@ -217,6 +217,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
         split_cols_ = 1;
         split_rows_ = 1;
     }
+    slider_dragging_ = false;
 
     switch (mode_) {
         case ComparisonMode::Split:
@@ -504,10 +505,11 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     {
         ImGui::SetCursorScreenPos(vp_origin_);
         ImGui::InvisibleButton("##overlay_slider", vp_size_);
-        if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+        slider_dragging_ = ImGui::IsItemActive();
+        if (slider_dragging_ || ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         }
-        if (ImGui::IsItemActive()) {
+        if (slider_dragging_) {
             float mouse_x = ImGui::GetIO().MousePos.x - vp_origin_.x;
             slider_pos_ = std::clamp(mouse_x / vp_size_.x, 0.0f, 1.0f);
         }

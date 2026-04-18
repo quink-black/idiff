@@ -2166,6 +2166,18 @@ void App::render_viewport() {
         vp.set_pan(vp.pan_x() + delta.x, vp.pan_y() + delta.y);
     }
 
+    // --- Left-mouse drag to pan ---
+    // In Overlay mode, the InvisibleButton over the viewport area captures
+    // left-mouse drags for the A/B slider.  Only pan when that slider is
+    // NOT being dragged so the two interactions don't conflict.
+    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        bool overlay_slider_active = vp.overlay_slider_dragging();
+        if (!overlay_slider_active) {
+            ImVec2 delta = io.MouseDelta;
+            vp.set_pan(vp.pan_x() + delta.x, vp.pan_y() + delta.y);
+        }
+    }
+
     // --- Right-mouse drag for selection rectangle zoom ---
     if (hovered || vp.selecting()) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered) {
@@ -2290,6 +2302,10 @@ void App::render_viewport() {
         }
 
         ImGui::Separator();
+
+        // Hint about right-click selection zoom
+        ImGui::TextColored(ImVec4(0.60f, 0.60f, 0.60f, 1.00f),
+                           "Right-drag: zoom to selection");
     }
 
     // Render viewport content

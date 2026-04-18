@@ -71,6 +71,10 @@ public:
     // image.
     float overlay_slider_pos() const noexcept { return slider_pos_; }
 
+    // True when the overlay A/B slider is actively being dragged by the
+    // user (set during render_overlay, valid until the next render call).
+    bool overlay_slider_dragging() const noexcept { return slider_dragging_; }
+
     // Hover info computed during render().  Valid until the next render()
     // call.  Consumers should check hover_valid() before using the values.
     //
@@ -142,6 +146,9 @@ private:
     int hover_cell_idx_ = -1;
     int hover_px_x_ = 0;
     int hover_px_y_ = 0;
+
+    // True when the overlay slider InvisibleButton is being dragged
+    bool slider_dragging_ = false;
 };
 
 } // namespace idiff
