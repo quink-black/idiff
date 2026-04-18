@@ -2009,9 +2009,8 @@ void App::render_image_list() {
                     }
                 }
                 diff_texture_.dirty = true;
-                if (state_->metrics_panel) {
-                    state_->metrics_panel->invalidate_cache();
-                }
+                // Statistics panel cache is pointer-keyed and self-prunes,
+                // so no explicit invalidation is needed on selection change.
             }
 
             ImGui::SameLine();

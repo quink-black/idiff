@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 #include "core/image.h"
 #include "core/metrics_engine.h"
@@ -73,6 +74,28 @@ void MetricsPanel::render_statistics(
         return;
     }
 
+    // Prune cache entries for images that are no longer visible.  This keeps
+    // the cache bounded in long sessions where many different images cycle
+    // through the statistics panel.
+    {
+        std::unordered_set<const Image*> live;
+        live.reserve(images.size());
+        for (const auto& [_, img] : images) {
+            if (img) live.insert(img);
+        }
+        for (auto it = stats_cache_.begin(); it != stats_cache_.end();) {
+            if (live.find(it->first) == live.end()) {
+                it = stats_cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        // Defensive upper bound in case `images` itself is pathological.
+        while (stats_cache_.size() > kMaxCacheEntries) {
+            stats_cache_.erase(stats_cache_.begin());
+        }
+    }
+
     ImGui::Checkbox("Show Histogram", &hist_show_);
 
     ImGui::Separator();
@@ -81,7 +104,7 @@ void MetricsPanel::render_statistics(
     ImGui::BeginChild("##stats_scroll", ImVec2(0, 0), false, ImGuiWindowFlags_None);
 
     for (auto& [name, img] : images) {
-        auto& cache = stats_cache_[name];
+        auto& cache = stats_cache_[img];
         render_image_stats(name, img, cache);
     }
 
