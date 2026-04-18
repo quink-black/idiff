@@ -97,6 +97,92 @@ std::optional<double> MetricsEngine::compute_mse(const Image& a, const Image& b)
     }
 }
 
+namespace {
+
+// Single-pass accumulator over 3 channels. Works for any scalar pixel type.
+// Produces per-channel min/max/sum/sum-of-squares in one traversal of the data.
+template <typename T>
+struct ChannelStats {
+    double sum[3] = {0, 0, 0};
+    double sum_sq[3] = {0, 0, 0};
+    double min_v[3] = {std::numeric_limits<double>::max(),
+                       std::numeric_limits<double>::max(),
+                       std::numeric_limits<double>::max()};
+    double max_v[3] = {std::numeric_limits<double>::lowest(),
+                       std::numeric_limits<double>::lowest(),
+                       std::numeric_limits<double>::lowest()};
+
+    void observe(int channel, T v) {
+        const double dv = static_cast<double>(v);
+        sum[channel] += dv;
+        sum_sq[channel] += dv * dv;
+        if (dv < min_v[channel]) min_v[channel] = dv;
+        if (dv > max_v[channel]) max_v[channel] = dv;
+    }
+};
+
+// OpenCV stores multi-channel BGR; our SingleImageMetrics fields are RGB.
+// For 3-channel input, src channel 0=B, 1=G, 2=R.
+template <typename T>
+ChannelStats<T> accumulate_stats(const cv::Mat& mat) {
+    ChannelStats<T> s;
+    const int rows = mat.rows;
+    const int cols = mat.cols;
+    const int ch = mat.channels();
+    if (ch == 1) {
+        for (int y = 0; y < rows; ++y) {
+            const T* row = mat.ptr<T>(y);
+            for (int x = 0; x < cols; ++x) {
+                s.observe(0, row[x]);
+            }
+        }
+    } else {
+        // Assume first 3 channels are B,G,R (ignore alpha if present).
+        for (int y = 0; y < rows; ++y) {
+            const T* row = mat.ptr<T>(y);
+            for (int x = 0; x < cols; ++x) {
+                const T* px = row + x * ch;
+                s.observe(0, px[0]);
+                s.observe(1, px[1]);
+                s.observe(2, px[2]);
+            }
+        }
+    }
+    return s;
+}
+
+// Convert per-channel accumulators into SingleImageMetrics (RGB layout).
+template <typename T>
+SingleImageMetrics finalize_stats(const ChannelStats<T>& s, const cv::Mat& mat) {
+    const double n = static_cast<double>(mat.rows) * static_cast<double>(mat.cols);
+    SingleImageMetrics r;
+    if (mat.channels() == 1) {
+        const double mean = s.sum[0] / n;
+        const double var = s.sum_sq[0] / n - mean * mean;
+        r.mean_r = r.mean_g = r.mean_b = mean;
+        r.var_r  = r.var_g  = r.var_b  = var;
+        r.min_r  = r.min_g  = r.min_b  = s.min_v[0];
+        r.max_r  = r.max_g  = r.max_b  = s.max_v[0];
+        return r;
+    }
+    // BGR -> RGB mapping: channel 0=B, 1=G, 2=R.
+    const double mean_b = s.sum[0] / n;
+    const double mean_g = s.sum[1] / n;
+    const double mean_r = s.sum[2] / n;
+    r.mean_b = mean_b;
+    r.mean_g = mean_g;
+    r.mean_r = mean_r;
+    // Population variance (matches cv::meanStdDev semantics), N (not N-1).
+    r.var_b = s.sum_sq[0] / n - mean_b * mean_b;
+    r.var_g = s.sum_sq[1] / n - mean_g * mean_g;
+    r.var_r = s.sum_sq[2] / n - mean_r * mean_r;
+    r.min_b = s.min_v[0]; r.min_g = s.min_v[1]; r.min_r = s.min_v[2];
+    r.max_b = s.max_v[0]; r.max_g = s.max_v[1]; r.max_r = s.max_v[2];
+    return r;
+}
+
+} // namespace
+
 std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img) {
     last_error_.clear();
 
@@ -107,24 +193,34 @@ std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img
     }
 
     try {
-        SingleImageMetrics result;
+        // Single-pass fast paths for the common depths. One traversal of the
+        // pixel data produces mean/variance/min/max together, avoiding the
+        // extra N*channels bytes of memory bandwidth that cv::split + per-
+        // channel cv::minMaxLoc + cv::meanStdDev would require.
+        switch (mat.depth()) {
+            case CV_8U:
+                return finalize_stats(accumulate_stats<uint8_t>(mat), mat);
+            case CV_16U:
+                return finalize_stats(accumulate_stats<uint16_t>(mat), mat);
+            default:
+                break;
+        }
 
+        // Fallback for other depths (CV_32F etc.) – keep the OpenCV route.
         cv::Scalar mean, stddev;
         cv::meanStdDev(mat, mean, stddev);
 
-        // Per-channel min/max
         std::vector<cv::Mat> channels;
         cv::split(mat, channels);
 
         double ch_min[3] = {}, ch_max[3] = {};
-
-        if (mat.channels() >= 3) {
-            for (int c = 0; c < 3; c++) {
+        const int nch = mat.channels();
+        if (nch >= 3) {
+            for (int c = 0; c < 3; ++c) {
                 double lo, hi;
                 cv::minMaxLoc(channels[c], &lo, &hi);
-                // OpenCV BGR order: channels[0]=B, [1]=G, [2]=R
-                ch_min[2 - c] = lo;
-                ch_max[2 - c] = hi;
+                ch_min[c] = lo;
+                ch_max[c] = hi;
             }
         } else {
             double lo, hi;
@@ -133,24 +229,21 @@ std::optional<SingleImageMetrics> MetricsEngine::compute_single(const Image& img
             ch_max[0] = ch_max[1] = ch_max[2] = hi;
         }
 
-        // OpenCV stores as BGR; map indices to our RGB fields
-        if (mat.channels() >= 3) {
-            int b_idx = 0, g_idx = 1, r_idx = 2;
-            result.mean_r = mean[r_idx];
-            result.mean_g = mean[g_idx];
-            result.mean_b = mean[b_idx];
-            result.var_r  = stddev[r_idx] * stddev[r_idx];
-            result.var_g  = stddev[g_idx] * stddev[g_idx];
-            result.var_b  = stddev[b_idx] * stddev[b_idx];
+        SingleImageMetrics result;
+        if (nch >= 3) {
+            // OpenCV: [0]=B, [1]=G, [2]=R.
+            result.mean_b = mean[0]; result.mean_g = mean[1]; result.mean_r = mean[2];
+            result.var_b  = stddev[0] * stddev[0];
+            result.var_g  = stddev[1] * stddev[1];
+            result.var_r  = stddev[2] * stddev[2];
+            result.min_b = ch_min[0]; result.min_g = ch_min[1]; result.min_r = ch_min[2];
+            result.max_b = ch_max[0]; result.max_g = ch_max[1]; result.max_r = ch_max[2];
         } else {
-            // Single channel: R = G = B
             result.mean_r = result.mean_g = result.mean_b = mean[0];
             result.var_r  = result.var_g  = result.var_b  = stddev[0] * stddev[0];
+            result.min_r  = result.min_g  = result.min_b  = ch_min[0];
+            result.max_r  = result.max_g  = result.max_b  = ch_max[0];
         }
-
-        result.min_r = ch_min[0]; result.min_g = ch_min[1]; result.min_b = ch_min[2];
-        result.max_r = ch_max[0]; result.max_g = ch_max[1]; result.max_b = ch_max[2];
-
         return result;
     } catch (const cv::Exception& e) {
         last_error_ = e.what();
