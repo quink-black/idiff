@@ -152,7 +152,8 @@ void Viewport::compute_grid(int n, GridLayout layout, int user_cols,
 
 void Viewport::draw_image_label(const char* label,
                                  ImVec2 img_pos, ImVec2 img_size,
-                                 ImVec2 cell_pos, ImVec2 cell_size) {
+                                 ImVec2 cell_pos, ImVec2 cell_size,
+                                 bool ruler_visible) {
     // Labels used to sit in the top-left of the image with a solid
     // background box, which worked for "one image fills the cell" cases
     // but aggressively covered a corner of the actual image in split /
@@ -164,11 +165,12 @@ void Viewport::draw_image_label(const char* label,
     //      zoomed out so the image fits exactly), fall back to placing
     //      the label inside the image but with a low-alpha background
     //      so it stays readable without fully hiding pixels.
-    // The padding / font scale are also tightened so the badge doesn't
-    // dominate the viewport visually.
+    // When the ruler is visible, the top 18 px of the cell are occupied
+    // by the ruler strip, so the label must avoid that region.
     const float font_scale = 0.88f;
     const float pad_x = 4.0f;
     const float pad_y = 2.0f;
+    constexpr float ruler_thickness = 18.0f;
 
     ImFont* font = ImGui::GetFont();
     float font_size = ImGui::GetFontSize() * font_scale;
@@ -177,9 +179,14 @@ void Viewport::draw_image_label(const char* label,
     float box_w = text_size.x + pad_x * 2;
     float box_h = text_size.y + pad_y * 2;
 
+    // The effective top of the cell, accounting for the ruler strip.
+    float cell_effective_top = ruler_visible
+                                   ? cell_pos.y + ruler_thickness
+                                   : cell_pos.y;
+
     // Candidate 1: just above the image rect, anchored to image left.
     float above_y = img_pos.y - box_h - 2.0f;
-    bool fits_above = above_y >= cell_pos.y;
+    bool fits_above = above_y >= cell_effective_top;
 
     ImVec2 rect_min;
     ImU32 bg_color;
@@ -193,12 +200,12 @@ void Viewport::draw_image_label(const char* label,
         // afford full opacity.
         bg_color = IM_COL32(0, 0, 0, 200);
     } else {
-        // Fallback: overlay on the image, but subtle enough that the
-        // underlying pixels still show through.
+        // Fallback: overlay on the image, but below the ruler strip and
+        // subtle enough that the underlying pixels still show through.
         float x = std::clamp(img_pos.x + 2.0f,
                              cell_pos.x,
                              cell_pos.x + cell_size.x - box_w);
-        float y = std::max(img_pos.y + 2.0f, cell_pos.y);
+        float y = std::max(img_pos.y + 2.0f, cell_effective_top + 2.0f);
         rect_min = ImVec2(x, y);
         bg_color = IM_COL32(0, 0, 0, 110);
     }
@@ -601,7 +608,8 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
         if (labels[i]) {
             draw_image_label(labels[i],
                               img_min, ImVec2(disp_w, disp_h),
-                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
+                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h),
+                              show_ruler_);
         }
         dl->PopClipRect();
 
@@ -644,7 +652,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             float scale = size.x / tex_ws[0];
             if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
             if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
-            if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_);
+            if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_, show_ruler_);
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
                                vp_origin_.y + vp_size_.y * 0.5f),
@@ -661,7 +669,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         float scale = size.x / tex_ws[0];
         if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
         if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
-        if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_);
+        if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_, show_ruler_);
         return;
     }
 
@@ -761,7 +769,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     if (labels[0]) {
         float a_w = std::max(0.0f, (line_x - vp_origin_.x));
         draw_image_label(labels[0], pos, size,
-                          vp_origin_, ImVec2(a_w, vp_size_.y));
+                          vp_origin_, ImVec2(a_w, vp_size_.y), show_ruler_);
     }
     if (labels[1]) {
         float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
@@ -772,7 +780,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         ImVec2 b_img_size(pos.x + size.x - b_img_pos.x, size.y);
         draw_image_label(labels[1], b_img_pos, b_img_size,
                           ImVec2(slider_screen_x, vp_origin_.y),
-                          ImVec2(b_w, vp_size_.y));
+                          ImVec2(b_w, vp_size_.y), show_ruler_);
     }
 }
 
@@ -848,7 +856,8 @@ void Viewport::render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
         if (label) {
             draw_image_label(label,
                               img_min, ImVec2(disp_w, disp_h),
-                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
+                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h),
+                              show_ruler_);
         }
         dl->PopClipRect();
 
