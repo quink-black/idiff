@@ -121,7 +121,8 @@ private:
     // img_size: displayed image size in screen pixels
     // img_w/img_h: original image dimensions in pixels
     // scale: display pixels per original image pixel
-    void draw_ruler(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale);
+    void draw_ruler(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale,
+                    ImVec2 cell_origin, ImVec2 cell_size);
     void draw_grid(ImVec2 img_pos, ImVec2 img_size, int img_w, int img_h, float scale);
 
     // Find a "nice" tick interval (in image pixels) such that ticks are at

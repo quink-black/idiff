@@ -167,93 +167,103 @@ int Viewport::compute_nice_interval(float scale, float min_screen_spacing) {
 }
 
 void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
-                           int img_w, int img_h, float scale) {
+                           int img_w, int img_h, float scale,
+                           ImVec2 cell_origin, ImVec2 cell_size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     constexpr float ruler_thickness = 18.0f;
     constexpr float min_tick_spacing = 50.0f;
-    ImU32 bg_color = IM_COL32(40, 40, 40, 200);
+    ImU32 bg_color = IM_COL32(40, 40, 40, 220);
     ImU32 tick_color = IM_COL32(180, 180, 180, 220);
     ImU32 label_color = IM_COL32(200, 200, 200, 255);
     ImU32 border_color = IM_COL32(80, 80, 80, 255);
 
     int interval = compute_nice_interval(scale, min_tick_spacing);
 
-    // Horizontal ruler (top edge)
+    float cell_left = cell_origin.x;
+    float cell_top = cell_origin.y;
+    float cell_right = cell_origin.x + cell_size.x;
+    float cell_bottom = cell_origin.y + cell_size.y;
+
+    // Horizontal ruler strip: always at the top of the cell
+    float h_ruler_y = cell_top;
+    float h_ruler_bottom = cell_top + ruler_thickness;
+    float h_border_y = h_ruler_bottom;
+
+    // Vertical ruler strip: always at the left of the cell
+    float v_ruler_x = cell_left;
+    float v_ruler_right = cell_left + ruler_thickness;
+    float v_border_x = v_ruler_right;
+
+    // --- Horizontal ruler ---
     {
-        float ruler_y = img_pos.y - ruler_thickness;
-        dl->AddRectFilled(ImVec2(img_pos.x, ruler_y),
-                          ImVec2(img_pos.x + img_size.x, img_pos.y),
+        dl->AddRectFilled(ImVec2(cell_left, h_ruler_y),
+                          ImVec2(cell_right, h_ruler_bottom),
                           bg_color);
-        dl->AddLine(ImVec2(img_pos.x, img_pos.y),
-                    ImVec2(img_pos.x + img_size.x, img_pos.y),
+        dl->AddLine(ImVec2(cell_left, h_border_y),
+                    ImVec2(cell_right, h_border_y),
                     border_color);
 
-        int start_px = 0;
-        int end_px = img_w;
-        for (int px = start_px; px <= end_px; px += interval) {
+        // Iterate all major ticks
+        for (int px = 0; px <= img_w; px += interval) {
             float sx = img_pos.x + px * scale;
+            if (sx < cell_left || sx > cell_right) continue;
 
-            // Major tick
-            dl->AddLine(ImVec2(sx, img_pos.y - 8),
-                        ImVec2(sx, img_pos.y),
+            dl->AddLine(ImVec2(sx, h_border_y - 8),
+                        ImVec2(sx, h_border_y),
                         tick_color);
 
-            // Label
-            if (px > 0 || true) {
-                char buf[32];
-                std::snprintf(buf, sizeof(buf), "%d", px);
-                dl->AddText(ImVec2(sx + 2, ruler_y + 1), label_color, buf);
-            }
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%d", px);
+            dl->AddText(ImVec2(sx + 2, h_ruler_y + 1), label_color, buf);
         }
 
-        // Minor ticks at interval/5
         int minor = std::max(1, interval / 5);
-        for (int px = 0; px <= end_px; px += minor) {
+        for (int px = 0; px <= img_w; px += minor) {
             if (px % interval == 0) continue;
             float sx = img_pos.x + px * scale;
-            dl->AddLine(ImVec2(sx, img_pos.y - 4),
-                        ImVec2(sx, img_pos.y),
+            if (sx < cell_left || sx > cell_right) continue;
+            dl->AddLine(ImVec2(sx, h_border_y - 4),
+                        ImVec2(sx, h_border_y),
                         IM_COL32(120, 120, 120, 180));
         }
     }
 
-    // Vertical ruler (left edge)
+    // --- Vertical ruler ---
     {
-        float ruler_x = img_pos.x - ruler_thickness;
-        dl->AddRectFilled(ImVec2(ruler_x, img_pos.y),
-                          ImVec2(img_pos.x, img_pos.y + img_size.y),
+        dl->AddRectFilled(ImVec2(v_ruler_x, h_ruler_bottom),
+                          ImVec2(v_ruler_right, cell_bottom),
                           bg_color);
-        dl->AddLine(ImVec2(img_pos.x, img_pos.y),
-                    ImVec2(img_pos.x, img_pos.y + img_size.y),
+        dl->AddLine(ImVec2(v_border_x, h_ruler_bottom),
+                    ImVec2(v_border_x, cell_bottom),
                     border_color);
 
-        int start_py = 0;
-        int end_py = img_h;
-        for (int py = start_py; py <= end_py; py += interval) {
+        for (int py = 0; py <= img_h; py += interval) {
             float sy = img_pos.y + py * scale;
+            if (sy < h_ruler_bottom || sy > cell_bottom) continue;
 
-            dl->AddLine(ImVec2(img_pos.x - 8, sy),
-                        ImVec2(img_pos.x, sy),
+            dl->AddLine(ImVec2(v_border_x - 8, sy),
+                        ImVec2(v_border_x, sy),
                         tick_color);
 
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", py);
-            dl->AddText(ImVec2(ruler_x + 2, sy + 1), label_color, buf);
+            dl->AddText(ImVec2(v_ruler_x + 2, sy + 1), label_color, buf);
         }
 
         int minor = std::max(1, interval / 5);
-        for (int py = 0; py <= end_py; py += minor) {
+        for (int py = 0; py <= img_h; py += minor) {
             if (py % interval == 0) continue;
             float sy = img_pos.y + py * scale;
-            dl->AddLine(ImVec2(img_pos.x - 4, sy),
-                        ImVec2(img_pos.x, sy),
+            if (sy < h_ruler_bottom || sy > cell_bottom) continue;
+            dl->AddLine(ImVec2(v_border_x - 4, sy),
+                        ImVec2(v_border_x, sy),
                         IM_COL32(120, 120, 120, 180));
         }
     }
 
-    // Corner square
-    dl->AddRectFilled(ImVec2(img_pos.x - ruler_thickness, img_pos.y - ruler_thickness),
-                      ImVec2(img_pos.x, img_pos.y),
+    // Corner square (intersection of H and V rulers)
+    dl->AddRectFilled(ImVec2(cell_left, cell_top),
+                      ImVec2(v_border_x, h_border_y),
                       bg_color);
 }
 
@@ -500,12 +510,10 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
         }
         dl->PopClipRect();
 
-        // Rulers are drawn outside the clip rect (above/left of image)
+        // Rulers are drawn in the cell area (top/left strips)
         if (show_ruler_ && scale > 0.0f) {
-            dl->PushClipRect(ImVec2(cell_x, cell_y - 20),
-                             ImVec2(cell_x + cell_w, cell_y + cell_h), true);
-            draw_ruler(img_min, ImVec2(disp_w, disp_h), tex_ws[i], tex_hs[i], scale);
-            dl->PopClipRect();
+            draw_ruler(img_min, ImVec2(disp_w, disp_h), tex_ws[i], tex_hs[i], scale,
+                       ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
         }
     }
 
@@ -540,7 +548,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
                          ImVec2(pos.x + size.x, pos.y + size.y));
             float scale = size.x / tex_ws[0];
             if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
-            if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale);
+            if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
             if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
@@ -557,7 +565,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
                      ImVec2(pos.x + size.x, pos.y + size.y));
         float scale = size.x / tex_ws[0];
         if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
-        if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale);
+        if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
         if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
         return;
     }
@@ -604,7 +612,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     // Ruler
     if (show_ruler_ && size.x > 0.0f) {
         float scale = size.x / img_w;
-        draw_ruler(pos, size, img_w, img_h, scale);
+        draw_ruler(pos, size, img_w, img_h, scale, vp_origin_, vp_size_);
     }
 
     // Slider line
@@ -690,7 +698,7 @@ void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_
 
     if (show_ruler_ && size.x > 0.0f) {
         float scale = size.x / tex_diff_w;
-        draw_ruler(pos, size, tex_diff_w, tex_diff_h, scale);
+        draw_ruler(pos, size, tex_diff_w, tex_diff_h, scale, vp_origin_, vp_size_);
     }
 
     if (labels.size() >= 2 && labels[0] && labels[1]) {
