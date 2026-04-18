@@ -1,0 +1,152 @@
+name: Release
+
+# Trigger on any tag that looks like a version (e.g. v0.2.0, v1.0.0-rc1)
+# and also allow manual dispatch so maintainers can dry-run the flow
+# without publishing a Release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed by softprops/action-gh-release to attach assets
+
+jobs:
+  # ----------------------------------------------------------------------
+  # macOS -- build a self-contained .app, bundle every Homebrew dylib via
+  # scripts/macos_bundle_deps.sh, ship as a .dmg.
+  # ----------------------------------------------------------------------
+  macos:
+    name: macOS (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        # Same set as ci.yml. Homebrew runners already have most of these.
+        run: brew install opencv imagemagick libraw sdl2 create-dmg
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DIDIFF_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+
+      - name: Package (bundle dylibs into .app)
+        run: cmake --build build --target idiff_package
+
+      - name: Sanity-check bundle is self-contained
+        # Fail early if anything still points into /opt/homebrew or
+        # /usr/local -- that would mean end users need Homebrew to run.
+        run: |
+          set -e
+          APP=build/src/app/idiff.app
+          echo '== main exe =='
+          otool -L "$APP/Contents/MacOS/idiff"
+          echo '== scanning for relocatable-prefix leaks =='
+          leaks=$(
+            { otool -L "$APP/Contents/MacOS/idiff";
+              for f in "$APP"/Contents/Frameworks/*.dylib; do otool -L "$f"; done;
+            } | grep -E '/opt/homebrew|/usr/local' || true
+          )
+          if [ -n "$leaks" ]; then
+            echo "Bundle still references non-system libraries:"
+            echo "$leaks"
+            exit 1
+          fi
+          echo 'Bundle is clean.'
+
+      - name: Build .dmg
+        run: |
+          mkdir -p dist
+          create-dmg \
+            --volname "idiff" \
+            --window-size 480 280 \
+            --icon-size 96 \
+            --icon idiff.app 120 120 \
+            --app-drop-link 360 120 \
+            "dist/idiff-${{ github.ref_name }}-macos.dmg" \
+            build/src/app/idiff.app
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: idiff-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          fail_on_unmatched_files: true
+
+  # ----------------------------------------------------------------------
+  # Windows -- vcpkg for deps, OpenCV imgcodecs backend (no ImageMagick
+  # on Windows; matches ci.yml). Ships a zipped directory containing
+  # idiff.exe + every runtime DLL.
+  # ----------------------------------------------------------------------
+  windows:
+    name: Windows (.zip)
+    runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-${{ runner.os }}-release-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-release-
+
+      - name: Configure
+        run: |
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DIDIFF_USE_OPENCV_IMGCODECS=ON `
+            -DIDIFF_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package (copy runtime DLLs next to idiff.exe)
+        run: cmake --build build --config Release --target idiff_package
+
+      - name: Stage distributable folder
+        shell: pwsh
+        run: |
+          $stage = "dist\idiff-${{ github.ref_name }}-windows"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item build\src\app\Release\*.exe $stage
+          Copy-Item build\src\app\Release\*.dll $stage -ErrorAction SilentlyContinue
+          # Compress-Archive zips the folder (top-level dir preserved).
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: idiff-windows
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          fail_on_unmatched_files: true
