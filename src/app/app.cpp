@@ -228,6 +228,8 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Restore viewport overlay toggles from the last session.
     state_->viewport->set_show_ruler(state_->settings.show_ruler);
     state_->viewport->set_show_grid(state_->settings.show_grid);
+    state_->viewport->set_grid_layout(static_cast<GridLayout>(state_->settings.grid_layout));
+    state_->viewport->set_grid_cols(state_->settings.grid_cols);
 
     NFD_Init();
 
@@ -1441,11 +1443,8 @@ void App::save_viewport_dialog() {
 
         int n = static_cast<int>(diff_slots_.size());
         int cols, rows;
-        if (n == 1) { cols = 1; rows = 1; }
-        else if (n == 2) { cols = 2; rows = 1; }
-        else if (n <= 4) { cols = 2; rows = 2; }
-        else if (n <= 6) { cols = 3; rows = 2; }
-        else { cols = 3; rows = (n + cols - 1) / cols; }
+        Viewport::compute_grid(n, vport.grid_layout(), vport.grid_cols(),
+                               cols, rows);
 
         int cell_w = 0, cell_h = 0;
         for (const auto& slot : diff_slots_) {
@@ -1536,11 +1535,8 @@ void App::save_viewport_dialog() {
             return;
         }
         int cols, rows;
-        if (n == 1) { cols = 1; rows = 1; }
-        else if (n == 2) { cols = 2; rows = 1; }
-        else if (n <= 4) { cols = 2; rows = 2; }
-        else if (n <= 6) { cols = 3; rows = 2; }
-        else { cols = 3; rows = (n + cols - 1) / cols; }
+        Viewport::compute_grid(n, vport.grid_layout(), vport.grid_cols(),
+                               cols, rows);
 
         // Use the largest image size as the per-cell size so cells stay
         // uniform; smaller images are centered with transparent padding.
@@ -2318,6 +2314,41 @@ void App::render_viewport() {
         ImGui::SameLine();
         ImGui::RadioButton("Diff", &mode_int, 2);
         vp.set_mode(static_cast<ComparisonMode>(mode_int));
+
+        // Grid layout selector (only meaningful in Split/Diff modes)
+        ComparisonMode current_mode = static_cast<ComparisonMode>(mode_int);
+        if (current_mode == ComparisonMode::Split || current_mode == ComparisonMode::Difference) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ImGui::Text("Layout:");
+            ImGui::SameLine();
+            GridLayout gl = vp.grid_layout();
+            int gl_int = static_cast<int>(gl);
+            ImGui::PushItemWidth(70);
+            if (ImGui::Combo("##layout", &gl_int, "Auto\0Row\0Col\0NxM\0")) {
+                gl = static_cast<GridLayout>(gl_int);
+                vp.set_grid_layout(gl);
+                state_->settings.grid_layout = gl_int;
+                state_->settings.save();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Grid layout: Auto (heuristic), Row (1xN), Col (Nx1), NxM (custom columns)");
+            }
+
+            if (gl == GridLayout::RowsCols) {
+                ImGui::SameLine();
+                int cols = vp.grid_cols();
+                ImGui::PushItemWidth(40);
+                if (ImGui::InputInt("C##grid_cols", &cols, 1, 1)) {
+                    vp.set_grid_cols(cols);
+                    state_->settings.grid_cols = vp.grid_cols();
+                    state_->settings.save();
+                }
+                ImGui::PopItemWidth();
+            }
+        }
 
         ImGui::SameLine();
         ImGui::Spacing();

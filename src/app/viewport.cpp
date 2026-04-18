@@ -118,6 +118,36 @@ void Viewport::draw_selection_rect() {
     dl->AddRectFilled(sel_min_, sel_max_, IM_COL32(255, 200, 50, 30));
 }
 
+// --- Grid layout computation ---
+
+void Viewport::compute_grid(int n, GridLayout layout, int user_cols,
+                             int& cols, int& rows) {
+    if (n <= 0) { cols = 1; rows = 1; return; }
+
+    switch (layout) {
+        case GridLayout::SingleRow:
+            cols = n;
+            rows = 1;
+            break;
+        case GridLayout::SingleCol:
+            cols = 1;
+            rows = n;
+            break;
+        case GridLayout::RowsCols:
+            cols = std::max(1, user_cols);
+            rows = (n + cols - 1) / cols;
+            break;
+        case GridLayout::Auto:
+        default:
+            if (n == 1) { cols = 1; rows = 1; }
+            else if (n == 2) { cols = 2; rows = 1; }
+            else if (n <= 4) { cols = 2; rows = 2; }
+            else if (n <= 6) { cols = 3; rows = 2; }
+            else { cols = 3; rows = (n + cols - 1) / cols; }
+            break;
+    }
+}
+
 // --- Drawing helpers ---
 
 void Viewport::draw_image_label(const char* label,
@@ -526,11 +556,7 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     int cols, rows;
-    if (n == 1) { cols = 1; rows = 1; }
-    else if (n == 2) { cols = 2; rows = 1; }
-    else if (n <= 4) { cols = 2; rows = 2; }
-    else if (n <= 6) { cols = 3; rows = 2; }
-    else { cols = 3; rows = (n + cols - 1) / cols; }
+    compute_grid(n, grid_layout_, grid_cols_, cols, rows);
 
     split_cols_ = cols;
     split_rows_ = rows;
@@ -773,11 +799,7 @@ void Viewport::render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
     // size (1x1) and multi-partner diffs (A vs B, A vs C, ...) tile out
     // automatically.
     int cols, rows;
-    if (n == 1) { cols = 1; rows = 1; }
-    else if (n == 2) { cols = 2; rows = 1; }
-    else if (n <= 4) { cols = 2; rows = 2; }
-    else if (n <= 6) { cols = 3; rows = 2; }
-    else { cols = 3; rows = (n + cols - 1) / cols; }
+    compute_grid(n, grid_layout_, grid_cols_, cols, rows);
 
     split_cols_ = cols;
     split_rows_ = rows;

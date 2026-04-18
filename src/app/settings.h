@@ -23,6 +23,11 @@ struct AppSettings {
     bool show_ruler = false;
     bool show_grid = false;
 
+    // Grid layout mode for multi-image Split/Difference display.
+    // 0 = Auto, 1 = SingleRow, 2 = SingleCol, 3 = RowsCols
+    int grid_layout = 0;
+    int grid_cols = 3;
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)

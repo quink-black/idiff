@@ -17,6 +17,13 @@ enum class ComparisonMode {
     Difference,
 };
 
+enum class GridLayout {
+    Auto,       // Current heuristic
+    SingleRow,  // 1xN (all images in one horizontal row)
+    SingleCol,  // Nx1 (all images in one vertical column)
+    RowsCols,   // User-specified columns; rows derived
+};
+
 class Viewport {
 public:
     Viewport();
@@ -96,6 +103,18 @@ public:
     bool show_grid() const noexcept { return show_grid_; }
     void set_show_grid(bool v) { show_grid_ = v; }
 
+    // Grid layout for multi-image Split/Difference modes
+    GridLayout grid_layout() const noexcept { return grid_layout_; }
+    void set_grid_layout(GridLayout v) { grid_layout_ = v; }
+    int grid_cols() const noexcept { return grid_cols_; }
+    void set_grid_cols(int v) { grid_cols_ = std::max(1, v); }
+
+    // Compute grid dimensions for `n` items under the given layout.
+    // In RowsCols mode, `user_cols` specifies the column count and rows
+    // are derived; ignored for other modes.
+    static void compute_grid(int n, GridLayout layout, int user_cols,
+                             int& cols, int& rows);
+
 private:
     static ImTextureID to_tex_id(SDL_Texture* tex);
 
@@ -174,6 +193,10 @@ private:
     // Overlay toggles
     bool show_ruler_ = false;
     bool show_grid_ = false;
+
+    // Grid layout
+    GridLayout grid_layout_ = GridLayout::Auto;
+    int grid_cols_ = 3;
 };
 
 } // namespace idiff

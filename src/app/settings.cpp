@@ -123,6 +123,10 @@ AppSettings AppSettings::load(const std::string& path) {
             s.show_ruler = parse_bool(val, s.show_ruler);
         } else if (key == "viewport.show_grid") {
             s.show_grid = parse_bool(val, s.show_grid);
+        } else if (key == "viewport.grid_layout") {
+            s.grid_layout = std::atoi(val.c_str());
+        } else if (key == "viewport.grid_cols") {
+            s.grid_cols = std::atoi(val.c_str());
         }
     }
     return s;
@@ -157,6 +161,8 @@ bool AppSettings::save(const std::string& path) const {
         << yuv_color_range_name(last_yuv_params.color_range) << "\n";
     out << "viewport.show_ruler=" << (show_ruler ? "true" : "false") << "\n";
     out << "viewport.show_grid="  << (show_grid  ? "true" : "false") << "\n";
+    out << "viewport.grid_layout=" << grid_layout << "\n";
+    out << "viewport.grid_cols="   << grid_cols   << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;
