@@ -120,19 +120,66 @@ void Viewport::draw_selection_rect() {
 
 // --- Drawing helpers ---
 
-void Viewport::draw_image_label(const char* label, ImVec2 anchor_pos, ImVec2 /*anchor_size*/) {
-    ImVec2 text_size = ImGui::CalcTextSize(label);
-    float pad_x = 6.0f, pad_y = 4.0f;
+void Viewport::draw_image_label(const char* label,
+                                 ImVec2 img_pos, ImVec2 img_size,
+                                 ImVec2 cell_pos, ImVec2 cell_size) {
+    // Labels used to sit in the top-left of the image with a solid
+    // background box, which worked for "one image fills the cell" cases
+    // but aggressively covered a corner of the actual image in split /
+    // overlay / diff modes.  The new strategy:
+    //   1. Prefer drawing the label *above* the image rect, inside the
+    //      owning cell.  That way pixels are never occluded.
+    //   2. If there isn't enough vertical room above the image (e.g.
+    //      the image already hugs the cell top, which is common when
+    //      zoomed out so the image fits exactly), fall back to placing
+    //      the label inside the image but with a low-alpha background
+    //      so it stays readable without fully hiding pixels.
+    // The padding / font scale are also tightened so the badge doesn't
+    // dominate the viewport visually.
+    const float font_scale = 0.88f;
+    const float pad_x = 4.0f;
+    const float pad_y = 2.0f;
 
-    ImVec2 rect_min(anchor_pos.x + 4, anchor_pos.y + 4);
-    ImVec2 rect_max(rect_min.x + text_size.x + pad_x * 2,
-                    rect_min.y + text_size.y + pad_y * 2);
+    ImFont* font = ImGui::GetFont();
+    float font_size = ImGui::GetFontSize() * font_scale;
+    ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label);
+
+    float box_w = text_size.x + pad_x * 2;
+    float box_h = text_size.y + pad_y * 2;
+
+    // Candidate 1: just above the image rect, anchored to image left.
+    float above_y = img_pos.y - box_h - 2.0f;
+    bool fits_above = above_y >= cell_pos.y;
+
+    ImVec2 rect_min;
+    ImU32 bg_color;
+    if (fits_above) {
+        float x = std::clamp(img_pos.x,
+                             cell_pos.x,
+                             cell_pos.x + cell_size.x - box_w);
+        rect_min = ImVec2(x, above_y);
+        // Solid, high-contrast badge when we have dedicated room above
+        // the image: the label is not on top of any pixels so we can
+        // afford full opacity.
+        bg_color = IM_COL32(0, 0, 0, 200);
+    } else {
+        // Fallback: overlay on the image, but subtle enough that the
+        // underlying pixels still show through.
+        float x = std::clamp(img_pos.x + 2.0f,
+                             cell_pos.x,
+                             cell_pos.x + cell_size.x - box_w);
+        float y = std::max(img_pos.y + 2.0f, cell_pos.y);
+        rect_min = ImVec2(x, y);
+        bg_color = IM_COL32(0, 0, 0, 110);
+    }
+
+    ImVec2 rect_max(rect_min.x + box_w, rect_min.y + box_h);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(rect_min, rect_max,
-                      IM_COL32(0, 0, 0, 180), 3.0f);
-    dl->AddText(ImVec2(rect_min.x + pad_x, rect_min.y + pad_y),
-                IM_COL32(255, 255, 255, 230), label);
+    dl->AddRectFilled(rect_min, rect_max, bg_color, 3.0f);
+    dl->AddText(font, font_size,
+                ImVec2(rect_min.x + pad_x, rect_min.y + pad_y),
+                IM_COL32(255, 255, 255, 235), label);
 }
 
 void Viewport::compute_image_rect(int img_w, int img_h,
@@ -507,7 +554,9 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
         }
 
         if (labels[i]) {
-            draw_image_label(labels[i], ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
+            draw_image_label(labels[i],
+                              img_min, ImVec2(disp_w, disp_h),
+                              ImVec2(cell_x, cell_y), ImVec2(cell_w, cell_h));
         }
         dl->PopClipRect();
 
@@ -550,7 +599,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
             float scale = size.x / tex_ws[0];
             if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
             if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
-            if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
+            if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_);
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
                                vp_origin_.y + vp_size_.y * 0.5f),
@@ -567,7 +616,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         float scale = size.x / tex_ws[0];
         if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
         if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
-        if (labels[0]) draw_image_label(labels[0], vp_origin_, vp_size_);
+        if (labels[0]) draw_image_label(labels[0], pos, size, vp_origin_, vp_size_);
         return;
     }
 
@@ -659,14 +708,26 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         }
     }
 
-    // Labels
+    // Labels.  Split the composite horizontally at the slider: A owns
+    // the left half, B owns the right half.  Feeding each half as the
+    // label's cell rect lets draw_image_label promote the badge to the
+    // area above the image when there's vertical headroom, and clamp
+    // it inside its half when there isn't.
     if (labels[0]) {
-        draw_image_label(labels[0], vp_origin_, vp_size_);
+        float a_w = std::max(0.0f, (line_x - vp_origin_.x));
+        draw_image_label(labels[0], pos, size,
+                          vp_origin_, ImVec2(a_w, vp_size_.y));
     }
     if (labels[1]) {
         float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
-        ImVec2 b_anchor(slider_screen_x, vp_origin_.y);
-        draw_image_label(labels[1], b_anchor, ImVec2(vp_size_.x - slider_screen_x, vp_size_.y));
+        float b_w = std::max(0.0f, vp_origin_.x + vp_size_.x - slider_screen_x);
+        // The B half's image rect starts at the slider line; clip its
+        // effective left edge accordingly so the badge sits inside B.
+        ImVec2 b_img_pos(std::max(pos.x, slider_screen_x), pos.y);
+        ImVec2 b_img_size(pos.x + size.x - b_img_pos.x, size.y);
+        draw_image_label(labels[1], b_img_pos, b_img_size,
+                          ImVec2(slider_screen_x, vp_origin_.y),
+                          ImVec2(b_w, vp_size_.y));
     }
 }
 
@@ -701,7 +762,7 @@ void Viewport::render_difference(SDL_Texture* tex_diff, int tex_diff_w, int tex_
 
     if (labels.size() >= 2 && labels[0] && labels[1]) {
         std::string diff_label = std::string("Diff: ") + labels[0] + " vs " + labels[1];
-        draw_image_label(diff_label.c_str(), vp_origin_, vp_size_);
+        draw_image_label(diff_label.c_str(), pos, size, vp_origin_, vp_size_);
     }
 }
 

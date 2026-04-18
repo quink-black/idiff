@@ -97,7 +97,9 @@ public:
 private:
     static ImTextureID to_tex_id(SDL_Texture* tex);
 
-    void draw_image_label(const char* label, ImVec2 img_pos, ImVec2 img_size);
+    void draw_image_label(const char* label,
+                          ImVec2 img_pos, ImVec2 img_size,
+                          ImVec2 cell_pos, ImVec2 cell_size);
     void draw_selection_rect();
 
     // Compute the top-left screen position and displayed size for a single image
