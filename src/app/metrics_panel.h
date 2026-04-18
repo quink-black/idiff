@@ -3,9 +3,21 @@
 
 #include "core/metrics_engine.h"
 
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace idiff {
 
 class Image;
+
+struct PerImageStats {
+    bool computed = false;
+    SingleImageMetrics metrics{};
+    bool hist_valid = false;
+    Histogram histogram{};
+};
 
 class MetricsPanel {
 public:
@@ -14,11 +26,19 @@ public:
 
     void render(const Image* image_a, const Image* image_b);
     void render_inline(const Image* image_a, const Image* image_b);
-    // Single-image statistics (RGB mean/variance).
-    void render_single(const Image* image);
+
+    // Multi-image statistics: each entry is (name, Image*).
+    // Shows per-image stats with labels, lazy computation, and caching.
+    void render_statistics(const std::vector<std::pair<std::string, const Image*>>& images);
+
+    // Invalidate cached statistics for all images (call when selection changes
+    // or images are reloaded).
+    void invalidate_cache();
 
 private:
-    void draw_histogram(const Histogram& hist);
+    void draw_histogram(const Histogram& hist, const char* title);
+    void render_image_stats(const std::string& name, const Image* image,
+                            PerImageStats& cache);
 
     bool compute_metrics_ = false;
     bool metrics_computed_ = false;
@@ -26,15 +46,9 @@ private:
     double ssim_ = 0.0;
     double mse_ = 0.0;
 
-    // Single-image metrics state
-    bool single_computed_ = false;
-    double mean_r_ = 0.0, mean_g_ = 0.0, mean_b_ = 0.0;
-    double var_r_ = 0.0, var_g_ = 0.0, var_b_ = 0.0;
-
-    // Histogram state (cached to avoid per-frame recomputation)
+    // Per-image statistics cache keyed by image name
+    std::map<std::string, PerImageStats> stats_cache_;
     bool hist_show_ = true;
-    bool hist_cache_valid_ = false;
-    Histogram cached_hist_{};
 };
 
 } // namespace idiff

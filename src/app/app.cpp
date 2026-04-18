@@ -2009,6 +2009,9 @@ void App::render_image_list() {
                     }
                 }
                 diff_texture_.dirty = true;
+                if (state_->metrics_panel) {
+                    state_->metrics_panel->invalidate_cache();
+                }
             }
 
             ImGui::SameLine();
@@ -2364,10 +2367,30 @@ void App::render_right_sidebar() {
         }
         if (ImGui::BeginTabItem("Statistics")) {
             if (state_->metrics_panel) {
-                // Show single-image statistics for the primary (A) image,
-                // or B when only B is loaded.
-                const Image* single = disp_a ? disp_a : disp_b;
-                state_->metrics_panel->render_single(single);
+                // Gather all selected images with their names for per-image stats
+                std::vector<std::pair<std::string, const Image*>> stat_images;
+
+                // A first, then B, then remaining selected (same order as viewport)
+                auto add_entry = [&](int idx, const char* prefix) {
+                    if (idx < 0 || idx >= static_cast<int>(entries_.size())) return;
+                    const auto& e = entries_[idx];
+                    const Image* disp = e.display_image ? e.display_image.get()
+                                                        : e.image.get();
+                    if (!disp) return;
+                    std::string label = prefix
+                        ? (std::string("[") + prefix + "] " + e.display_label)
+                        : e.display_label;
+                    stat_images.emplace_back(std::move(label), disp);
+                };
+
+                add_entry(ab_idx[0], "A");
+                add_entry(ab_idx[1], "B");
+                for (int s : selected_) {
+                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    add_entry(s, nullptr);
+                }
+
+                state_->metrics_panel->render_statistics(stat_images);
             }
             ImGui::EndTabItem();
         }
