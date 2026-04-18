@@ -2163,7 +2163,10 @@ void App::render_viewport() {
     }
 
     // --- Middle-mouse drag to pan ---
-    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+    // Suppressed while a right-click selection rectangle is being drawn so
+    // the two gestures never overlap.
+    if (hovered && !vp.selecting() &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
         ImVec2 delta = io.MouseDelta;
         vp.set_pan(vp.pan_x() + delta.x, vp.pan_y() + delta.y);
     }
@@ -2171,8 +2174,10 @@ void App::render_viewport() {
     // --- Left-mouse drag to pan ---
     // In Overlay mode, the InvisibleButton over the viewport area captures
     // left-mouse drags for the A/B slider.  Only pan when that slider is
-    // NOT being dragged so the two interactions don't conflict.
-    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+    // NOT being dragged and no right-click selection is in progress, so all
+    // three interactions remain mutually exclusive.
+    if (hovered && !vp.selecting() &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         bool overlay_slider_active = vp.overlay_slider_dragging();
         if (!overlay_slider_active) {
             ImVec2 delta = io.MouseDelta;
