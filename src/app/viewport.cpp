@@ -203,8 +203,12 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
                     ImVec2(cell_right, h_border_y),
                     border_color);
 
-        // Iterate all major ticks
-        for (int px = 0; px <= img_w; px += interval) {
+        // Only iterate ticks within the visible pixel range
+        int px_start = std::max(0, static_cast<int>((cell_left - img_pos.x) / scale));
+        int px_end = std::min(img_w, static_cast<int>((cell_right - img_pos.x) / scale) + 1);
+        px_start = (px_start / interval) * interval;
+
+        for (int px = px_start; px <= px_end; px += interval) {
             float sx = img_pos.x + px * scale;
             if (sx < cell_left || sx > cell_right) continue;
 
@@ -214,11 +218,14 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
 
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", px);
-            dl->AddText(ImVec2(sx + 2, h_ruler_y + 1), label_color, buf);
+            ImVec2 text_size = ImGui::CalcTextSize(buf);
+            float label_x = std::clamp(sx + 2.0f, cell_left + 1.0f, cell_right - text_size.x - 1.0f);
+            dl->AddText(ImVec2(label_x, h_ruler_y + 1), label_color, buf);
         }
 
         int minor = std::max(1, interval / 5);
-        for (int px = 0; px <= img_w; px += minor) {
+        int minor_start = (px_start / minor) * minor;
+        for (int px = minor_start; px <= px_end; px += minor) {
             if (px % interval == 0) continue;
             float sx = img_pos.x + px * scale;
             if (sx < cell_left || sx > cell_right) continue;
@@ -237,7 +244,12 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
                     ImVec2(v_border_x, cell_bottom),
                     border_color);
 
-        for (int py = 0; py <= img_h; py += interval) {
+        // Only iterate ticks within the visible pixel range
+        int py_start = std::max(0, static_cast<int>((h_ruler_bottom - img_pos.y) / scale));
+        int py_end = std::min(img_h, static_cast<int>((cell_bottom - img_pos.y) / scale) + 1);
+        py_start = (py_start / interval) * interval;
+
+        for (int py = py_start; py <= py_end; py += interval) {
             float sy = img_pos.y + py * scale;
             if (sy < h_ruler_bottom || sy > cell_bottom) continue;
 
@@ -247,11 +259,14 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
 
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", py);
-            dl->AddText(ImVec2(v_ruler_x + 2, sy + 1), label_color, buf);
+            ImVec2 text_size = ImGui::CalcTextSize(buf);
+            float label_y = std::clamp(sy + 1.0f, h_ruler_bottom + 1.0f, cell_bottom - text_size.y - 1.0f);
+            dl->AddText(ImVec2(v_ruler_x + 2, label_y), label_color, buf);
         }
 
         int minor = std::max(1, interval / 5);
-        for (int py = 0; py <= img_h; py += minor) {
+        int minor_start = (py_start / minor) * minor;
+        for (int py = minor_start; py <= py_end; py += minor) {
             if (py % interval == 0) continue;
             float sy = img_pos.y + py * scale;
             if (sy < h_ruler_bottom || sy > cell_bottom) continue;
