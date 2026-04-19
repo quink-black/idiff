@@ -349,6 +349,33 @@ std::filesystem::path UrlCache::prepare_for_config(
         if (out_status) *out_status = std::move(s);
     };
 
+    // Fast path: if the user opened a "source.json" that already lives
+    // inside an idiff_cache_* directory, the cache for that config
+    // already exists.  Just reuse the parent directory directly instead
+    // of computing a brand-new (and wrong, because the stem would be
+    // "source") cache directory that duplicates all downloads.
+    {
+        // Accept any JSON file whose parent dir is an idiff_cache_*
+        // directory and contains source.json -- this covers both
+        // "source.json" and any renamed copy the user might open.
+        fs::path parent = json_file.parent_path();
+        std::string dir_name = parent.filename().string();
+        if (!dir_name.empty() &&
+            dir_name.rfind("idiff_cache_", 0) == 0 &&
+            fs::exists(parent / "source.json")) {
+            // Verify the content matches so we don't adopt a stale or
+            // hand-edited cache directory.
+            auto existing = read_file_bytes(parent / "source.json");
+            auto incoming = read_file_bytes(json_file);
+            if (existing && incoming && *existing == *incoming) {
+                set_status("Reused cache: " + parent.string());
+                return parent;
+            }
+            // Content mismatch -- fall through to normal logic so we
+            // create a fresh cache for this different config.
+        }
+    }
+
     // Derive the directory stem from the JSON file name.  Sanitizing
     // keeps the filesystem happy when the config lives under a path
     // with spaces, unicode, colons, etc.
