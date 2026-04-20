@@ -33,6 +33,7 @@
 #include "core/media_source.h"
 #include "core/comparison_config.h"
 #include "core/url_cache.h"
+#include "core/detail/platform_utf8.h"
 
 namespace idiff {
 
@@ -1621,7 +1622,23 @@ void App::save_viewport_dialog() {
     // Convert back to the byte order cv::imwrite expects (BGR/BGRA).  Our
     // `composed` is already BGRA so no further conversion is needed.
     try {
-        bool ok = cv::imwrite(path, composed);
+        bool ok = false;
+        {
+            // cv::imwrite() uses fopen() internally which cannot handle
+            // non-ASCII paths on Windows.  Encode to memory first, then
+            // write via platform::write_file_binary which does the right
+            // thing on every OS.
+            auto dot = path.rfind('.');
+            std::string ext = (dot != std::string::npos) ? path.substr(dot) : ".png";
+            if (ext[0] != '.') ext = "." + ext;
+
+            std::vector<uint8_t> buf;
+            if (!cv::imencode(ext, composed, buf)) {
+                state_->status_text = "Save failed (encode): " + path;
+                return;
+            }
+            ok = platform::write_file_binary(path, buf.data(), buf.size());
+        }
         state_->status_text = ok ? ("Saved viewport to: " + path)
                                  : ("Save failed: " + path);
     } catch (const cv::Exception& ex) {

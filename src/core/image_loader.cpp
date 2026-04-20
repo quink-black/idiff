@@ -1,5 +1,6 @@
 #include "core/image_loader.h"
 #include "core/image_impl.h"
+#include "core/detail/platform_utf8.h"
 
 #include <algorithm>
 #include <vector>
@@ -381,7 +382,16 @@ std::unique_ptr<Image> ImageLoader::load_via_opencv(const std::string& path) {
                 ? cv::IMREAD_UNCHANGED : cv::IMREAD_COLOR;
         }
 
-        cv::Mat mat = cv::imread(path, imread_flags);
+        cv::Mat mat;
+        {
+            auto buf = platform::read_file_binary(path);
+            if (buf.empty()) {
+                last_error_ = "Failed to read file: " + path;
+                return nullptr;
+            }
+            mat = cv::imdecode(buf, imread_flags);
+        }
+
         if (mat.empty()) {
             last_error_ = "Failed to load image: " + path;
             return nullptr;
@@ -432,7 +442,16 @@ ImageLoader::load_via_opencv_memory(const uint8_t* data, size_t size,
 
 std::unique_ptr<Image> ImageLoader::load_via_magick(const std::string& path) {
     try {
-        Magick::Image magick_img(path);
+        Magick::Blob blob;
+        {
+            auto buf = platform::read_file_binary(path);
+            if (buf.empty()) {
+                last_error_ = "Failed to read file: " + path;
+                return nullptr;
+            }
+            blob = Magick::Blob(buf.data(), buf.size());
+        }
+        Magick::Image magick_img(blob);
 
         if (!has_flag(flags_, LoadFlag::KeepAlpha)) {
             magick_img.type(Magick::TrueColorType);

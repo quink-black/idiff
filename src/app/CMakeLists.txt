@@ -43,6 +43,8 @@ if(WIN32)
     set_target_properties(idiff PROPERTIES
         WIN32_EXECUTABLE TRUE
     )
+    target_compile_definitions(idiff PRIVATE NOMINMAX)
+    target_compile_options(idiff PRIVATE /utf-8)
 endif()
 
 # -----------------------------------------------------------------------------

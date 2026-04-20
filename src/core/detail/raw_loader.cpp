@@ -1,5 +1,6 @@
 #include "core/detail/raw_loader.h"
 #include "core/image_impl.h"
+#include "core/detail/platform_utf8.h"
 
 #include <algorithm>
 
@@ -32,7 +33,15 @@ std::unique_ptr<Image> RawLoader::load(const std::string& path) {
 
     auto raw = std::unique_ptr<LibRaw>(new LibRaw);
 
-    int ret = raw->open_file(path.c_str());
+    int ret;
+#ifdef _WIN32
+    // LibRaw::open_file(const char*) 内部使用 fopen()，在 Windows 上
+    // 无法处理 UTF-8 编码的非 ASCII 路径。改用宽字符重载版本。
+    auto wide = platform::utf8_to_wide(path);
+    ret = raw->open_file(wide.c_str());
+#else
+    ret = raw->open_file(path.c_str());
+#endif
     if (ret != LIBRAW_SUCCESS) {
         last_error_ = "LibRaw failed to open: " + std::string(libraw_strerror(ret));
         return nullptr;
