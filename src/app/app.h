@@ -219,7 +219,7 @@ private:
     // completion.
     struct SRTask {
         std::unique_ptr<SRInferEngine> engine;
-        int input_entry_idx = -1;  // Index into entries_ when task was started
+        std::string input_path;    // Path of the input image (stable across sorts)
         std::string status_msg;    // Last status message for the status bar
     };
     std::vector<SRTask> sr_tasks_;

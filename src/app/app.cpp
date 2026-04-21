@@ -2168,7 +2168,7 @@ diff_dirty_ = true;
 
             // Show SR progress indicator if this entry is being processed
             for (const auto& task : sr_tasks_) {
-                if (task.input_entry_idx == i && task.engine &&
+                if (task.input_path == entry.path && task.engine &&
                     task.engine->get_status() == SREngineStatus::Running) {
                     ImGui::SameLine();
                     float p = task.engine->get_progress();
@@ -2911,6 +2911,7 @@ void App::render_quit_confirm_dialog() {
 }
 
 void App::render_sr_dialog() {
+    if (!sr_dialog_) return;
     if (sr_dialog_render(*sr_dialog_)) {
         // User confirmed the dialog — start SR tasks
         for (const auto& params : sr_dialog_->task_params) {
@@ -2951,14 +2952,7 @@ void App::start_sr_task(const SRTaskParams& params) {
 
     SRTask task;
     task.engine = std::move(engine);
-    // Find the entry index for this input path
-    task.input_entry_idx = -1;
-    for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-        if (entries_[i].path == params.input_path.string()) {
-            task.input_entry_idx = i;
-            break;
-        }
-    }
+    task.input_path = params.input_path.string();
     task.status_msg = "Super Resolution: processing " +
                       params.input_path.filename().string() + "...";
     sr_tasks_.push_back(std::move(task));
@@ -2985,19 +2979,38 @@ void App::poll_sr_tasks() {
             ++it;
         } else if (status == SREngineStatus::Completed) {
             auto output_path = task.engine->get_output_path();
-            // Add the output image to the image list
-            std::vector<std::string> paths = { output_path.string() };
+            auto output_path_str = output_path.string();
+
+            // Add the output image to the image list.
+            // load_images() calls sort_entries_by_name(), so indices
+            // computed before the call are invalid afterwards.  We must
+            // look up entries by path instead.
+            std::vector<std::string> paths = { output_path_str };
             load_images(paths);
 
-            // Find the newly added entry (it should be the last one)
-            int new_idx = static_cast<int>(entries_.size()) - 1;
+            // Find the newly added entry by path (sort-safe).
+            int new_idx = -1;
+            for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+                if (entries_[i].path == output_path_str) {
+                    new_idx = i;
+                    break;
+                }
+            }
+
+            // Find the original input entry by path (sort-safe).
+            int input_idx = -1;
+            for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+                if (entries_[i].path == task.input_path) {
+                    input_idx = i;
+                    break;
+                }
+            }
+
             if (new_idx >= 0) {
-                // Update the display label to indicate it's an SR output
                 auto& new_entry = entries_[new_idx];
                 std::string input_name;
-                if (task.input_entry_idx >= 0 &&
-                    task.input_entry_idx < static_cast<int>(entries_.size() - 1)) {
-                    input_name = entries_[task.input_entry_idx].filename;
+                if (input_idx >= 0) {
+                    input_name = entries_[input_idx].filename;
                 } else {
                     input_name = new_entry.filename;
                 }
@@ -3006,20 +3019,16 @@ void App::poll_sr_tasks() {
                 auto fname = output_path.stem().string();
                 auto pos = fname.find("_sr_");
                 if (pos != std::string::npos) {
-                    auto x_pos = fname.find('x', pos);
-                    if (x_pos != std::string::npos) {
-                        scale = std::atoi(fname.c_str() + pos + 4);
-                        if (scale <= 0) scale = 2;
-                    }
+                    scale = std::atoi(fname.c_str() + pos + 4);
+                    if (scale <= 0) scale = 2;
                 }
                 new_entry.display_label = input_name + " (SR " +
                     std::to_string(scale) + "x)";
 
                 // Auto-select: input as A, output as B for comparison
                 selected_.clear();
-                if (task.input_entry_idx >= 0 &&
-                    task.input_entry_idx < new_idx) {
-                    selected_.insert(task.input_entry_idx);
+                if (input_idx >= 0) {
+                    selected_.insert(input_idx);
                 }
                 selected_.insert(new_idx);
                 swap_ab_ = false;

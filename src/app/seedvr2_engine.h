@@ -47,6 +47,14 @@ public:
     // or relative-to-exe detection.  Returns empty path if not found.
     static std::filesystem::path resolve_upscaler_path();
 
+    // Parse progress information from subprocess stdout/stderr lines.
+    // Returns a value in [0, 1] or -1.0 if no progress info available.
+    // Recognises several formats:
+    //   "Progress: 42.5%"                 — explicit percentage
+    //   "progress:0.425"                  — fractional value
+    //   "Processing tile 2/4 [256x256]"   — tile-based progress
+    static float parse_progress(const std::string& line);
+
 private:
     // Build the full command line to invoke the upscaler subprocess.
     std::string build_command(
@@ -56,9 +64,7 @@ private:
         const std::string& model,
         const std::string& color_correction) const;
 
-    // Parse progress information from subprocess stdout/stderr lines.
-    // Returns a value in [0, 1] or -1.0 if no progress info available.
-    float parse_progress(const std::string& line) const;
+
 
     std::filesystem::path upscaler_path_;
     std::atomic<SREngineStatus> status_ = SREngineStatus::Idle;

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include "app/sr_dialog.h"
 #include "app/sr_infer_engine.h"
@@ -127,7 +128,54 @@ TEST_CASE("SeedVR2Engine rejects missing upscale script", "[sr]") {
     fs::remove_all(tmp);
 }
 
-// ─── Integration test: actual upscaler ────────────────────────────────
+// ─── SeedVR2Engine::parse_progress ────────────────────────────────────
+
+TEST_CASE("SeedVR2Engine::parse_progress parses various formats", "[sr]") {
+    SECTION("explicit percentage: Progress: 42.5%") {
+        float p = idiff::SeedVR2Engine::parse_progress("Progress: 42.5%");
+        REQUIRE(p == Catch::Approx(0.425f).margin(0.001f));
+    }
+    SECTION("explicit percentage: Progress: 100%") {
+        float p = idiff::SeedVR2Engine::parse_progress("Progress: 100%");
+        REQUIRE(p == Catch::Approx(1.0f).margin(0.001f));
+    }
+    SECTION("explicit percentage: Progress: 0%") {
+        float p = idiff::SeedVR2Engine::parse_progress("Progress: 0%");
+        REQUIRE(p == Catch::Approx(0.0f).margin(0.001f));
+    }
+    SECTION("fractional progress: progress:0.425") {
+        float p = idiff::SeedVR2Engine::parse_progress("phase:upscale progress:0.425");
+        REQUIRE(p == Catch::Approx(0.425f).margin(0.001f));
+    }
+    SECTION("fractional progress: progress:1.0") {
+        float p = idiff::SeedVR2Engine::parse_progress("progress:1.0");
+        REQUIRE(p == Catch::Approx(1.0f).margin(0.001f));
+    }
+    SECTION("tile progress: Processing tile 1/4") {
+        float p = idiff::SeedVR2Engine::parse_progress(
+            "[12:34:56.789] \xF0\x9F\x8E\xAC Processing tile 1/4 [256x256]");
+        REQUIRE(p == Catch::Approx(0.25f).margin(0.001f));
+    }
+    SECTION("tile progress: Processing tile 3/4") {
+        float p = idiff::SeedVR2Engine::parse_progress(
+            "Processing tile 3/4 [512x512]");
+        REQUIRE(p == Catch::Approx(0.75f).margin(0.001f));
+    }
+    SECTION("tile progress: Processing tile 4/4") {
+        float p = idiff::SeedVR2Engine::parse_progress(
+            "Processing tile 4/4 [256x256]");
+        REQUIRE(p == Catch::Approx(1.0f).margin(0.001f));
+    }
+    SECTION("no progress info returns -1") {
+        float p = idiff::SeedVR2Engine::parse_progress(
+            "Loading model seedvr2_ema_3b-Q4_K_M.gguf...");
+        REQUIRE(p == Catch::Approx(-1.0f));
+    }
+    SECTION("empty string returns -1") {
+        float p = idiff::SeedVR2Engine::parse_progress("");
+        REQUIRE(p == Catch::Approx(-1.0f));
+    }
+}
 // This test only runs when SEEDVR2_UPSCALER_PATH is set and points to
 // a valid seedvr2-upscaler installation.  It is skipped in CI.
 

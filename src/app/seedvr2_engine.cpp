@@ -94,10 +94,12 @@ std::string SeedVR2Engine::build_command(
     return cmd.str();
 }
 
-float SeedVR2Engine::parse_progress(const std::string& line) const {
-    // The seedvr2-upscaler outputs progress lines like:
-    //   "Progress: 42.5%" or "phase:upscale progress:0.425"
-    // Try to match common patterns.
+float SeedVR2Engine::parse_progress(const std::string& line) {
+    // The seedvr2-upscaler outputs progress in several formats:
+    //   "Progress: 42.5%"                          — explicit percentage
+    //   "phase:upscale progress:0.425"              — fractional progress
+    //   "Processing tile 2/4 [256x256]"             — tile-based progress
+    // Try to match each pattern in turn.
     {
         auto pos = line.find("Progress:");
         if (pos != std::string::npos) {
@@ -114,7 +116,6 @@ float SeedVR2Engine::parse_progress(const std::string& line) const {
         auto pos = line.find("progress:");
         if (pos != std::string::npos) {
             std::string rest = line.substr(pos + 9);
-            // Trim to numeric prefix
             size_t end = 0;
             while (end < rest.size() && (rest[end] == '.' ||
                    (rest[end] >= '0' && rest[end] <= '9'))) {
@@ -122,6 +123,26 @@ float SeedVR2Engine::parse_progress(const std::string& line) const {
             }
             try { return std::stof(rest.substr(0, end)); }
             catch (...) {}
+        }
+    }
+    {
+        // Match "Processing tile N/M" pattern from debug output
+        auto pos = line.find("Processing tile ");
+        if (pos != std::string::npos) {
+            auto rest = line.substr(pos + 16); // skip "Processing tile "
+            auto slash = rest.find('/');
+            if (slash != std::string::npos) {
+                try {
+                    int current = std::stoi(rest.substr(0, slash));
+                    // Find end of total number
+                    size_t end = slash + 1;
+                    while (end < rest.size() && rest[end] >= '0' && rest[end] <= '9') ++end;
+                    int total = std::stoi(rest.substr(slash + 1, end - slash - 1));
+                    if (total > 0) {
+                        return static_cast<float>(current) / static_cast<float>(total);
+                    }
+                } catch (...) {}
+            }
         }
     }
     return -1.0f;  // No progress info in this line
@@ -234,8 +255,24 @@ bool SeedVR2Engine::start_inference(
 
         subprocess_handle_ = pi.hProcess;
 
-        // Read stdout for progress information
+        // Read stdout and stderr concurrently to avoid deadlock.
+        // If we read them sequentially, the unread pipe's buffer can
+        // fill up and block the child process.
         std::string captured_stderr;
+        std::thread stderr_reader([&captured_stderr, hStdErrRead, this]() {
+            std::array<char, 4096> buf;
+            DWORD bytesRead;
+            while (ReadFile(hStdErrRead, buf.data(),
+                            static_cast<DWORD>(buf.size()),
+                            &bytesRead, nullptr) && bytesRead > 0) {
+                std::string chunk(buf.data(), bytesRead);
+                captured_stderr.append(chunk);
+                float p = parse_progress(chunk);
+                if (p >= 0) progress_.store(p);
+            }
+        });
+
+        // Read stdout for progress information (main thread)
         {
             std::array<char, 4096> buf;
             DWORD bytesRead;
@@ -247,19 +284,7 @@ bool SeedVR2Engine::start_inference(
                 if (p >= 0) progress_.store(p);
             }
         }
-        // Read stderr — capture the full output for error reporting
-        {
-            std::array<char, 4096> buf;
-            DWORD bytesRead;
-            while (ReadFile(hStdErrRead, buf.data(),
-                            static_cast<DWORD>(buf.size()),
-                            &bytesRead, nullptr) && bytesRead > 0) {
-                std::string chunk(buf.data(), bytesRead);
-                captured_stderr.append(chunk);
-                float p = parse_progress(chunk);
-                if (p >= 0) progress_.store(p);
-            }
-        }
+        stderr_reader.join();
 
         // Wait for process completion
         WaitForSingleObject(pi.hProcess, INFINITE);
@@ -345,8 +370,20 @@ bool SeedVR2Engine::start_inference(
             close(pipe_err[1]);
             subprocess_handle_ = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
 
-            // Read stdout for progress
+            // Read stdout and stderr concurrently to avoid deadlock.
             std::string captured_stderr;
+            std::thread stderr_reader([&captured_stderr, &pipe_err, this]() {
+                std::array<char, 4096> buf;
+                ssize_t bytesRead;
+                while ((bytesRead = read(pipe_err[0], buf.data(), buf.size())) > 0) {
+                    std::string chunk(buf.data(), bytesRead);
+                    captured_stderr.append(chunk);
+                    float p = parse_progress(chunk);
+                    if (p >= 0) progress_.store(p);
+                }
+            });
+
+            // Read stdout for progress (main thread)
             {
                 std::array<char, 4096> buf;
                 ssize_t bytesRead;
@@ -356,17 +393,7 @@ bool SeedVR2Engine::start_inference(
                     if (p >= 0) progress_.store(p);
                 }
             }
-            // Read stderr — capture full output
-            {
-                std::array<char, 4096> buf;
-                ssize_t bytesRead;
-                while ((bytesRead = read(pipe_err[0], buf.data(), buf.size())) > 0) {
-                    std::string chunk(buf.data(), bytesRead);
-                    captured_stderr.append(chunk);
-                    float p = parse_progress(chunk);
-                    if (p >= 0) progress_.store(p);
-                }
-            }
+            stderr_reader.join();
 
             close(pipe_out[0]);
             close(pipe_err[0]);
