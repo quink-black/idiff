@@ -17,7 +17,9 @@ class MediaSource;
 class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
+class SRInferEngine;
 struct YuvStreamParams;
+struct SRDialogState;
 
 struct ImageEntry {
     std::string path;
@@ -160,6 +162,16 @@ private:
     // honoring the user-controlled swap flag. Missing slots are -1.
     void get_ab_indices(int& a_idx, int& b_idx) const;
 
+    // Render an error notification popup (modal dialog).
+    void render_error_dialog();
+    // Render the super-resolution configuration dialog.
+    void render_sr_dialog();
+    // Poll all running SR tasks, update status, and add completed
+    // output images to the image list.
+    void poll_sr_tasks();
+    // Start SR inference for the given task parameters.
+    void start_sr_task(const struct SRTaskParams& params);
+
     struct State;
     std::unique_ptr<State> state_;
 
@@ -180,6 +192,24 @@ private:
     // consumed by render_status_bar() to map the viewport's hover pixel
     // back to a concrete image.
     std::vector<int> viewport_slot_to_entry_;
+
+    // Super-resolution feature state
+    // True when the seedvr2-upscaler (or any registered SR engine) is
+    // available next to the executable or via SEEDVR2_UPSCALER_PATH.
+    bool sr_enabled_ = false;
+
+    // SR configuration dialog state.
+    std::unique_ptr<SRDialogState> sr_dialog_;
+
+    // A running SR task: the engine performing inference plus the
+    // original entry index so we can auto-select input & output after
+    // completion.
+    struct SRTask {
+        std::unique_ptr<SRInferEngine> engine;
+        int input_entry_idx = -1;  // Index into entries_ when task was started
+        std::string status_msg;    // Last status message for the status bar
+    };
+    std::vector<SRTask> sr_tasks_;
 
     // Difference-mode state.  Each slot compares A (the first selected
     // entry, modulo swap_ab_) against one other selected entry.  With N

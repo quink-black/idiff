@@ -3,6 +3,11 @@
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
 #include "app/settings.h"
+#include "app/sr_infer_engine.h"
+#include "app/sr_infer_engine_factory.h"
+#include "app/seedvr2_engine.h"
+#include "app/platform/platform.h"
+#include "app/sr_dialog.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -54,6 +59,14 @@ struct App::State {
     LoaderBackend loader_backend = ImageLoader::default_backend();
 
     std::string status_text;
+    std::string status_msg;   // Last SR/notification message
+
+    // Error notification popup state.  When show_error_dialog is true,
+    // render_error_dialog() draws a modal with the error details.
+    bool show_error_dialog = false;
+    bool error_dialog_needs_open = false;
+    std::string error_dialog_title;
+    std::string error_dialog_message;
     bool show_metrics = true;
     bool show_properties = true;
     bool show_image_list = true;
@@ -241,6 +254,20 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
 
     NFD_Init();
 
+    // Detect whether a super-resolution upscaler is available next to
+    // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
+    // SeedVR2 engine only when detected so the UI can hide SR controls
+    // gracefully on systems without the upscaler installed.
+    auto upscaler_path = platform::seedvr2_detect_upscaler();
+    if (!upscaler_path.empty()) {
+        sr_enabled_ = true;
+        SRInferEngineFactory::instance().register_engine(
+            "seedvr2",
+            [upscaler_path]() -> std::unique_ptr<SRInferEngine> {
+                return std::make_unique<SeedVR2Engine>(upscaler_path);
+            });
+    }
+
     return true;
 }
 
@@ -358,6 +385,9 @@ void App::frame() {
     render_timeline_bar();
     render_status_bar();
     render_yuv_params_dialog();
+    render_error_dialog();
+    render_sr_dialog();
+    poll_sr_tasks();
 
     ImGui::Render();
 
@@ -2131,6 +2161,24 @@ diff_dirty_ = true;
             ImGui::Selectable(entry.display_label.c_str(), is_sel,
                               ImGuiSelectableFlags_AllowOverlap);
 
+            // Show SR progress indicator if this entry is being processed
+            for (const auto& task : sr_tasks_) {
+                if (task.input_entry_idx == i && task.engine &&
+                    task.engine->get_status() == SREngineStatus::Running) {
+                    ImGui::SameLine();
+                    float p = task.engine->get_progress();
+                    if (p >= 0) {
+                        ImGui::TextColored(
+                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
+                            "SR %d%%", static_cast<int>(p * 100));
+                    } else {
+                        ImGui::TextColored(
+                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SR...");
+                    }
+                    break;
+                }
+            }
+
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", entry.path.c_str());
             }
@@ -2161,6 +2209,39 @@ diff_dirty_ = true;
                 if (dynamic_cast<YuvRawSource*>(entry.source.get())) {
                     if (ImGui::MenuItem("Edit YUV parameters...")) {
                         begin_edit_yuv_entry(i);
+                    }
+                    ImGui::Separator();
+                }
+                // Super Resolution — only shown when an upscaler is detected
+                // and at least one entry is selected.
+                if (sr_enabled_ && !selected_.empty()) {
+                    bool any_running = false;
+                    for (const auto& task : sr_tasks_) {
+                        if (task.engine &&
+                            task.engine->get_status() == SREngineStatus::Running) {
+                            any_running = true;
+                            break;
+                        }
+                    }
+                    if (any_running) {
+                        ImGui::MenuItem("Super Resolution...", nullptr, false, false);
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("A super resolution task is already running");
+                        }
+                    } else {
+                        if (ImGui::MenuItem("Super Resolution...")) {
+                            // Gather input paths from all selected entries
+                            std::vector<std::filesystem::path> inputs;
+                            for (int s : selected_) {
+                                if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                                    inputs.emplace_back(entries_[s].path);
+                                }
+                            }
+                            if (!sr_dialog_) {
+                                sr_dialog_ = std::make_unique<SRDialogState>();
+                            }
+                            sr_dialog_open(*sr_dialog_, inputs, state_->settings);
+                        }
                     }
                     ImGui::Separator();
                 }
@@ -2653,6 +2734,187 @@ void App::render_right_sidebar() {
     ImGui::End();
 }
 
+void App::render_error_dialog() {
+    if (!state_->show_error_dialog) return;
+
+    if (state_->error_dialog_needs_open) {
+        ImGui::OpenPopup("Error###error_dialog");
+        state_->error_dialog_needs_open = false;
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Error###error_dialog",
+                               &state_->show_error_dialog,
+                               ImGuiWindowFlags_NoResize)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                           state_->error_dialog_title.c_str());
+        ImGui::Separator();
+        // Wrap long error messages into a scrollable text region
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440);
+        ImGui::TextUnformatted(state_->error_dialog_message.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+        float button_width = 120.0f;
+        ImGui::SetCursorPosX(
+            (ImGui::GetWindowWidth() - button_width) * 0.5f);
+        if (ImGui::Button("OK", ImVec2(button_width, 0))) {
+            state_->show_error_dialog = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+void App::render_sr_dialog() {
+    if (!sr_dialog_) return;
+    if (sr_dialog_render(*sr_dialog_)) {
+        // User confirmed the dialog — start SR tasks
+        for (const auto& params : sr_dialog_->task_params) {
+            start_sr_task(params);
+        }
+        // Persist the last-used SR settings
+        state_->settings.sr_scale = sr_dialog_->scale;
+        state_->settings.sr_tile_size = sr_dialog_->tile_size;
+        state_->settings.sr_tile_overlap = sr_dialog_->tile_overlap;
+        state_->settings.sr_model = sr_dialog_->model_buf;
+        state_->settings.sr_color_correction = sr_dialog_->color_correction_buf;
+        state_->settings.save();
+    }
+}
+
+void App::start_sr_task(const SRTaskParams& params) {
+    auto engine = SRInferEngineFactory::instance().create_engine("seedvr2");
+    if (!engine) {
+        state_->error_dialog_title = "Super Resolution Error";
+        state_->error_dialog_message = "SR engine not available. "
+            "Make sure the seedvr2-upscaler directory exists next to "
+            "the executable or set the SEEDVR2_UPSCALER_PATH environment variable.";
+        state_->show_error_dialog = true;
+        state_->error_dialog_needs_open = true;
+        return;
+    }
+    if (!engine->start_inference(
+            params.input_path, params.output_path,
+            params.scale, params.tile_size, params.tile_overlap,
+            params.model, params.color_correction)) {
+        auto err = engine->last_error();
+        state_->error_dialog_title = "Super Resolution Error";
+        state_->error_dialog_message = err.description;
+        state_->show_error_dialog = true;
+        state_->error_dialog_needs_open = true;
+        return;
+    }
+
+    SRTask task;
+    task.engine = std::move(engine);
+    // Find the entry index for this input path
+    task.input_entry_idx = -1;
+    for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
+        if (entries_[i].path == params.input_path.string()) {
+            task.input_entry_idx = i;
+            break;
+        }
+    }
+    task.status_msg = "Super Resolution: processing " +
+                      params.input_path.filename().string() + "...";
+    sr_tasks_.push_back(std::move(task));
+}
+
+void App::poll_sr_tasks() {
+    for (auto it = sr_tasks_.begin(); it != sr_tasks_.end(); ) {
+        auto& task = *it;
+        if (!task.engine) {
+            it = sr_tasks_.erase(it);
+            continue;
+        }
+
+        auto status = task.engine->get_status();
+
+        if (status == SREngineStatus::Running) {
+            float progress = task.engine->get_progress();
+            if (progress >= 0) {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%.0f%%", progress * 100.0f);
+                task.status_msg = "Super Resolution: processing " +
+                    std::to_string(static_cast<int>(progress * 100)) + "%";
+            }
+            ++it;
+        } else if (status == SREngineStatus::Completed) {
+            auto output_path = task.engine->get_output_path();
+            // Add the output image to the image list
+            std::vector<std::string> paths = { output_path.string() };
+            load_images(paths);
+
+            // Find the newly added entry (it should be the last one)
+            int new_idx = static_cast<int>(entries_.size()) - 1;
+            if (new_idx >= 0) {
+                // Update the display label to indicate it's an SR output
+                auto& new_entry = entries_[new_idx];
+                std::string input_name;
+                if (task.input_entry_idx >= 0 &&
+                    task.input_entry_idx < static_cast<int>(entries_.size() - 1)) {
+                    input_name = entries_[task.input_entry_idx].filename;
+                } else {
+                    input_name = new_entry.filename;
+                }
+                // Extract scale from the output path naming convention
+                int scale = 2;  // default
+                auto fname = output_path.stem().string();
+                auto pos = fname.find("_sr_");
+                if (pos != std::string::npos) {
+                    auto x_pos = fname.find('x', pos);
+                    if (x_pos != std::string::npos) {
+                        scale = std::atoi(fname.c_str() + pos + 4);
+                        if (scale <= 0) scale = 2;
+                    }
+                }
+                new_entry.display_label = input_name + " (SR " +
+                    std::to_string(scale) + "x)";
+
+                // Auto-select: input as A, output as B for comparison
+                selected_.clear();
+                if (task.input_entry_idx >= 0 &&
+                    task.input_entry_idx < new_idx) {
+                    selected_.insert(task.input_entry_idx);
+                }
+                selected_.insert(new_idx);
+                swap_ab_ = false;
+                diff_dirty_ = true;
+
+                // Mark textures for upload
+                for (int s : selected_) {
+                    if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                        entries_[s].texture_dirty = true;
+                    }
+                }
+            }
+
+            task.status_msg = "Super Resolution: completed " +
+                output_path.filename().string();
+            state_->status_msg = task.status_msg;
+
+            it = sr_tasks_.erase(it);
+        } else if (status == SREngineStatus::Failed) {
+            auto err = task.engine->last_error();
+            task.status_msg = "Super Resolution failed: " + err.description;
+            state_->status_msg = task.status_msg;
+            // Show a persistent error dialog so the user can actually
+            // read the error message before it scrolls away.
+            state_->error_dialog_title = "Super Resolution Failed";
+            state_->error_dialog_message = err.description;
+            state_->show_error_dialog = true;
+            state_->error_dialog_needs_open = true;
+            it = sr_tasks_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void App::render_status_bar() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
 
@@ -2791,6 +3053,25 @@ void App::render_status_bar() {
 
             if (!state_->status_text.empty()) {
                 append(" | %s", state_->status_text.c_str());
+            }
+
+            // Show active SR task progress in the status bar
+            if (!sr_tasks_.empty()) {
+                for (const auto& task : sr_tasks_) {
+                    if (task.engine &&
+                        task.engine->get_status() == SREngineStatus::Running) {
+                        float p = task.engine->get_progress();
+                        if (p >= 0) {
+                            append(" | SR: %d%%", static_cast<int>(p * 100));
+                        } else {
+                            append(" | SR: running...");
+                        }
+                    }
+                }
+            }
+
+            if (!state_->status_msg.empty()) {
+                append(" | %s", state_->status_msg.c_str());
             }
             ImGui::TextUnformatted(buf);
             ImGui::EndMenuBar();

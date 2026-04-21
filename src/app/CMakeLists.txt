@@ -5,12 +5,18 @@ add_executable(idiff
     metrics_panel.cpp
     properties_panel.cpp
     settings.cpp
+    sr_infer_engine.cpp
+    sr_infer_engine_factory.cpp
+    seedvr2_engine.cpp
+    sr_dialog.cpp
 )
 
 if(APPLE)
     target_sources(idiff PRIVATE platform/platform_macos.mm)
 elseif(WIN32)
     target_sources(idiff PRIVATE platform/platform_win32.cpp)
+else()
+    target_sources(idiff PRIVATE platform/platform_posix.cpp)
 endif()
 
 target_link_libraries(idiff PRIVATE

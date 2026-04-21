@@ -131,6 +131,16 @@ AppSettings AppSettings::load(const std::string& path) {
             s.heatmap_color = std::atoi(val.c_str());
         } else if (key == "diff.amplification") {
             s.diff_amplification = std::atof(val.c_str());
+        } else if (key == "sr.scale") {
+            s.sr_scale = std::atoi(val.c_str());
+        } else if (key == "sr.tile_size") {
+            s.sr_tile_size = std::atoi(val.c_str());
+        } else if (key == "sr.tile_overlap") {
+            s.sr_tile_overlap = std::atoi(val.c_str());
+        } else if (key == "sr.model") {
+            s.sr_model = val;
+        } else if (key == "sr.color_correction") {
+            s.sr_color_correction = val;
         }
     }
     return s;
@@ -169,6 +179,11 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.grid_cols="   << grid_cols   << "\n";
     out << "diff.heatmap_color="   << heatmap_color << "\n";
     out << "diff.amplification="   << diff_amplification << "\n";
+    out << "sr.scale="             << sr_scale << "\n";
+    out << "sr.tile_size="         << sr_tile_size << "\n";
+    out << "sr.tile_overlap="      << sr_tile_overlap << "\n";
+    out << "sr.model="             << sr_model << "\n";
+    out << "sr.color_correction="  << sr_color_correction << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;

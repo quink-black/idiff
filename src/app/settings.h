@@ -33,6 +33,15 @@ struct AppSettings {
     int heatmap_color = 1;
     double diff_amplification = 5.0;
 
+    // Super-resolution options.
+    // Last-used parameters for the SR dialog; persisted so the user
+    // does not need to re-enter scale, tile size, etc. every time.
+    int sr_scale = 2;           // 2 or 4
+    int sr_tile_size = 256;     // Tile size in pixels
+    int sr_tile_overlap = 64;   // Overlap between adjacent tiles
+    std::string sr_model = "seedvr2_ema_3b-Q4_K_M.gguf";
+    std::string sr_color_correction = "lab";
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)
