@@ -67,6 +67,12 @@ struct App::State {
     bool error_dialog_needs_open = false;
     std::string error_dialog_title;
     std::string error_dialog_message;
+
+    // Quit-while-SR-running confirmation dialog state.
+    bool show_quit_confirm_dialog = false;
+    bool quit_confirm_dialog_needs_open = false;
+    // Set to true when the user confirms they want to quit despite running SR.
+    bool quit_confirmed = false;
     bool show_metrics = true;
     bool show_properties = true;
     bool show_image_list = true;
@@ -386,6 +392,7 @@ void App::frame() {
     render_status_bar();
     render_yuv_params_dialog();
     render_error_dialog();
+    render_quit_confirm_dialog();
     render_sr_dialog();
     poll_sr_tasks();
 
@@ -1971,9 +1978,7 @@ void App::render_toolbar() {
             }
             ImGui::Separator();
             if (ImGui::MenuItem("Quit", "Alt+F4")) {
-                SDL_Event e;
-                e.type = SDL_QUIT;
-                SDL_PushEvent(&e);
+                request_quit();
             }
             ImGui::EndMenu();
         }
@@ -2224,9 +2229,44 @@ diff_dirty_ = true;
                         }
                     }
                     if (any_running) {
-                        ImGui::MenuItem("Super Resolution...", nullptr, false, false);
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("A super resolution task is already running");
+                        // Collect progress info for the tooltip.
+                        float total_progress = 0.0f;
+                        int running_count = 0;
+                        for (const auto& task : sr_tasks_) {
+                            if (task.engine &&
+                                task.engine->get_status() == SREngineStatus::Running) {
+                                float p = task.engine->get_progress();
+                                if (p >= 0) total_progress += p;
+                                ++running_count;
+                            }
+                        }
+                        char sr_label[64];
+                        if (running_count > 0 && total_progress >= 0) {
+                            int pct = static_cast<int>(
+                                total_progress / running_count * 100.0f);
+                            std::snprintf(sr_label, sizeof(sr_label),
+                                          "Super Resolution... (%d%%)", pct);
+                        } else {
+                            std::snprintf(sr_label, sizeof(sr_label),
+                                          "Super Resolution... (running)");
+                        }
+                        ImGui::MenuItem(sr_label, nullptr, false, false);
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                            ImGui::BeginTooltip();
+                            if (running_count == 1) {
+                                ImGui::TextUnformatted(
+                                    "A super resolution task is running.");
+                            } else {
+                                char buf[64];
+                                std::snprintf(buf, sizeof(buf),
+                                    "%d super resolution tasks are running.",
+                                    running_count);
+                                ImGui::TextUnformatted(buf);
+                            }
+                            ImGui::TextDisabled(
+                                "Please wait for it to finish before\n"
+                                "starting a new task.");
+                            ImGui::EndTooltip();
                         }
                     } else {
                         if (ImGui::MenuItem("Super Resolution...")) {
@@ -2769,8 +2809,108 @@ void App::render_error_dialog() {
     }
 }
 
+bool App::has_running_sr_tasks() const {
+    for (const auto& task : sr_tasks_) {
+        if (task.engine &&
+            task.engine->get_status() == SREngineStatus::Running) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void App::request_quit() {
+    if (has_running_sr_tasks()) {
+        // Show confirmation dialog instead of quitting immediately.
+        state_->show_quit_confirm_dialog = true;
+        state_->quit_confirm_dialog_needs_open = true;
+    } else {
+        state_->quit_confirmed = true;
+    }
+}
+
+bool App::wants_quit() const {
+    return state_->quit_confirmed;
+}
+
+void App::render_quit_confirm_dialog() {
+    if (!state_->show_quit_confirm_dialog) return;
+
+    if (state_->quit_confirm_dialog_needs_open) {
+        ImGui::OpenPopup("Quit###quit_confirm_dialog");
+        state_->quit_confirm_dialog_needs_open = false;
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Quit###quit_confirm_dialog",
+                               &state_->show_quit_confirm_dialog,
+                               ImGuiWindowFlags_NoResize)) {
+        // Count running tasks and collect their names for display.
+        int running_count = 0;
+        std::string running_names;
+        for (const auto& task : sr_tasks_) {
+            if (task.engine &&
+                task.engine->get_status() == SREngineStatus::Running) {
+                ++running_count;
+                if (!running_names.empty()) running_names += ", ";
+                // Extract a short name from the status message.
+                running_names += task.status_msg.empty()
+                    ? "unknown"
+                    : task.status_msg;
+            }
+        }
+
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                           "Super resolution in progress");
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 360);
+        if (running_count == 1) {
+            ImGui::TextUnformatted(
+                "A super resolution task is still running. "
+                "Quitting now will cancel it and the output file "
+                "may be incomplete.");
+        } else {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf),
+                          "%d super resolution tasks are still running. "
+                          "Quitting now will cancel them and output files "
+                          "may be incomplete.", running_count);
+            ImGui::TextUnformatted(buf);
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        float button_width = 140.0f;
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float total_width = button_width * 2 + spacing;
+        ImGui::SetCursorPosX(
+            (ImGui::GetWindowWidth() - total_width) * 0.5f);
+
+        if (ImGui::Button("Quit Anyway", ImVec2(button_width, 0))) {
+            // Cancel all running tasks before quitting.
+            for (auto& task : sr_tasks_) {
+                if (task.engine) task.engine->cancel();
+            }
+            state_->quit_confirmed = true;
+            state_->show_quit_confirm_dialog = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Keep Waiting", ImVec2(button_width, 0))) {
+            state_->show_quit_confirm_dialog = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 void App::render_sr_dialog() {
-    if (!sr_dialog_) return;
     if (sr_dialog_render(*sr_dialog_)) {
         // User confirmed the dialog — start SR tasks
         for (const auto& params : sr_dialog_->task_params) {

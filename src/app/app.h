@@ -73,6 +73,17 @@ public:
 
     void load_images(const std::vector<std::string>& paths);
 
+    // Returns true if any super-resolution task is currently running.
+    bool has_running_sr_tasks() const;
+    // Called when the user requests to quit (e.g. closes the window or
+    // presses Alt+F4).  If SR tasks are running, shows a confirmation
+    // dialog instead of quitting immediately.  Otherwise sets the
+    // internal quit flag so wants_quit() returns true next frame.
+    void request_quit();
+    // Returns true once the app is ready to exit (either no SR tasks
+    // were running, or the user confirmed the quit dialog).
+    bool wants_quit() const;
+
     // Dispatch entry for any "user asked to open these files" flow
     // (menu, drag & drop, side-bar button, command-line args, ...).
     // Paths with a `.json` extension are routed to the comparison-
@@ -164,6 +175,8 @@ private:
 
     // Render an error notification popup (modal dialog).
     void render_error_dialog();
+    // Render the quit-while-SR-running confirmation dialog.
+    void render_quit_confirm_dialog();
     // Render the super-resolution configuration dialog.
     void render_sr_dialog();
     // Poll all running SR tasks, update status, and add completed

@@ -110,12 +110,12 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
             if (event.type == SDL_QUIT) {
-                running = false;
+                app.request_quit();
             }
             if (event.type == SDL_WINDOWEVENT &&
                 event.window.event == SDL_WINDOWEVENT_CLOSE &&
                 event.window.windowID == SDL_GetWindowID(window)) {
-                running = false;
+                app.request_quit();
             }
             if (event.type == SDL_DROPFILE && event.drop.file) {
                 dropped_paths.emplace_back(event.drop.file);
@@ -130,6 +130,10 @@ int main(int argc, char** argv) {
         }
 
         app.frame();
+
+        if (app.wants_quit()) {
+            running = false;
+        }
     }
 
     app.shutdown();
