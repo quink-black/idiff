@@ -405,6 +405,11 @@ std::unique_ptr<Image> ImageLoader::load_via_opencv(const std::string& path) {
     } catch (const cv::Exception& e) {
         last_error_ = e.what();
         return nullptr;
+    } catch (const std::exception& e) {
+        // Catch std::bad_alloc and anything else that escapes the I/O
+        // helpers so a broken file can never crash the process.
+        last_error_ = std::string("Failed to load image: ") + e.what();
+        return nullptr;
     }
 }
 
@@ -432,6 +437,9 @@ ImageLoader::load_via_opencv_memory(const uint8_t* data, size_t size,
         return image;
     } catch (const cv::Exception& e) {
         last_error_ = e.what();
+        return nullptr;
+    } catch (const std::exception& e) {
+        last_error_ = std::string("Failed to decode image: ") + e.what();
         return nullptr;
     }
 }
