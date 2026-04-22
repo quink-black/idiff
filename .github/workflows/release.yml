@@ -145,30 +145,46 @@ jobs:
                damaged, use option 1 or 2.)
 
   # ----------------------------------------------------------------------
-  # Windows -- vcpkg for deps, OpenCV imgcodecs backend (no ImageMagick
-  # on Windows; matches ci.yml). Ships a zipped directory containing
-  # idiff.exe + every runtime DLL.
+  # Windows -- prebuilt vcpkg deps, OpenCV imgcodecs backend (no
+  # ImageMagick on Windows; matches ci.yml). Ships a zipped directory
+  # containing idiff.exe + every runtime DLL.
+  #
+  # Dependencies are prebuilt by the build-deps.yml workflow and
+  # published as a GitHub Release asset.  This avoids rebuilding
+  # OpenCV from source on every release (saves ~20-30 min).
   # ----------------------------------------------------------------------
   windows:
     name: Windows (.zip)
     runs-on: windows-latest
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      DEPS_TAG: deps-windows-v1
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bootstrap vcpkg
+      - name: Bootstrap vcpkg (toolchain file only, no package install)
         run: |
-          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg
           C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
-      - name: Export vcpkg binary cache credentials
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Download prebuilt dependencies
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:DEPS_TAG
+          $asset = "vcpkg-deps-x64-windows.zip"
+          $url = "https://github.com/${{ github.repository }}/releases/download/${tag}/${asset}"
+          Write-Host "Downloading prebuilt deps from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $asset -Headers @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/octet-stream"
+          }
+          Write-Host "Extracting to C:\vcpkg_installed ..."
+          Expand-Archive -Path $asset -DestinationPath C:\vcpkg_installed -Force
+          Remove-Item $asset
+          Write-Host "Done. Contents:"
+          Get-ChildItem C:\vcpkg_installed -Depth 1
 
       - name: Configure
         run: |
@@ -176,6 +192,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
             -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_INSTALLED_DIR=C:\vcpkg_installed `
+            -DVCPKG_MANIFEST_MODE=OFF `
             -DIDIFF_USE_OPENCV_IMGCODECS=ON `
             -DIDIFF_BUILD_TESTS=OFF
 

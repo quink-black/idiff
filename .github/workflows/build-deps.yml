@@ -1,0 +1,58 @@
+name: Build Windows Dependencies
+
+# Manual trigger only — run this when vcpkg.json changes or you need
+# to refresh the prebuilt dependency archive.
+on:
+  workflow_dispatch:
+    inputs:
+      deps_tag:
+        description: 'Tag name for the deps release (e.g. deps-windows-v1)'
+        required: true
+        default: 'deps-windows-v1'
+
+permissions:
+  contents: write   # needed to create/update a release
+
+jobs:
+  build:
+    name: Build vcpkg deps (x64-windows)
+    runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Install vcpkg packages
+        run: C:\vcpkg\vcpkg.exe install --x-manifest-root=. --x-install-root=C:\vcpkg_installed
+
+      - name: Export installed packages
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.deps_tag }}"
+          $archive = "vcpkg-deps-x64-windows.zip"
+          Write-Host "Compressing C:\vcpkg_installed into $archive ..."
+          Compress-Archive -Path "C:\vcpkg_installed\*" -DestinationPath $archive -Force
+          Write-Host "Archive size: $((Get-Item $archive).Length / 1MB) MB"
+
+      - name: Create or update deps release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.deps_tag }}
+          name: "Prebuilt Windows Dependencies (${{ github.event.inputs.deps_tag }})"
+          body: |
+            Prebuilt vcpkg dependencies for Windows x64.
+
+            Built from `vcpkg.json` at commit ${{ github.sha }}.
+            Download `vcpkg-deps-x64-windows.zip` and extract to use as
+            `CMAKE_TOOLCHAIN_FILE` + `VCPKG_INSTALLED_DIR`.
+
+            **Contents:** opencv4 (core, imgproc, imgcodecs, quality, jpeg,
+            png, tiff, webp), libraw, sdl2, catch2, nativefiledialog-extended.
+          files: vcpkg-deps-x64-windows.zip
+          fail_on_unmatched_files: true
+          prerelease: true
