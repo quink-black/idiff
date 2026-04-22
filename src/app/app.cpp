@@ -2270,13 +2270,13 @@ diff_dirty_ = true;
                         }
                     } else {
                         if (ImGui::MenuItem("Super Resolution...")) {
-                            // Gather input paths from all selected entries
+                            // Use only the right-clicked entry as the SR
+                            // input.  Previously we gathered all selected
+                            // entries, which caused stale selections (e.g.
+                            // auto-selected input+output from a previous
+                            // SR run) to spawn duplicate tasks.
                             std::vector<std::filesystem::path> inputs;
-                            for (int s : selected_) {
-                                if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                                    inputs.emplace_back(entries_[s].path);
-                                }
-                            }
+                            inputs.emplace_back(entries_[i].path);
                             if (!sr_dialog_) {
                                 sr_dialog_ = std::make_unique<SRDialogState>();
                             }
