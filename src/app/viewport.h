@@ -3,6 +3,8 @@
 
 #include <imgui.h>
 
+#include "core/channel_view.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -109,6 +111,10 @@ public:
     int grid_cols() const noexcept { return grid_cols_; }
     void set_grid_cols(int v) { grid_cols_ = std::max(1, v); }
 
+    // Single-channel view mode
+    ChannelViewMode channel_view_mode() const noexcept { return channel_view_mode_; }
+    void set_channel_view_mode(ChannelViewMode v) { channel_view_mode_ = v; }
+
     // Compute grid dimensions for `n` items under the given layout.
     // In RowsCols mode, `user_cols` specifies the column count and rows
     // are derived; ignored for other modes.
@@ -198,6 +204,9 @@ private:
     // Grid layout
     GridLayout grid_layout_ = GridLayout::Auto;
     int grid_cols_ = 3;
+
+    // Single-channel view mode applied to all displayed images.
+    ChannelViewMode channel_view_mode_ = ChannelViewMode::None;
 };
 
 } // namespace idiff

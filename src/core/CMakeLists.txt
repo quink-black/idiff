@@ -7,6 +7,7 @@ add_library(idiff_core
     metrics_engine.cpp
     url_cache.cpp
     comparison_config.cpp
+    channel_view.cpp
     detail/raw_loader.cpp
 )
 

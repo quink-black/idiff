@@ -74,7 +74,8 @@ std::unique_ptr<Image> ImageFileSource::read_frame(int index) {
         return nullptr;
     }
 
-    ImageLoader loader;
+    ImageLoader loader(static_cast<uint32_t>(LoadFlag::KeepAlpha) |
+                       static_cast<uint32_t>(LoadFlag::ApplyICC));
     loader.set_preferred_backend(preferred_backend_);
     auto img = loader.load(path_);
     if (!img) {

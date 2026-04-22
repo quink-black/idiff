@@ -8,6 +8,7 @@ add_executable(idiff_tests
     test_ruler_utils.cpp
     test_yuv_source.cpp
     test_sr_engine.cpp
+    test_channel_view.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp

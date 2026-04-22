@@ -32,6 +32,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "core/channel_view.h"
 #include "core/image_loader.h"
 #include "core/image_processor.h"
 #include "core/image_comparator.h"
@@ -319,6 +320,32 @@ void App::frame() {
             if (!entries_.empty() &&
                 ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
                 save_viewport_dialog();
+            }
+
+            // Channel view shortcuts: 1-9 cycle through modes.
+            if (!selected_.empty()) {
+                static constexpr ChannelViewMode kModeMap[9] = {
+                    ChannelViewMode::None,
+                    ChannelViewMode::R,
+                    ChannelViewMode::G,
+                    ChannelViewMode::B,
+                    ChannelViewMode::AlphaGray,
+                    ChannelViewMode::AlphaBlend,
+                    ChannelViewMode::AlphaContour,
+                    ChannelViewMode::Y,
+                    ChannelViewMode::U,
+                };
+                for (int i = 0; i < 9; ++i) {
+                    if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i))) {
+                        state_->viewport->set_channel_view_mode(kModeMap[i]);
+                        for (int s : selected_) {
+                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                                entries_[s].texture_dirty = true;
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1778,20 +1805,34 @@ void App::upload_texture(ImageEntry& entry) {
     const auto& mat = img->mat();
     if (mat.empty()) return;
 
-    int w = mat.cols;
-    int h = mat.rows;
-    int channels = mat.channels();
+    // Apply single-channel view extraction if active.
+    cv::Mat channel_mat;
+    const cv::Mat* source_mat = &mat;
+    ChannelViewMode mode = state_->viewport->channel_view_mode();
+    if (mode != ChannelViewMode::None) {
+        auto extracted = extract_channel_view(mat, mode);
+        if (extracted) {
+            channel_mat = std::move(*extracted);
+            source_mat = &channel_mat;
+        }
+        // If extraction fails (e.g. Alpha on a 3-channel image) fall
+        // through to show the original image rather than a blank texture.
+    }
+
+    int w = source_mat->cols;
+    int h = source_mat->rows;
+    int channels = source_mat->channels();
 
     // Metal backend does not reliably support SDL_PIXELFORMAT_RGB24 (3-byte).
     // Always convert to RGBA32 for upload to avoid rendering artifacts.
     cv::Mat upload_mat;
     if (channels == 3) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
+        cv::cvtColor(*source_mat, upload_mat, cv::COLOR_RGB2RGBA);
         channels = 4;
     } else if (channels == 4) {
-        upload_mat = mat;
+        upload_mat = *source_mat;
     } else if (channels == 1) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        cv::cvtColor(*source_mat, upload_mat, cv::COLOR_GRAY2RGBA);
         channels = 4;
     } else {
         return;
@@ -2038,6 +2079,47 @@ void App::render_toolbar() {
         ImGui::Separator();
         if (ImGui::SmallButton("+ Open")) {
             open_file_dialog();
+        }
+
+        // Channel view selector -- always visible in the toolbar so users
+        // can discover it even without images loaded.
+        {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ChannelViewMode cv_mode = state_->viewport->channel_view_mode();
+            const char* preview = channel_view_mode_label(cv_mode);
+            ImGui::SetNextItemWidth(120.0f);
+            if (ImGui::BeginCombo("##channel_view", preview)) {
+                static constexpr ChannelViewMode modes[] = {
+                    ChannelViewMode::None,
+                    ChannelViewMode::R,
+                    ChannelViewMode::G,
+                    ChannelViewMode::B,
+                    ChannelViewMode::AlphaGray,
+                    ChannelViewMode::AlphaBlend,
+                    ChannelViewMode::AlphaContour,
+                    ChannelViewMode::Y,
+                    ChannelViewMode::U,
+                    ChannelViewMode::V,
+                };
+                for (auto m : modes) {
+                    bool is_selected = (cv_mode == m);
+                    if (ImGui::Selectable(channel_view_mode_label(m), is_selected)) {
+                        state_->viewport->set_channel_view_mode(m);
+                        last_channel_view_mode_ = m;
+                        for (int s : selected_) {
+                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                                entries_[s].texture_dirty = true;
+                            }
+                        }
+                    }
+                    if (is_selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("Channel");
         }
 
         ImGui::EndMainMenuBar();
@@ -2429,19 +2511,17 @@ void App::render_viewport() {
 
     // --- Keyboard shortcuts (when viewport is focused) ---
     if (focused || hovered) {
-        // '0' or Ctrl+0 : fit to content
         bool ctrl = io.KeyCtrl;
+        // '0' or Ctrl+0 : fit to content
         if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Keypad0)) {
             vp.fit_to_content();
-        }
-        // '1' or Ctrl+1 : actual pixels (100%)
-        if (ImGui::IsKeyPressed(ImGuiKey_1) || ImGui::IsKeyPressed(ImGuiKey_Keypad1)) {
-            vp.zoom_to_actual();
         }
         // 'F' : fit to content
         if (ImGui::IsKeyPressed(ImGuiKey_F) && !ctrl) {
             vp.fit_to_content();
         }
+        // Number keys for channel view are handled in the global shortcut
+        // block above so they work even when the Viewport is not focused.
     }
 
     // --- Double-click to fit ---
@@ -2669,6 +2749,18 @@ diff_dirty_ = true;
     // Render viewport content
     vp.render(tex_ptrs, tex_ws, tex_hs, labels,
               diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
+
+    // Detect channel view mode changes triggered inside the Viewport
+    // combo and mark selected entries dirty so textures are re-uploaded
+    // with the new channel extraction on the next frame.
+    if (vp.channel_view_mode() != last_channel_view_mode_) {
+        last_channel_view_mode_ = vp.channel_view_mode();
+        for (int s : selected_) {
+            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                entries_[s].texture_dirty = true;
+            }
+        }
+    }
 
     ImGui::End();
     ImGui::PopStyleVar();

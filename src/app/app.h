@@ -1,6 +1,8 @@
 #ifndef IDIFF_APP_H
 #define IDIFF_APP_H
 
+#include "core/channel_view.h"
+
 #include <memory>
 #include <set>
 #include <string>
@@ -20,6 +22,10 @@ class PropertiesPanel;
 class SRInferEngine;
 struct YuvStreamParams;
 struct SRDialogState;
+
+// Forward declaration is not sufficient because App stores a default-
+// initialized ChannelViewMode value; the full enum definition is needed.
+// Defined in core/channel_view.h.
 
 struct ImageEntry {
     std::string path;
@@ -233,6 +239,10 @@ private:
     // forces a full recompute anyway.
     std::vector<DiffSlot> diff_slots_;
     bool diff_dirty_ = true;
+
+    // Last known channel view mode, tracked so we can detect changes
+    // triggered inside the Viewport combo and mark textures dirty.
+    ChannelViewMode last_channel_view_mode_ = ChannelViewMode::None;
 };
 
 } // namespace idiff
