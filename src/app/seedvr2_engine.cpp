@@ -5,19 +5,19 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <signal.h>
-#include <fcntl.h>
 #endif
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
-#include <vector>
 #endif
 
 namespace idiff {
