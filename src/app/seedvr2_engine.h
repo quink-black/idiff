@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "app/sr_infer_engine.h"
 
@@ -77,8 +78,19 @@ private:
     std::string stderr_output_;
 
     // Platform-specific subprocess handle (void* to be cast to
-    // HANDLE on Windows or pid_t on POSIX).
+    // HANDLE on Windows or pid_t on POSIX).  Protected by
+    // subprocess_mutex_ because cancel() on the main thread and
+    // the worker thread both access it.
+    std::mutex subprocess_mutex_;
     void* subprocess_handle_ = nullptr;
+
+    // Background worker thread that runs the subprocess and reads
+    // its output.  Must be joined before the object is destroyed.
+    std::thread worker_thread_;
+
+    // Set by cancel() to signal the worker thread to stop reading
+    // pipes and skip post-process cleanup.
+    std::atomic<bool> cancel_requested_ = false;
 };
 
 } // namespace idiff

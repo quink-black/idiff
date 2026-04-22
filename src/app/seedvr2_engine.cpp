@@ -21,7 +21,10 @@ SeedVR2Engine::SeedVR2Engine(const std::filesystem::path& upscaler_path)
     : upscaler_path_(upscaler_path) {}
 
 SeedVR2Engine::~SeedVR2Engine() {
-    cancel();  // Ensure subprocess is cleaned up.
+    // Signal the worker to stop and wait for it to finish.
+    // This is critical: the worker thread captures `this`, so we
+    // must guarantee it has exited before any member is destroyed.
+    cancel();
 }
 
 std::filesystem::path SeedVR2Engine::resolve_upscaler_path() {
@@ -189,6 +192,13 @@ bool SeedVR2Engine::start_inference(
         stderr_output_.clear();
     }
     status_.store(SREngineStatus::Running);
+    cancel_requested_.store(false);
+
+    // If a previous worker thread is still joinable (e.g. the engine
+    // was reused after a completed/failed run), join it first.
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
 
     std::string cmd_str = build_command(
         input_path, output_path, scale,
@@ -198,8 +208,9 @@ bool SeedVR2Engine::start_inference(
     // and environment variables in the subprocess.
     std::filesystem::path upscaler_root = upscaler_path_;
 
-    // Launch subprocess in a background thread
-    std::thread([this, cmd_str, upscaler_root]() {
+    // Launch subprocess in a background worker thread (stored as a
+    // member so we can join it in cancel() / destructor).
+    worker_thread_ = std::thread([this, cmd_str, upscaler_root]() {
 #ifdef _WIN32
         // Set environment variables required by the Python upscaler:
         //   PYTHONIOENCODING=utf-8  — prevent UnicodeEncodeError on Windows
@@ -253,7 +264,10 @@ bool SeedVR2Engine::start_inference(
             return;
         }
 
-        subprocess_handle_ = pi.hProcess;
+        {
+            std::lock_guard<std::mutex> lock(subprocess_mutex_);
+            subprocess_handle_ = pi.hProcess;
+        }
 
         // Read stdout and stderr concurrently to avoid deadlock.
         // If we read them sequentially, the unread pipe's buffer can
@@ -292,11 +306,21 @@ bool SeedVR2Engine::start_inference(
         DWORD exit_code = 0;
         GetExitCodeProcess(pi.hProcess, &exit_code);
 
-        CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         CloseHandle(hStdOutRead);
         CloseHandle(hStdErrRead);
-        subprocess_handle_ = nullptr;
+
+        // Close the process handle under the mutex so cancel() on
+        // another thread never sees a stale handle.
+        {
+            std::lock_guard<std::mutex> lock(subprocess_mutex_);
+            CloseHandle(pi.hProcess);
+            subprocess_handle_ = nullptr;
+        }
+
+        // If cancel() was called while we were running, don't
+        // overwrite the Idle status it set.
+        if (cancel_requested_.load()) return;
 
         if (exit_code == 0) {
             progress_.store(1.0f);
@@ -368,7 +392,10 @@ bool SeedVR2Engine::start_inference(
             // Parent
             close(pipe_out[1]);
             close(pipe_err[1]);
-            subprocess_handle_ = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+            {
+                std::lock_guard<std::mutex> lock(subprocess_mutex_);
+                subprocess_handle_ = reinterpret_cast<void*>(static_cast<intptr_t>(pid));
+            }
 
             // Read stdout and stderr concurrently to avoid deadlock.
             std::string captured_stderr;
@@ -400,7 +427,14 @@ bool SeedVR2Engine::start_inference(
 
             int wstatus;
             waitpid(pid, &wstatus, 0);
-            subprocess_handle_ = nullptr;
+
+            {
+                std::lock_guard<std::mutex> lock(subprocess_mutex_);
+                subprocess_handle_ = nullptr;
+            }
+
+            // If cancel() was called, don't overwrite the Idle status.
+            if (cancel_requested_.load()) return;
 
             if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0) {
                 progress_.store(1.0f);
@@ -432,7 +466,7 @@ bool SeedVR2Engine::start_inference(
             status_.store(SREngineStatus::Failed);
         }
 #endif
-    }).detach();
+    });
 
     return true;
 }
@@ -446,18 +480,35 @@ std::filesystem::path SeedVR2Engine::get_output_path() const {
 }
 
 bool SeedVR2Engine::cancel() {
+    cancel_requested_.store(true);
+
+    // Terminate the subprocess under the mutex so we never race with
+    // the worker thread that also accesses subprocess_handle_.
+    {
+        std::lock_guard<std::mutex> lock(subprocess_mutex_);
 #ifdef _WIN32
-    if (subprocess_handle_) {
-        TerminateProcess(subprocess_handle_, 1);
-        CloseHandle(subprocess_handle_);
-        subprocess_handle_ = nullptr;
-    }
+        if (subprocess_handle_) {
+            TerminateProcess(subprocess_handle_, 1);
+            // Do NOT CloseHandle here — the worker thread owns the
+            // handle and will close it after WaitForSingleObject
+            // returns (which happens immediately once we terminate
+            // the process).
+        }
 #else
-    if (subprocess_handle_) {
-        kill(static_cast<pid_t>(reinterpret_cast<intptr_t>(subprocess_handle_)), SIGTERM);
-        subprocess_handle_ = nullptr;
-    }
+        if (subprocess_handle_) {
+            kill(static_cast<pid_t>(
+                reinterpret_cast<intptr_t>(subprocess_handle_)), SIGTERM);
+        }
 #endif
+    }
+
+    // Wait for the worker thread to finish.  After TerminateProcess
+    // the pipes close and ReadFile returns, so the thread exits
+    // promptly.  This guarantees no use-after-free on `this`.
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
+
     if (status_.load() == SREngineStatus::Running) {
         status_.store(SREngineStatus::Idle);
     }
