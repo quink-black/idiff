@@ -326,6 +326,7 @@ void App::frame() {
             if (!selected_.empty()) {
                 static constexpr ChannelViewMode kModeMap[9] = {
                     ChannelViewMode::None,
+                    ChannelViewMode::RGB,
                     ChannelViewMode::R,
                     ChannelViewMode::G,
                     ChannelViewMode::B,
@@ -333,7 +334,6 @@ void App::frame() {
                     ChannelViewMode::AlphaBlend,
                     ChannelViewMode::AlphaContour,
                     ChannelViewMode::Y,
-                    ChannelViewMode::U,
                 };
                 for (int i = 0; i < 9; ++i) {
                     if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i))) {
@@ -2093,6 +2093,7 @@ void App::render_toolbar() {
             if (ImGui::BeginCombo("##channel_view", preview)) {
                 static constexpr ChannelViewMode modes[] = {
                     ChannelViewMode::None,
+                    ChannelViewMode::RGB,
                     ChannelViewMode::R,
                     ChannelViewMode::G,
                     ChannelViewMode::B,

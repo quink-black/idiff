@@ -7,6 +7,7 @@ namespace idiff {
 const char* channel_view_mode_label(ChannelViewMode mode) {
     switch (mode) {
         case ChannelViewMode::None:       return "All";
+        case ChannelViewMode::RGB:         return "RGB";
         case ChannelViewMode::R:          return "R";
         case ChannelViewMode::G:          return "G";
         case ChannelViewMode::B:          return "B";
@@ -143,6 +144,17 @@ std::optional<cv::Mat> extract_channel_view(const cv::Mat& src, ChannelViewMode 
 
     switch (mode) {
         case ChannelViewMode::None:
+            return src.clone();
+
+        case ChannelViewMode::RGB:
+            if (channels == 4) {
+                // RGBA -> RGB, drop alpha, preserve bit depth.
+                cv::Mat tmp(src.rows, src.cols,
+                            is_16bit(src) ? CV_16UC3 : CV_8UC3);
+                int from_to[] = {0, 0, 1, 1, 2, 2};
+                cv::mixChannels(&src, 1, &tmp, 1, from_to, 3);
+                return tmp;
+            }
             return src.clone();
 
         case ChannelViewMode::R:

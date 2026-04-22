@@ -292,3 +292,38 @@ TEST_CASE("ChannelView: AlphaContour produces RGBA8 output", "[channel_view]") {
     REQUIRE(p0[2] > 0);
     REQUIRE(p0[3] == 255);
 }
+
+TEST_CASE("ChannelView: RGB mode label", "[channel_view]") {
+    REQUIRE(std::string(channel_view_mode_label(ChannelViewMode::RGB)) == "RGB");
+}
+
+TEST_CASE("ChannelView: RGB drops alpha from RGBA image", "[channel_view]") {
+    cv::Mat rgba(2, 2, CV_8UC4);
+    rgba.at<cv::Vec4b>(0, 0) = cv::Vec4b(10, 20, 30, 128);
+    rgba.at<cv::Vec4b>(0, 1) = cv::Vec4b(40, 50, 60, 0);
+
+    auto result = extract_channel_view(rgba, ChannelViewMode::RGB);
+    REQUIRE(result.has_value());
+    REQUIRE(result->channels() == 3);
+    REQUIRE(result->at<cv::Vec3b>(0, 0) == cv::Vec3b(10, 20, 30));
+    REQUIRE(result->at<cv::Vec3b>(0, 1) == cv::Vec3b(40, 50, 60));
+}
+
+TEST_CASE("ChannelView: RGB returns clone for RGB image", "[channel_view]") {
+    cv::Mat rgb(2, 2, CV_8UC3, cv::Scalar(10, 20, 30));
+    auto result = extract_channel_view(rgb, ChannelViewMode::RGB);
+    REQUIRE(result.has_value());
+    REQUIRE(result->channels() == 3);
+    REQUIRE(result->at<cv::Vec3b>(0, 0) == cv::Vec3b(10, 20, 30));
+}
+
+TEST_CASE("ChannelView: RGB drops alpha from 16-bit RGBA", "[channel_view]") {
+    cv::Mat rgba16(2, 2, CV_16UC4);
+    rgba16.at<cv::Vec4w>(0, 0) = cv::Vec4w(1000, 2000, 3000, 4000);
+
+    auto result = extract_channel_view(rgba16, ChannelViewMode::RGB);
+    REQUIRE(result.has_value());
+    REQUIRE(result->channels() == 3);
+    REQUIRE(result->depth() == CV_16U);
+    REQUIRE(result->at<cv::Vec3w>(0, 0) == cv::Vec3w(1000, 2000, 3000));
+}

@@ -9,7 +9,8 @@
 namespace idiff {
 
 enum class ChannelViewMode {
-    None,        // default, show all channels
+    None,        // default, show all channels including alpha
+    RGB,         // drop alpha, show RGB only
     R,
     G,
     B,
