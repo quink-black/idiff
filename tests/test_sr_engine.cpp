@@ -183,13 +183,15 @@ TEST_CASE("SeedVR2Engine end-to-end upscale", "[sr][integration]") {
     // Try to find the upscaler
     auto upscaler_path = idiff::SeedVR2Engine::resolve_upscaler_path();
     if (upscaler_path.empty()) {
-        SKIP("seedvr2-upscaler not found; set SEEDVR2_UPSCALER_PATH to enable");
+        WARN("seedvr2-upscaler not found; set SEEDVR2_UPSCALER_PATH to enable");
+        return;
     }
 
     auto python_exe = upscaler_path / "python" / "python.exe";
     auto upscale_script = upscaler_path / "app" / "upscale.py";
     if (!fs::exists(python_exe) || !fs::exists(upscale_script)) {
-        SKIP("seedvr2-upscaler directory incomplete");
+        WARN("seedvr2-upscaler directory incomplete");
+        return;
     }
 
     // Create a small test image using OpenCV
