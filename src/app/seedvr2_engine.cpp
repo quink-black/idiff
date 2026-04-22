@@ -15,6 +15,11 @@
 #include <fcntl.h>
 #endif
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  // _NSGetExecutablePath
+#include <vector>
+#endif
+
 namespace idiff {
 
 SeedVR2Engine::SeedVR2Engine(const std::filesystem::path& upscaler_path)
