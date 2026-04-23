@@ -1,5 +1,6 @@
 #include "core/channel_view.h"
 
+#include <algorithm>
 #include <opencv2/imgproc.hpp>
 
 namespace idiff {
@@ -122,7 +123,18 @@ cv::Mat composite_checkerboard(const cv::Mat& src,
     return dst;
 }
 
+int compute_tile_size(int width, int height) {
+    // Aim for ~16 tiles across the shorter dimension, clamped to [8, 256].
+    int min_dim = std::min(width, height);
+    int tile = std::max(8, std::min(256, min_dim / 16));
+    // Round up to next power of 2 for clean tiling.
+    int p = 1;
+    while (p < tile) p <<= 1;
+    return p;
+}
+
 cv::Mat apply_background(const cv::Mat& src, ViewBackground bg) {
+    int tile = compute_tile_size(src.cols, src.rows);
     switch (bg) {
         case ViewBackground::Black:
             return composite_solid(src, 0, 0, 0);
@@ -135,9 +147,9 @@ cv::Mat apply_background(const cv::Mat& src, ViewBackground bg) {
         case ViewBackground::Blue:
             return composite_solid(src, 0, 0, 255);
         case ViewBackground::DarkChecker:
-            return composite_checkerboard(src, 48, 26, 8);
+            return composite_checkerboard(src, 48, 26, tile);
         case ViewBackground::LightChecker:
-            return composite_checkerboard(src, 255, 204, 8);
+            return composite_checkerboard(src, 255, 204, tile);
     }
     return composite_solid(src, 0, 0, 0);
 }

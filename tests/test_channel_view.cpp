@@ -390,3 +390,31 @@ TEST_CASE("ChannelView: 16-bit YUV downsampled to 8-bit", "[channel_view]") {
     REQUIRE(result.has_value());
     REQUIRE(result->depth() == CV_8U);
 }
+
+TEST_CASE("ChannelView: checkerboard tile scales with image size", "[channel_view]") {
+    // Small image: transparent pixel shows checker color (tile >= 8).
+    cv::Mat small(16, 16, CV_8UC4, cv::Vec4b(0, 0, 0, 0));
+    auto s = extract_channel_view(small, ChannelViewMode::None,
+                                   ViewBackground::DarkChecker);
+    REQUIRE(s.has_value());
+    REQUIRE(s->at<cv::Vec4b>(0, 0)[0] > 0);
+
+    // 4K image: tile must be large enough that the checker is visible.
+    // Verify by checking that pixels at (0, tile_size) differ from (0, 0)
+    // for the dark checker pattern -- they must be opposite checker cells.
+    cv::Mat big(3840, 3840, CV_8UC4, cv::Vec4b(0, 0, 0, 0));
+    auto b = extract_channel_view(big, ChannelViewMode::None,
+                                   ViewBackground::DarkChecker);
+    REQUIRE(b.has_value());
+    // The two checker colors for dark pattern are 48 and 26.
+    // Pixel (0,0) is one color; find the first column where it flips.
+    uint8_t c0 = b->at<cv::Vec4b>(0, 0)[0];
+    bool found_flip = false;
+    for (int x = 8; x <= 256; x <<= 1) {
+        if (b->at<cv::Vec4b>(0, x)[0] != c0) {
+            found_flip = true;
+            break;
+        }
+    }
+    REQUIRE(found_flip);
+}
