@@ -74,8 +74,7 @@ struct App::State {
     bool quit_confirm_dialog_needs_open = false;
     // Set to true when the user confirms they want to quit despite running SR.
     bool quit_confirmed = false;
-    bool show_metrics = true;
-    bool show_properties = true;
+    bool show_inspector = true;
     bool show_image_list = true;
     int sidebar_tab = 0;
 
@@ -414,7 +413,7 @@ void App::frame() {
 
     if (state_->show_image_list) render_image_list();
     render_viewport();
-    if (state_->show_metrics || state_->show_properties) render_right_sidebar();
+    if (state_->show_inspector) render_right_sidebar();
     render_timeline_bar();
     render_status_bar();
     render_yuv_params_dialog();
@@ -2031,8 +2030,7 @@ void App::render_toolbar() {
 
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Image List", nullptr, &state_->show_image_list);
-            ImGui::MenuItem("Metrics", nullptr, &state_->show_metrics);
-            ImGui::MenuItem("Properties", nullptr, &state_->show_properties);
+            ImGui::MenuItem("Inspector", nullptr, &state_->show_inspector);
 
             if (ImGui::BeginMenu("Image Loader")) {
                 // Let the user compare decoding output between backends at
@@ -2809,14 +2807,9 @@ diff_dirty_ = true;
 
 void App::render_right_sidebar() {
     ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
-    bool show = true;
-    if (!ImGui::Begin("Inspector", &show)) {
+    if (!ImGui::Begin("Inspector", &state_->show_inspector)) {
         ImGui::End();
         return;
-    }
-    if (!show) {
-        state_->show_metrics = false;
-        state_->show_properties = false;
     }
 
     // Resolve A and B via the shared helper so the inspector matches the
@@ -2843,72 +2836,68 @@ void App::render_right_sidebar() {
     const char* name_b = entry_b ? entry_b->display_label.c_str() : nullptr;
 
     if (ImGui::BeginTabBar("##inspector_tabs")) {
-        if (state_->show_properties) {
-            if (ImGui::BeginTabItem("Properties")) {
-                if (state_->properties_panel) {
-                    state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
-                                                            name_a, name_b);
-                }
-                ImGui::EndTabItem();
+        if (ImGui::BeginTabItem("Properties")) {
+            if (state_->properties_panel) {
+                state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
+                                                        name_a, name_b);
             }
+            ImGui::EndTabItem();
         }
-        if (state_->show_metrics) {
-            if (ImGui::BeginTabItem("Metrics")) {
-                if (state_->metrics_panel) {
-                    // Multi-image metrics: compare A against every other
-                    // selected entry (B, C, D, ...).  Rows follow the same
-                    // order as the viewport cells and as diff_slots_, so the
-                    // visual/spatial layout and the metrics table stay in
-                    // lockstep.
-                    std::vector<std::pair<std::string, const Image*>> partners;
-                    auto add_partner = [&](int idx) {
-                        if (idx < 0 ||
-                            idx >= static_cast<int>(entries_.size())) return;
-                        const auto& e = entries_[idx];
-                        const Image* disp = e.display_image
-                                                ? e.display_image.get()
-                                                : e.image.get();
-                        if (!disp) return;
-                        partners.emplace_back(e.display_label, disp);
-                    };
-                    if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
-                    for (int s : selected_) {
-                        if (s == ab_idx[0] || s == ab_idx[1]) continue;
-                        add_partner(s);
-                    }
-                    state_->metrics_panel->render_pair_metrics(disp_a, partners);
+        if (ImGui::BeginTabItem("Metrics")) {
+            if (state_->metrics_panel) {
+                // Multi-image metrics: compare A against every other
+                // selected entry (B, C, D, ...).  Rows follow the same
+                // order as the viewport cells and as diff_slots_, so the
+                // visual/spatial layout and the metrics table stay in
+                // lockstep.
+                std::vector<std::pair<std::string, const Image*>> partners;
+                auto add_partner = [&](int idx) {
+                    if (idx < 0 ||
+                        idx >= static_cast<int>(entries_.size())) return;
+                    const auto& e = entries_[idx];
+                    const Image* disp = e.display_image
+                                            ? e.display_image.get()
+                                            : e.image.get();
+                    if (!disp) return;
+                    partners.emplace_back(e.display_label, disp);
+                };
+                if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
+                for (int s : selected_) {
+                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    add_partner(s);
                 }
-                ImGui::EndTabItem();
+                state_->metrics_panel->render_pair_metrics(disp_a, partners);
             }
-            if (ImGui::BeginTabItem("Statistics")) {
-                if (state_->metrics_panel) {
-                    // Gather all selected images with their names for per-image stats
-                    std::vector<std::pair<std::string, const Image*>> stat_images;
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Statistics")) {
+            if (state_->metrics_panel) {
+                // Gather all selected images with their names for per-image stats
+                std::vector<std::pair<std::string, const Image*>> stat_images;
 
-                    // A first, then B, then remaining selected (same order as viewport)
-                    auto add_entry = [&](int idx, const char* prefix) {
-                        if (idx < 0 || idx >= static_cast<int>(entries_.size())) return;
-                        const auto& e = entries_[idx];
-                        const Image* disp = e.display_image ? e.display_image.get()
-                                                            : e.image.get();
-                        if (!disp) return;
-                        std::string label = prefix
-                            ? (std::string("[") + prefix + "] " + e.display_label)
-                            : e.display_label;
-                        stat_images.emplace_back(std::move(label), disp);
-                    };
+                // A first, then B, then remaining selected (same order as viewport)
+                auto add_entry = [&](int idx, const char* prefix) {
+                    if (idx < 0 || idx >= static_cast<int>(entries_.size())) return;
+                    const auto& e = entries_[idx];
+                    const Image* disp = e.display_image ? e.display_image.get()
+                                                        : e.image.get();
+                    if (!disp) return;
+                    std::string label = prefix
+                        ? (std::string("[") + prefix + "] " + e.display_label)
+                        : e.display_label;
+                    stat_images.emplace_back(std::move(label), disp);
+                };
 
-                    add_entry(ab_idx[0], "A");
-                    add_entry(ab_idx[1], "B");
-                    for (int s : selected_) {
-                        if (s == ab_idx[0] || s == ab_idx[1]) continue;
-                        add_entry(s, nullptr);
-                    }
-
-                    state_->metrics_panel->render_statistics(stat_images);
+                add_entry(ab_idx[0], "A");
+                add_entry(ab_idx[1], "B");
+                for (int s : selected_) {
+                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    add_entry(s, nullptr);
                 }
-                ImGui::EndTabItem();
+
+                state_->metrics_panel->render_statistics(stat_images);
             }
+            ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
