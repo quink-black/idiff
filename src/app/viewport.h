@@ -115,6 +115,10 @@ public:
     ChannelViewMode channel_view_mode() const noexcept { return channel_view_mode_; }
     void set_channel_view_mode(ChannelViewMode v) { channel_view_mode_ = v; }
 
+    // Background for RGBA compositing
+    ViewBackground view_background() const noexcept { return view_bg_; }
+    void set_view_background(ViewBackground v) { view_bg_ = v; }
+
     // Compute grid dimensions for `n` items under the given layout.
     // In RowsCols mode, `user_cols` specifies the column count and rows
     // are derived; ignored for other modes.
@@ -207,6 +211,9 @@ private:
 
     // Single-channel view mode applied to all displayed images.
     ChannelViewMode channel_view_mode_ = ChannelViewMode::None;
+
+    // Background used when compositing RGBA images.
+    ViewBackground view_bg_ = ViewBackground::DarkChecker;
 };
 
 } // namespace idiff

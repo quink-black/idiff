@@ -9,27 +9,38 @@
 namespace idiff {
 
 enum class ChannelViewMode {
-    None,        // default, show all channels including alpha
-    RGB,         // drop alpha, show RGB only
+    None,         // show all channels
+    RGB,          // drop alpha, show RGB only
     R,
     G,
     B,
     AlphaGray,
-    AlphaBlend,
     AlphaContour,
     Y,
     U,
     V,
 };
 
-// Human-readable label for each mode, suitable for UI display.
+enum class ViewBackground {
+    Black,
+    White,
+    Red,
+    Green,
+    Blue,
+    DarkChecker,
+    LightChecker,
+};
+
 const char* channel_view_mode_label(ChannelViewMode mode);
+const char* view_background_label(ViewBackground bg);
 
 // Extract a single-channel or composited view from the source image.
 // Returns nullopt when the requested mode is not applicable to the
 // source format (e.g. AlphaGray on a 3-channel image).
 // Output preserves the source bit depth (8 or 16 bit per channel).
-std::optional<cv::Mat> extract_channel_view(const cv::Mat& src, ChannelViewMode mode);
+std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
+                                             ChannelViewMode mode,
+                                             ViewBackground bg);
 
 } // namespace idiff
 

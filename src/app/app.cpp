@@ -331,9 +331,9 @@ void App::frame() {
                     ChannelViewMode::G,
                     ChannelViewMode::B,
                     ChannelViewMode::AlphaGray,
-                    ChannelViewMode::AlphaBlend,
                     ChannelViewMode::AlphaContour,
                     ChannelViewMode::Y,
+                    ChannelViewMode::U,
                 };
                 for (int i = 0; i < 9; ++i) {
                     if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i))) {
@@ -1805,12 +1805,13 @@ void App::upload_texture(ImageEntry& entry) {
     const auto& mat = img->mat();
     if (mat.empty()) return;
 
-    // Apply single-channel view extraction if active.
+    // Apply channel view extraction if active.
     cv::Mat channel_mat;
     const cv::Mat* source_mat = &mat;
     ChannelViewMode mode = state_->viewport->channel_view_mode();
-    if (mode != ChannelViewMode::None) {
-        auto extracted = extract_channel_view(mat, mode);
+    {
+        auto extracted = extract_channel_view(mat, mode,
+                            state_->viewport->view_background());
         if (extracted) {
             channel_mat = std::move(*extracted);
             source_mat = &channel_mat;
@@ -2098,7 +2099,6 @@ void App::render_toolbar() {
                     ChannelViewMode::G,
                     ChannelViewMode::B,
                     ChannelViewMode::AlphaGray,
-                    ChannelViewMode::AlphaBlend,
                     ChannelViewMode::AlphaContour,
                     ChannelViewMode::Y,
                     ChannelViewMode::U,
@@ -2121,6 +2121,42 @@ void App::render_toolbar() {
             }
             ImGui::SameLine();
             ImGui::TextDisabled("Channel");
+        }
+
+        // Background selector for RGBA compositing.
+        {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ViewBackground cur_bg = state_->viewport->view_background();
+            const char* bg_preview = view_background_label(cur_bg);
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::BeginCombo("##view_bg", bg_preview)) {
+                static constexpr ViewBackground bgs[] = {
+                    ViewBackground::Black,
+                    ViewBackground::White,
+                    ViewBackground::Red,
+                    ViewBackground::Green,
+                    ViewBackground::Blue,
+                    ViewBackground::DarkChecker,
+                    ViewBackground::LightChecker,
+                };
+                for (auto b : bgs) {
+                    bool is_selected = (cur_bg == b);
+                    if (ImGui::Selectable(view_background_label(b), is_selected)) {
+                        state_->viewport->set_view_background(b);
+                        for (int s : selected_) {
+                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
+                                entries_[s].texture_dirty = true;
+                            }
+                        }
+                    }
+                    if (is_selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("BG");
         }
 
         ImGui::EndMainMenuBar();
