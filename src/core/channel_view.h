@@ -42,6 +42,14 @@ std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
                                              ChannelViewMode mode,
                                              ViewBackground bg);
 
+// True if the requested mode requires an alpha channel and the source
+// does not have one.
+bool channel_view_requires_alpha(ChannelViewMode mode);
+
+// Create a placeholder image indicating the source has no alpha channel.
+// Returns an RGBA8 image of the requested size.
+cv::Mat make_no_alpha_placeholder(int width, int height);
+
 } // namespace idiff
 
 #endif // IDIFF_CHANNEL_VIEW_H

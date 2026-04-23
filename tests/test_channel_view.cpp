@@ -418,3 +418,36 @@ TEST_CASE("ChannelView: checkerboard tile scales with image size", "[channel_vie
     }
     REQUIRE(found_flip);
 }
+
+TEST_CASE("ChannelView: no-alpha placeholder is generated for RGB image", "[channel_view]") {
+    cv::Mat rgb(4, 4, CV_8UC3, cv::Vec3b(100, 150, 200));
+
+    auto result = extract_channel_view(rgb, ChannelViewMode::AlphaGray,
+                                        ViewBackground::Black);
+    REQUIRE_FALSE(result.has_value());
+
+    // Use a larger size so the diagonal lines do not cover every pixel.
+    auto placeholder = make_no_alpha_placeholder(64, 64);
+    REQUIRE(placeholder.cols == 64);
+    REQUIRE(placeholder.rows == 64);
+    REQUIRE(placeholder.channels() == 4);
+
+    // A pixel well away from both diagonals should be gray (64, 64, 64).
+    cv::Vec4b off_diag = placeholder.at<cv::Vec4b>(10, 50);
+    REQUIRE(off_diag[0] == 64);
+    REQUIRE(off_diag[1] == 64);
+    REQUIRE(off_diag[2] == 64);
+    REQUIRE(off_diag[3] == 255);
+
+    // Diagonal line pixels should be red.
+    cv::Vec4b diag = placeholder.at<cv::Vec4b>(0, 0);
+    REQUIRE(diag[2] == 255);
+}
+
+TEST_CASE("ChannelView: requires_alpha identifies alpha-only modes", "[channel_view]") {
+    REQUIRE(channel_view_requires_alpha(ChannelViewMode::AlphaGray));
+    REQUIRE(channel_view_requires_alpha(ChannelViewMode::AlphaContour));
+    REQUIRE_FALSE(channel_view_requires_alpha(ChannelViewMode::None));
+    REQUIRE_FALSE(channel_view_requires_alpha(ChannelViewMode::RGB));
+    REQUIRE_FALSE(channel_view_requires_alpha(ChannelViewMode::R));
+}

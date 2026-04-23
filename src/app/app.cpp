@@ -1815,9 +1815,13 @@ void App::upload_texture(ImageEntry& entry) {
         if (extracted) {
             channel_mat = std::move(*extracted);
             source_mat = &channel_mat;
+        } else if (channel_view_requires_alpha(mode)) {
+            // Source has no alpha channel but mode requires one.
+            // Show a placeholder so the user knows the mode is active.
+            channel_mat = make_no_alpha_placeholder(mat.cols, mat.rows);
+            source_mat = &channel_mat;
         }
-        // If extraction fails (e.g. Alpha on a 3-channel image) fall
-        // through to show the original image rather than a blank texture.
+        // Otherwise (e.g. R/G/B on grayscale) fall through to original.
     }
 
     int w = source_mat->cols;

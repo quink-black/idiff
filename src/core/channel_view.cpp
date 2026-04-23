@@ -206,6 +206,22 @@ cv::Mat drop_alpha(const cv::Mat& src) {
 
 } // namespace
 
+bool channel_view_requires_alpha(ChannelViewMode mode) {
+    return mode == ChannelViewMode::AlphaGray ||
+           mode == ChannelViewMode::AlphaContour;
+}
+
+cv::Mat make_no_alpha_placeholder(int width, int height) {
+    cv::Mat dst(height, width, CV_8UC4, cv::Scalar(64, 64, 64, 255));
+
+    // Draw two red diagonal lines crossing the image.
+    cv::line(dst, cv::Point(0, 0), cv::Point(width - 1, height - 1),
+             cv::Scalar(0, 0, 255, 255), 2);
+    cv::line(dst, cv::Point(width - 1, 0), cv::Point(0, height - 1),
+             cv::Scalar(0, 0, 255, 255), 2);
+    return dst;
+}
+
 std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
                                              ChannelViewMode mode,
                                              ViewBackground bg) {
