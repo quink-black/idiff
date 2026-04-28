@@ -13,8 +13,14 @@ add_executable(idiff
 
 if(APPLE)
     target_sources(idiff PRIVATE platform/platform_macos.mm)
+    set(IDIFF_ICON "${CMAKE_SOURCE_DIR}/resource/idiff.icns")
+    target_sources(idiff PRIVATE "${IDIFF_ICON}")
+    set_source_files_properties("${IDIFF_ICON}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources"
+    )
 elseif(WIN32)
     target_sources(idiff PRIVATE platform/platform_win32.cpp)
+    target_sources(idiff PRIVATE platform/idiff.rc)
 else()
     target_sources(idiff PRIVATE platform/platform_posix.cpp)
 endif()
@@ -41,6 +47,7 @@ if(APPLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER com.idiff.app
         MACOSX_BUNDLE_BUNDLE_NAME idiff
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_ICON_FILE idiff.icns
     )
 endif()
 
@@ -51,6 +58,25 @@ if(WIN32)
     )
     target_compile_definitions(idiff PRIVATE NOMINMAX)
     target_compile_options(idiff PRIVATE /utf-8)
+endif()
+
+# Copy idiff.png next to the executable so set_window_icon() can find it
+# at runtime.  On macOS the png is also placed in Contents/Resources so
+# the bundle is self-contained.
+if(APPLE)
+    set(IDIFF_ICON_PNG "${CMAKE_SOURCE_DIR}/resource/idiff.png")
+    target_sources(idiff PRIVATE "${IDIFF_ICON_PNG}")
+    set_source_files_properties("${IDIFF_ICON_PNG}" PROPERTIES
+        MACOSX_PACKAGE_LOCATION "Resources"
+    )
+else()
+    add_custom_command(TARGET idiff POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/resource/idiff.png"
+                "$<TARGET_FILE_DIR:idiff>/idiff.png"
+        VERBATIM
+        COMMENT "Copying idiff.png next to executable"
+    )
 endif()
 
 # -----------------------------------------------------------------------------

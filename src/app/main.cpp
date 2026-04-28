@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "app/platform/platform.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -6,8 +7,12 @@
 #include <SDL.h>
 #include <nfd.h>
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 #ifdef _WIN32
@@ -55,6 +60,57 @@ std::vector<std::string> collect_startup_paths(int argc, char** argv) {
 
 } // namespace
 
+// Load the app icon from resource/idiff.png and set it on the SDL window.
+// On macOS the .icns in the app bundle provides the Dock icon, so this is
+// only needed on Linux and Windows.  OpenCV (already linked via idiff_core)
+// handles PNG decoding; the result is converted to an SDL_Surface.
+void set_window_icon(SDL_Window* window) {
+#ifdef __APPLE__
+    (void)window;
+#else
+    // Search order: resource path (macOS bundle) -> executable dir -> cwd
+    std::vector<std::string> candidates;
+    std::string rp = idiff::platform::get_resource_path();
+    if (!rp.empty()) candidates.push_back(rp + "/idiff.png");
+
+    // Locate the directory that holds the running executable.
+    std::filesystem::path exe_dir;
+#if defined(__linux__)
+    exe_dir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
+#elif defined(_WIN32)
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) exe_dir = std::filesystem::path(buf).parent_path();
+#endif
+    if (!exe_dir.empty()) candidates.push_back((exe_dir / "idiff.png").string());
+
+    cv::Mat mat;
+    for (const auto& p : candidates) {
+        mat = cv::imread(p, cv::IMREAD_UNCHANGED);
+        if (!mat.empty()) break;
+    }
+    if (mat.empty()) return;
+
+    // SDL expects RGBA byte order regardless of platform.
+    cv::Mat rgba;
+    switch (mat.channels()) {
+        case 3: cv::cvtColor(mat, rgba, cv::COLOR_BGR2RGBA); break;
+        case 4: cv::cvtColor(mat, rgba, cv::COLOR_BGRA2RGBA); break;
+        case 1: cv::cvtColor(mat, rgba, cv::COLOR_GRAY2RGBA); break;
+        default: return;
+    }
+
+    SDL_Surface* surface = SDL_CreateRGBSurfaceFrom(
+        rgba.data, rgba.cols, rgba.rows, 32,
+        static_cast<int>(rgba.step),
+        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+    if (!surface) return;
+
+    SDL_SetWindowIcon(window, surface);
+    SDL_FreeSurface(surface);
+#endif
+}
+
 int main(int argc, char** argv) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         std::fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
@@ -71,6 +127,8 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
+
+    set_window_icon(window);
 
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
