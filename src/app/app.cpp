@@ -2513,9 +2513,10 @@ void App::render_viewport() {
     // --- Left-mouse drag to pan ---
     // In Overlay mode, the InvisibleButton over the viewport area captures
     // left-mouse drags for the A/B slider.  Only pan when that slider is
-    // NOT being dragged and no right-click selection is in progress, so all
-    // three interactions remain mutually exclusive.
-    if (hovered && !vp.selecting() &&
+    // NOT being dragged, no selection is in progress, and Ctrl is NOT held
+    // (Ctrl+left-drag is selection-zoom), so all interactions remain
+    // mutually exclusive.
+    if (hovered && !vp.selecting() && !io.KeyCtrl &&
         ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         bool overlay_slider_active = vp.overlay_slider_dragging();
         if (!overlay_slider_active) {
@@ -2524,14 +2525,22 @@ void App::render_viewport() {
         }
     }
 
-    // --- Right-mouse drag for selection rectangle zoom ---
+    // --- Selection rectangle zoom (right-drag OR Ctrl+left-drag) ---
+    // Ctrl+left-drag gives trackpad users a way to zoom-to-selection on
+    // macOS where right-click drag is not naturally available.
+    bool sel_start_right = ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered;
+    bool sel_start_ctrl  = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered && io.KeyCtrl;
     if (hovered || vp.selecting()) {
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered) {
+        if (!vp.selecting() && (sel_start_right || sel_start_ctrl)) {
             vp.begin_selection(io.MousePos);
+            sel_drag_is_ctrl_ = sel_start_ctrl;
         }
         if (vp.selecting()) {
             vp.update_selection(io.MousePos);
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            bool released = sel_drag_is_ctrl_
+                ? ImGui::IsMouseReleased(ImGuiMouseButton_Left)
+                : ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+            if (released) {
                 ImVec2 smin = vp.selection_min();
                 ImVec2 smax = vp.selection_max();
                 float sw = smax.x - smin.x;
@@ -2747,7 +2756,7 @@ diff_dirty_ = true;
 
         // Hint about mouse interactions
         ImGui::TextColored(ImVec4(0.60f, 0.60f, 0.60f, 1.00f),
-                           "Drag: pan | Right-drag: zoom to selection");
+                           "Drag: pan | Right-drag / Ctrl+drag: zoom to selection");
     }
 
     // Build diff texture/label vectors for Difference mode.  Each slot

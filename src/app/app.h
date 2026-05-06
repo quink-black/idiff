@@ -202,6 +202,11 @@ private:
     // Reset whenever the selection content changes.
     bool swap_ab_ = false;
 
+    // True while a selection-zoom drag was initiated with Ctrl+left-click
+    // (as opposed to right-click).  Determines which mouse-up event ends
+    // the selection.
+    bool sel_drag_is_ctrl_ = false;
+
     // Drag-reorder state for image list
     int drag_source_idx_ = -1;
     int drag_target_idx_ = -1;
