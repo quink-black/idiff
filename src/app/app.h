@@ -24,6 +24,7 @@ class SRInferEngine;
 class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
+class DiffService;
 struct YuvStreamParams;
 struct SRDialogState;
 
@@ -146,8 +147,6 @@ private:
     void reload_all_images();
     void update_display_image(int index);
     void upload_texture(ImageEntry& entry);
-    void update_diff_texture();
-    void upload_diff_slot_texture(DiffSlot& slot);
     void compute_display_labels();
     void sort_entries_by_name();
     void move_entry(int from, int to);
@@ -261,15 +260,12 @@ private:
     };
     std::vector<SRTask> sr_tasks_;
 
-    // Difference-mode state.  Each slot compares A (the first selected
-    // entry, modulo swap_ab_) against one other selected entry.  With N
-    // selected entries there are N-1 slots (0 when fewer than 2 selected).
-    // The whole vector is treated as a single cache unit invalidated by
-    // diff_dirty_; individual slot invalidation is not needed because
-    // every trigger (selection change, frame step, decoder reload, ...)
-    // forces a full recompute anyway.
-    std::vector<DiffSlot> diff_slots_;
-    bool diff_dirty_ = true;
+    // Difference-mode cache.  Owns one DiffSlot per partner image
+    // compared against A.  All previously-inline diff_slots_ /
+    // diff_dirty_ / update_diff_texture() / upload_diff_slot_texture()
+    // logic now routes through this service; every trigger that used
+    // to set diff_dirty_ now calls diff_service_->mark_dirty().
+    std::unique_ptr<DiffService> diff_service_;
 
     // Last known channel view mode, tracked so we can detect changes
     // triggered inside the Viewport combo and mark textures dirty.

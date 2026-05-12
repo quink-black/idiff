@@ -13,6 +13,7 @@
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "domain/timeline_model.h"
+#include "domain/diff_service.h"
 #include "util/logger.h"
 
 #include <imgui.h>
@@ -296,6 +297,10 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // must be constructed after the uploader and destroyed before it.
     library_ = std::make_unique<ImageLibrary>(*state_->texture_uploader);
 
+    // Same lifetime contract as library_: borrows the uploader, owns
+    // SDL textures, must be torn down before the uploader.
+    diff_service_ = std::make_unique<DiffService>(*state_->texture_uploader);
+
     // Detect whether a super-resolution upscaler is available next to
     // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
     // SeedVR2 engine only when detected so the UI can hide SR controls
@@ -320,16 +325,17 @@ void App::shutdown() {
         library_->clear();
     }
 
-    for (auto& slot : diff_slots_) {
-        if (slot.texture) SDL_DestroyTexture(slot.texture);
+    if (diff_service_) {
+        diff_service_->clear();
     }
-    diff_slots_.clear();
 
     state_->viewport.reset();
     state_->metrics_panel.reset();
     state_->properties_panel.reset();
 
-    // Tear down the library before the texture uploader it borrows.
+    // Tear down the diff service and library before the texture
+    // uploader they both borrow.
+    diff_service_.reset();
     library_.reset();
 
     ImGui_ImplSDLRenderer2_Shutdown();
@@ -538,7 +544,7 @@ void App::load_images(const std::vector<std::string>& paths) {
 
     sort_entries_by_name();
     compute_display_labels();
-diff_dirty_ = true;
+diff_service_->mark_dirty();
 
     // Convenience: on the first successful load, auto-select up to the first
     // two images and switch to Overlay mode.  This removes the need for the
@@ -556,7 +562,7 @@ diff_dirty_ = true;
                 entries_view()[s].texture_dirty = true;
             }
         }
-diff_dirty_ = true;
+diff_service_->mark_dirty();
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
@@ -596,7 +602,7 @@ void App::reload_all_images() {
             last_fail = entry.filename + " (" + err + ")";
         }
     }
-diff_dirty_ = true;
+diff_service_->mark_dirty();
 
     const char* name = ImageLoader::backend_name(state_->loader_backend);
     if (failed == 0) {
@@ -649,7 +655,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
 
     sort_entries_by_name();
     compute_display_labels();
-diff_dirty_ = true;
+diff_service_->mark_dirty();
 
     // Persist parameters so the next .yuv file starts with the same
     // defaults in the dialog.
@@ -669,7 +675,7 @@ diff_dirty_ = true;
                 entries_view()[s].texture_dirty = true;
             }
         }
-diff_dirty_ = true;
+diff_service_->mark_dirty();
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
@@ -736,7 +742,7 @@ bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
     }
     compute_display_labels();
 
-diff_dirty_ = true;
+diff_service_->mark_dirty();
 
     // Remember the successful parameters as the new load-dialog default.
     state_->settings.last_yuv_params = params;
@@ -898,7 +904,7 @@ int App::timeline_length() const {
 
 void App::sync_entries_to_timeline() {
     if (timeline_->sync_to(entries_view(), state_->status_text)) {
-        diff_dirty_ = true;
+        diff_service_->mark_dirty();
     }
 }
 
@@ -1135,11 +1141,8 @@ void App::load_comparison_config_from_path(const std::string& path) {
     library_->clear();
     selection_->clear();
     selection_->set_swap_ab(false);
-    for (auto& slot : diff_slots_) {
-        if (slot.texture) SDL_DestroyTexture(slot.texture);
-    }
-    diff_slots_.clear();
-    diff_dirty_ = true;
+    diff_service_->clear();
+    diff_service_->mark_dirty();
 
     state_->comparison_config = std::move(cfg);
     state_->current_group_idx = -1;
@@ -1227,11 +1230,8 @@ void App::switch_to_comparison_group(int group_idx) {
     library_->clear();
     selection_->clear();
     selection_->set_swap_ab(false);
-    for (auto& slot : diff_slots_) {
-        if (slot.texture) SDL_DestroyTexture(slot.texture);
-    }
-    diff_slots_.clear();
-    diff_dirty_ = true;
+    diff_service_->clear();
+    diff_service_->mark_dirty();
 
     const auto& group = state_->comparison_config.groups[group_idx];
 
@@ -1392,7 +1392,7 @@ void App::save_viewport_dialog() {
     }
 
     if (slot_mats.empty() &&
-        !(mode == ComparisonMode::Difference && !diff_slots_.empty())) {
+        !(mode == ComparisonMode::Difference && !diff_service_->empty())) {
         state_->status_text = "Save: nothing to save (no images selected)";
         return;
     }
@@ -1426,19 +1426,19 @@ void App::save_viewport_dialog() {
         // Compose every diff heatmap (A vs partner_i) onto one canvas
         // using the same grid layout Viewport::render_difference draws
         // on screen, so the saved PNG matches what the user sees.
-        if (diff_slots_.empty()) {
+        if (diff_service_->empty()) {
             state_->status_text = "Save: no diff map available "
                                   "(select at least 2 images first)";
             return;
         }
 
-        int n = static_cast<int>(diff_slots_.size());
+        int n = static_cast<int>(diff_service_->size());
         int cols, rows;
         Viewport::compute_grid(n, vport.grid_layout(), vport.grid_cols(),
                                cols, rows);
 
         int cell_w = 0, cell_h = 0;
-        for (const auto& slot : diff_slots_) {
+        for (const auto& slot : diff_service_->slots()) {
             if (!slot.image) continue;
             cell_w = std::max(cell_w, slot.image->mat().cols);
             cell_h = std::max(cell_h, slot.image->mat().rows);
@@ -1453,8 +1453,8 @@ void App::save_viewport_dialog() {
         cv::Mat canvas = cv::Mat::zeros(out_h, out_w, CV_8UC4);
 
         for (int i = 0; i < n; i++) {
-            if (!diff_slots_[i].image) continue;
-            cv::Mat m = to_bgra8(diff_slots_[i].image->mat());
+            if (!diff_service_->slots()[i].image) continue;
+            cv::Mat m = to_bgra8(diff_service_->slots()[i].image->mat());
             if (m.empty()) continue;
             int col = i % cols;
             int row = i / cols;
@@ -1636,7 +1636,7 @@ void App::remove_entry(int index) {
     }
 
     compute_display_labels();
-    diff_dirty_ = true;
+    diff_service_->mark_dirty();
 }
 
 void App::compute_display_labels() {
@@ -1700,7 +1700,7 @@ void App::update_display_image(int index) {
     }
 
     entry.texture_dirty = true;
-diff_dirty_ = true;
+diff_service_->mark_dirty();
 }
 
 void App::upload_texture(ImageEntry& entry) {
@@ -1774,127 +1774,6 @@ void App::upload_texture(ImageEntry& entry) {
     entry.tex_w = w;
     entry.tex_h = h;
     entry.texture_dirty = false;
-}
-
-void App::update_diff_texture() {
-    if (!diff_dirty_) return;
-    diff_dirty_ = false;
-
-    // Tear down any previously-uploaded textures before recomputing.  The
-    // full vector is discarded every refresh because the set of partners
-    // (and their A counterpart) is tiny (typically <= 6) and always
-    // reconstructed from the selection anyway.
-    for (auto& slot : diff_slots_) {
-        if (slot.texture) {
-            SDL_DestroyTexture(slot.texture);
-            slot.texture = nullptr;
-        }
-    }
-    diff_slots_.clear();
-
-    if (selection_->size() < 2) return;
-
-    int idx_a = -1, idx_b_unused = -1;
-    get_ab_indices(idx_a, idx_b_unused);
-    if (idx_a < 0 || idx_a >= static_cast<int>(entries_view().size())) return;
-
-    const auto* img_a = entries_view()[idx_a].display_image
-                            ? entries_view()[idx_a].display_image.get()
-                            : entries_view()[idx_a].image.get();
-    if (!img_a) return;
-
-    // Build the partner order to match render_viewport()'s slot order:
-    // B first (the second entry from get_ab_indices), then any other
-    // selected entries in their natural selection order.  This keeps the
-    // visual/spatial layout predictable across modes and makes the
-    // metrics table row order match what the viewport shows.
-    std::vector<int> partners;
-    partners.reserve(selection_->size());
-    if (idx_b_unused >= 0 && idx_b_unused < static_cast<int>(entries_view().size())) {
-        partners.push_back(idx_b_unused);
-    }
-    for (int s : selection_->indices()) {
-        if (s == idx_a) continue;
-        if (s == idx_b_unused) continue;
-        partners.push_back(s);
-    }
-
-    ImageComparator comparator;
-    DifferenceOptions opts;
-    opts.amplification = state_->diff_amplification;
-    opts.heatmap_color = state_->heatmap_color;
-
-    for (int partner : partners) {
-        if (partner < 0 || partner >= static_cast<int>(entries_view().size())) continue;
-        const auto* img_p = entries_view()[partner].display_image
-                                ? entries_view()[partner].display_image.get()
-                                : entries_view()[partner].image.get();
-        if (!img_p) continue;
-
-        auto diff = comparator.compute_difference(*img_a, *img_p, opts);
-        if (!diff) {
-            state_->status_text = "Diff: " + comparator.last_error();
-            continue;
-        }
-        auto heatmap = comparator.compute_heatmap(*diff, opts);
-        if (!heatmap) {
-            state_->status_text = "Heatmap: " + comparator.last_error();
-            continue;
-        }
-
-        DiffSlot slot;
-        slot.partner_entry_idx = partner;
-        slot.image = std::move(heatmap);
-        diff_slots_.push_back(std::move(slot));
-        upload_diff_slot_texture(diff_slots_.back());
-    }
-}
-
-void App::upload_diff_slot_texture(DiffSlot& slot) {
-    if (!slot.image) return;
-
-    const auto& mat = slot.image->mat();
-    if (mat.empty()) return;
-
-    int w = mat.cols;
-    int h = mat.rows;
-    int channels = mat.channels();
-
-    // Heatmap is in RGB order (converted in image_comparator).
-    // Convert to RGBA32 for SDL texture upload.
-    cv::Mat upload_mat;
-    if (channels == 4) {
-        upload_mat = mat;
-    } else if (channels == 3) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
-    } else if (channels == 1) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
-    } else {
-        return;
-    }
-    channels = 4;
-
-    Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
-    (void)sdl_format;
-
-    if (slot.texture) {
-        state_->texture_uploader->destroy(slot.texture);
-        slot.texture = nullptr;
-    }
-
-    if (!upload_mat.isContinuous()) {
-        upload_mat = upload_mat.clone();
-    }
-    UploadRequest req;
-    req.pixels = upload_mat.ptr<std::uint8_t>();
-    req.width = w;
-    req.height = h;
-    req.channels = channels;
-    slot.texture = state_->texture_uploader->upload(req);
-    if (!slot.texture) return;
-
-    slot.tex_w = w;
-    slot.tex_h = h;
 }
 
 void App::render_toolbar() {
@@ -2105,7 +1984,7 @@ void App::render_image_list() {
         if (ImGui::SmallButton("Clear")) {
             selection_->clear();
             selection_->set_swap_ab(false);
-diff_dirty_ = true;
+diff_service_->mark_dirty();
         }
     }
 
@@ -2151,7 +2030,7 @@ diff_dirty_ = true;
                         entries_view()[s].texture_dirty = true;
                     }
                 }
-diff_dirty_ = true;
+diff_service_->mark_dirty();
                 // Statistics panel cache is pointer-keyed and self-prunes,
                 // so no explicit invalidation is needed on selection change.
             }
@@ -2318,10 +2197,11 @@ diff_dirty_ = true;
 }
 
 void App::render_viewport() {
-    // Snapshot diff_dirty_ at the top of the frame: update_diff_texture()
-    // below clears it, but the measurement reload path further down still
-    // needs to know whether the image set or selection just changed.
-    bool selection_changed = diff_dirty_;
+    // Snapshot the diff service's dirty flag at the top of the frame:
+    // diff_service_->update() below clears it, but the measurement
+    // reload path further down still needs to know whether the image
+    // set or selection just changed.
+    bool selection_changed = diff_service_->is_dirty();
 
     // When the image set or selection changes, clear the viewport's
     // measurement display and reload from the new entries.  Measurements
@@ -2341,7 +2221,12 @@ void App::render_viewport() {
         }
     }
 
-    update_diff_texture();
+    {
+        DiffService::Options opts;
+        opts.amplification = state_->diff_amplification;
+        opts.heatmap_color = state_->heatmap_color;
+        diff_service_->update(entries_view(), *selection_, opts, state_->status_text);
+    }
 
     // Build texture list from selected images. Place A then B in the first
     // two slots (honoring the swap flag), followed by any additional
@@ -2632,7 +2517,7 @@ void App::render_viewport() {
             ImGui::PushItemWidth(70);
             if (ImGui::Combo("##heatmap_color", &hc_int, "Gray\0Inferno\0Viridis\0Coolwarm\0")) {
                 state_->heatmap_color = static_cast<HeatmapColor>(hc_int);
-                diff_dirty_ = true;
+                diff_service_->mark_dirty();
                 state_->settings.heatmap_color = hc_int;
                 state_->settings.save();
             }
@@ -2646,7 +2531,7 @@ void App::render_viewport() {
             ImGui::PushItemWidth(60);
             if (ImGui::SliderFloat("Amp##diff_amp", &amp, 1.0f, 50.0f, "%.1fx")) {
                 state_->diff_amplification = static_cast<double>(amp);
-                diff_dirty_ = true;
+                diff_service_->mark_dirty();
                 state_->settings.diff_amplification = state_->diff_amplification;
                 state_->settings.save();
             }
@@ -2689,7 +2574,7 @@ void App::render_viewport() {
         ImGui::SameLine();
         bool can_save = !entries_view().empty() &&
                         (!selection_->empty() ||
-                         (vp.mode() == ComparisonMode::Difference && !diff_slots_.empty()));
+                         (vp.mode() == ComparisonMode::Difference && !diff_service_->empty()));
         ImGui::BeginDisabled(!can_save);
         if (ImGui::SmallButton("Save...")) {
             save_viewport_dialog();
@@ -2707,7 +2592,7 @@ void App::render_viewport() {
             ImGui::SameLine();
             if (ImGui::SmallButton("Swap A/B")) {
                 selection_->toggle_swap_ab();
-diff_dirty_ = true;
+diff_service_->mark_dirty();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Swap which selected image acts as A and B");
@@ -2790,17 +2675,17 @@ diff_dirty_ = true;
     }
 
     // Build diff texture/label vectors for Difference mode.  Each slot
-    // is "A vs <partner>", in the same order update_diff_texture()
-    // populated diff_slots_, so metrics rows and viewport cells align.
+    // is "A vs <partner>", in the same order DiffService::update()
+    // populates the slot list, so metrics rows and viewport cells align.
     std::vector<SDL_Texture*> diff_tex_ptrs;
     std::vector<int> diff_tex_ws, diff_tex_hs;
     std::vector<const char*> diff_labels;
     std::vector<std::string> diff_label_storage;
-    diff_tex_ptrs.reserve(diff_slots_.size());
-    diff_tex_ws.reserve(diff_slots_.size());
-    diff_tex_hs.reserve(diff_slots_.size());
-    diff_labels.reserve(diff_slots_.size());
-    diff_label_storage.reserve(diff_slots_.size());
+    diff_tex_ptrs.reserve(diff_service_->size());
+    diff_tex_ws.reserve(diff_service_->size());
+    diff_tex_hs.reserve(diff_service_->size());
+    diff_labels.reserve(diff_service_->size());
+    diff_label_storage.reserve(diff_service_->size());
     {
         int a_lbl_idx = -1, b_unused = -1;
         get_ab_indices(a_lbl_idx, b_unused);
@@ -2808,7 +2693,7 @@ diff_dirty_ = true;
                               a_lbl_idx < static_cast<int>(entries_view().size()))
                                   ? entries_view()[a_lbl_idx].display_label
                                   : std::string("A");
-        for (const auto& slot : diff_slots_) {
+        for (const auto& slot : diff_service_->slots()) {
             diff_tex_ptrs.push_back(slot.texture);
             diff_tex_ws.push_back(slot.tex_w);
             diff_tex_hs.push_back(slot.tex_h);
@@ -2900,7 +2785,7 @@ void App::render_right_sidebar() {
             if (state_->metrics_panel) {
                 // Multi-image metrics: compare A against every other
                 // selected entry (B, C, D, ...).  Rows follow the same
-                // order as the viewport cells and as diff_slots_, so the
+                // order as the viewport cells and as diff_service_->slots(), so the
                 // visual/spatial layout and the metrics table stay in
                 // lockstep.
                 std::vector<std::pair<std::string, const Image*>> partners;
@@ -3260,7 +3145,7 @@ void App::poll_sr_tasks() {
                 }
                 selection_->insert(new_idx);
                 selection_->set_swap_ab(false);
-                diff_dirty_ = true;
+                diff_service_->mark_dirty();
 
                 // Mark textures for upload
                 for (int s : selection_->indices()) {
@@ -3366,8 +3251,8 @@ void App::render_status_bar() {
                     // status bar shows "A vs <partner>" and the pixel
                     // value comes from the heatmap the user is looking at.
                     if (cell >= 0 &&
-                        cell < static_cast<int>(diff_slots_.size())) {
-                        const auto& slot = diff_slots_[cell];
+                        cell < static_cast<int>(diff_service_->size())) {
+                        const auto& slot = diff_service_->slots()[cell];
                         src_img = slot.image.get();
                         static thread_local std::string diff_label;
                         std::string partner = "?";
