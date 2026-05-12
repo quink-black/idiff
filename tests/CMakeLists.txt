@@ -18,6 +18,7 @@ add_executable(idiff_tests
     test_sr_task_service.cpp
     test_comparison_config_service.cpp
     test_app_controller.cpp
+    test_controller_integration.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
