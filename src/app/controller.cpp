@@ -284,4 +284,89 @@ AppController::load_images(const std::vector<std::string>& paths) {
     return result;
 }
 
+AppController::SwitchGroupResult
+AppController::load_comparison_config(const std::string& path) {
+    SwitchGroupResult result;
+    auto load_result = comparison_config_->load(path);
+    if (!load_result.ok) {
+        status_reporter_->set_status(load_result.status_message);
+        return result;
+    }
+
+    // Drop whatever was previously loaded so the user sees a clean
+    // switch.  Only one group's worth of pixels is kept resident; the
+    // group-switch path enforces the same invariant on subsequent
+    // navigation.
+    library_->clear();
+    selection_->clear();
+    selection_->set_swap_ab(false);
+    diff_->clear();
+    diff_->mark_dirty();
+
+    status_reporter_->set_status(load_result.status_message);
+
+    if (comparison_config_->has_config()) {
+        result = switch_to_comparison_group(0);
+    }
+    return result;
+}
+
+AppController::SwitchGroupResult
+AppController::switch_to_comparison_group(int group_idx) {
+    SwitchGroupResult result;
+    if (group_idx == comparison_config_->current_index()) return result;
+
+    // Release the previous group's images first so we never hold two
+    // groups' pixels in memory simultaneously.  This is the main
+    // memory lever for configs with many large groups.
+    library_->clear();
+    selection_->clear();
+    selection_->set_swap_ab(false);
+    diff_->clear();
+    diff_->mark_dirty();
+
+    auto switch_result = comparison_config_->switch_to(group_idx);
+    if (!switch_result.ok) {
+        status_reporter_->set_status(switch_result.status_message);
+        return result;
+    }
+
+    if (!switch_result.entries.empty()) {
+        std::vector<std::string> local_paths;
+        local_paths.reserve(switch_result.entries.size());
+        for (const auto& e : switch_result.entries) {
+            local_paths.push_back(e.local_path);
+        }
+        auto load_result = load_images(local_paths);
+        result.did_first_load_select = load_result.did_first_load_select;
+    }
+
+    // Apply the human-friendly labels supplied by the service so the
+    // image list shows config titles instead of opaque cache
+    // filenames.  Match by path because load_images() may have
+    // re-ordered through sort_entries_by_name().
+    auto& entries = library_->all();
+    if (!entries.empty()) {
+        std::unordered_map<std::string, std::string> label_by_path;
+        for (const auto& e : switch_result.entries) {
+            if (!e.display_label.empty()) {
+                label_by_path[e.local_path] = e.display_label;
+            }
+        }
+        if (!label_by_path.empty()) {
+            for (auto& e : entries) {
+                auto it = label_by_path.find(e.path);
+                if (it == label_by_path.end()) continue;
+                e.filename = it->second;
+                e.display_label = it->second;
+            }
+            // compute_display_labels() will uniquify duplicates.
+            compute_display_labels();
+        }
+    }
+
+    status_reporter_->set_status(switch_result.status_message);
+    return result;
+}
+
 } // namespace idiff

@@ -1053,27 +1053,9 @@ void App::open_comparison_config_dialog() {
 }
 
 void App::load_comparison_config_from_path(const std::string& path) {
-    auto result = comparison_config_->load(path);
-    if (!result.ok) {
-        state_->status_text = result.status_message;
-        return;
-    }
-
-    // Drop whatever was previously loaded so the user sees a clean
-    // switch.  We keep at most one group's worth of images resident
-    // in memory, so we also release entries from any previously-
-    // loaded config.
-    library_->clear();
-    selection_->clear();
-    selection_->set_swap_ab(false);
-    diff_service_->clear();
-    diff_service_->mark_dirty();
-
-    state_->status_text = result.status_message;
-
-    // Start on the first group so the user sees pixels immediately.
-    if (comparison_config_->has_config()) {
-        switch_to_comparison_group(0);
+    auto result = controller_->load_comparison_config(path);
+    if (result.did_first_load_select && state_->viewport) {
+        state_->viewport->set_mode(ComparisonMode::Overlay);
     }
 }
 
@@ -1117,57 +1099,10 @@ void App::load_paths(const std::vector<std::string>& paths) {
 }
 
 void App::switch_to_comparison_group(int group_idx) {
-    // Service does the bounds-check, prefetch scheduling, and URL
-    // fetching.  We drive the side effects on library/selection/diff
-    // here so the service stays free of view-model dependencies.
-    if (group_idx == comparison_config_->current_index()) return;
-
-    // Release the previous group's images first so we never hold two
-    // groups' pixels in memory simultaneously.  This is the main memory
-    // lever for configs with many large groups.
-    library_->clear();
-    selection_->clear();
-    selection_->set_swap_ab(false);
-    diff_service_->clear();
-    diff_service_->mark_dirty();
-
-    auto result = comparison_config_->switch_to(group_idx);
-    if (!result.ok) {
-        state_->status_text = result.status_message;
-        return;
+    auto result = controller_->switch_to_comparison_group(group_idx);
+    if (result.did_first_load_select && state_->viewport) {
+        state_->viewport->set_mode(ComparisonMode::Overlay);
     }
-
-    if (!result.entries.empty()) {
-        std::vector<std::string> local_paths;
-        local_paths.reserve(result.entries.size());
-        for (const auto& e : result.entries) local_paths.push_back(e.local_path);
-        load_images(local_paths);
-    }
-
-    // Apply the human-friendly labels supplied by the service so the
-    // image list shows config titles instead of opaque cache filenames.
-    // Match by path; load_images() may have re-ordered the entries
-    // through sort_entries_by_name().
-    if (!entries_view().empty()) {
-        std::unordered_map<std::string, std::string> label_by_path;
-        for (const auto& e : result.entries) {
-            if (!e.display_label.empty()) {
-                label_by_path[e.local_path] = e.display_label;
-            }
-        }
-        if (!label_by_path.empty()) {
-            for (auto& e : entries_view()) {
-                auto it = label_by_path.find(e.path);
-                if (it == label_by_path.end()) continue;
-                e.filename = it->second;
-                e.display_label = it->second;
-            }
-            // compute_display_labels() will uniquify duplicates.
-            compute_display_labels();
-        }
-    }
-
-    state_->status_text = result.status_message;
 }
 
 

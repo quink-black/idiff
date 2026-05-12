@@ -22,12 +22,14 @@
 #include "app/sr_dialog.h"
 #include "app/status_reporter.h"
 #include "app/app.h"
+#include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "core/image.h"        // IWYU pragma: keep
 #include "core/image_loader.h"
 #include "core/media_source.h" // IWYU pragma: keep
+#include "core/url_cache.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -426,4 +428,105 @@ TEST_CASE("AppController::load_images reports failures via the status reporter",
     // user can see what went wrong.
     REQUIRE_FALSE(reporter.current_status.empty());
     REQUIRE(reporter.current_status.find("Failed to load:") != std::string::npos);
+}
+
+TEST_CASE("AppController::load_comparison_config reports parse failure",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    auto dir = std::filesystem::temp_directory_path()
+             / "idiff_ctrl_cfg_bad";
+    std::filesystem::create_directories(dir);
+    auto json_path = dir / "broken.json";
+    {
+        std::ofstream out(json_path, std::ios::binary | std::ios::trunc);
+        out << "this is not valid json";
+    }
+    controller.comparison_config().set_cache_root_override(dir);
+
+    auto result = controller.load_comparison_config(json_path.string());
+
+    // Parse failure -> service stays empty, no implicit group switch.
+    REQUIRE_FALSE(result.did_first_load_select);
+    REQUIRE_FALSE(controller.comparison_config().has_config());
+    REQUIRE(controller.library().all().empty());
+
+    // The reason was surfaced through the status reporter.
+    REQUIRE_FALSE(reporter.current_status.empty());
+}
+
+TEST_CASE("AppController::switch_to_comparison_group drives load_images and labels",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    // Stage a real PNG that the URL cache will resolve to.  Use a
+    // unique scratch dir so back-to-back runs do not collide.
+    auto dir = std::filesystem::temp_directory_path()
+             / "idiff_ctrl_cfg_ok";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto image_path = write_tmp_png("cfg_ok", "real.png");
+
+    // Write a minimal config that points at the staged PNG via a
+    // file:// URL so UrlCache::fetch() takes its disk fast path.
+    auto json_path = dir / "ok.json";
+    {
+        std::ofstream out(json_path, std::ios::binary | std::ios::trunc);
+        out << R"({"groups": [{"name": "g1", "items": [
+            {"url": "file:///cfgreal.png", "title": "My Label"}
+        ]}]})";
+    }
+
+    // Drive load() through the service directly so we can stage the
+    // URL on disk before the implicit switch_to(0) fires.  The
+    // controller's load_comparison_config() helper would auto-switch
+    // immediately and find nothing to fetch.
+    auto& svc = controller.comparison_config();
+    svc.set_cache_root_override(dir);
+    REQUIRE(svc.load(json_path.string()).ok);
+
+    // Stage real bytes at the cache path the service will look up.
+    auto* cache = svc.url_cache_for_test();
+    REQUIRE(cache != nullptr);
+    {
+        auto target = cache->path_for("file:///cfgreal.png");
+        std::filesystem::create_directories(target.parent_path());
+        // Copy the PNG payload so ImageFileSource can decode it.
+        std::filesystem::copy_file(image_path, target,
+            std::filesystem::copy_options::overwrite_existing);
+    }
+
+    auto result = controller.switch_to_comparison_group(0);
+
+    // The fetched entry was loaded, auto-selected, and relabelled with
+    // the human-friendly title from the config.
+    REQUIRE(controller.library().all().size() == 1);
+    REQUIRE(controller.library().all()[0].display_label == "My Label");
+    REQUIRE(controller.library().all()[0].filename == "My Label");
+    REQUIRE(result.did_first_load_select);
+
+    // Service status (e.g. "Loaded group ...") was forwarded last so
+    // the status bar reflects the group switch, not the per-file load.
+    REQUIRE_FALSE(reporter.current_status.empty());
+}
+
+TEST_CASE("AppController::switch_to_comparison_group ignores no-op switch",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // No config has been loaded; current_index stays -1.  Asking to
+    // switch to -1 matches and the call must short-circuit without
+    // touching the library, the diff, or the status reporter.
+    auto result = controller.switch_to_comparison_group(-1);
+
+    REQUIRE_FALSE(result.did_first_load_select);
+    REQUIRE(controller.library().all().empty());
+    REQUIRE(reporter.status_calls.empty());
 }

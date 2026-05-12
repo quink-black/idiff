@@ -138,6 +138,35 @@ public:
     // should then put the viewport in Overlay mode).
     LoadImagesResult load_images(const std::vector<std::string>& paths);
 
+    // Outcome propagated to the caller for comparison-config
+    // navigation.  Mirrors LoadImagesResult: the controller does
+    // every domain-level effect (load config, swap groups, drive
+    // load_images, relabel) and tells the caller when the UI
+    // viewport mode should change.
+    struct SwitchGroupResult {
+        bool did_first_load_select = false;
+    };
+
+    // Parse the JSON comparison config at `path` via
+    // ComparisonConfigService, drop any previously loaded entries,
+    // and immediately switch to the first group when the config is
+    // non-empty.  Status messages from the parser and from the
+    // group switch are forwarded through the status reporter.
+    // Returns the SwitchGroupResult of the implicit switch_to(0)
+    // (defaults to all-false when the config is empty or parse
+    // failed) so the caller can refresh the viewport.
+    SwitchGroupResult load_comparison_config(const std::string& path);
+
+    // Switch the active comparison group to `group_idx`, releasing
+    // the previous group's pixels first.  No-op when group_idx
+    // already matches the current index.  Calls load_images() for
+    // the resolved local paths, then overrides display labels with
+    // the human-friendly titles from the config.  Status messages
+    // from the service are forwarded through the status reporter.
+    // The returned did_first_load_select mirrors load_images() so
+    // the caller knows whether to switch the viewport to Overlay.
+    SwitchGroupResult switch_to_comparison_group(int group_idx);
+
 private:
     std::unique_ptr<ImageLibrary> library_;
     std::unique_ptr<SelectionModel> selection_;
