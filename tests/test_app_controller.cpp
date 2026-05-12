@@ -29,7 +29,12 @@
 #include "core/image_loader.h"
 #include "core/media_source.h" // IWYU pragma: keep
 
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -90,6 +95,29 @@ idiff::ImageEntry make_entry(const std::string& path,
     e.filename = filename;
     e.display_label = filename;
     return e;
+}
+
+// Drop a tiny solid-color PNG into a unique temp directory so
+// ImageFileSource (created inside controller.load_images) can decode
+// it.  Returns the absolute path; the caller owns cleanup.
+std::string write_tmp_png(const std::string& tag,
+                          const std::string& filename,
+                          unsigned char fill = 128) {
+    auto dir = std::filesystem::temp_directory_path()
+             / ("idiff_ctrl_" + tag);
+    std::filesystem::create_directories(dir);
+    auto path = dir / filename;
+
+    cv::Mat m(4, 4, CV_8UC3, cv::Scalar(fill, fill, fill));
+    std::vector<std::uint8_t> buf;
+    REQUIRE(cv::imencode(".png", m, buf));
+
+    std::ofstream out(path, std::ios::binary);
+    REQUIRE(out.is_open());
+    out.write(reinterpret_cast<const char*>(buf.data()),
+              static_cast<std::streamsize>(buf.size()));
+    out.close();
+    return path.string();
 }
 
 } // namespace
@@ -314,4 +342,88 @@ TEST_CASE("AppController loader_backend round-trips through the setter",
     // round-trip test that runs on every CI configuration.
     controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
     REQUIRE(controller.loader_backend() == idiff::LoaderBackend::OpenCV);
+}
+
+TEST_CASE("AppController::load_images first load auto-selects up to two entries",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // Use OpenCV explicitly so the test is deterministic regardless of
+    // whether ImageMagick is compiled in on this build.
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p1 = write_tmp_png("first_load", "a.png");
+    const auto p2 = write_tmp_png("first_load", "b.png");
+    const auto p3 = write_tmp_png("first_load", "c.png");
+
+    auto result = controller.load_images({p1, p2, p3});
+
+    // Library now holds three entries, sorted by filename.
+    REQUIRE(controller.library().all().size() == 3);
+    REQUIRE(controller.library().all()[0].filename == "a.png");
+    REQUIRE(controller.library().all()[1].filename == "b.png");
+    REQUIRE(controller.library().all()[2].filename == "c.png");
+
+    // First-load convenience: the first two entries are auto-selected
+    // and the result tells the caller to switch the viewport mode.
+    REQUIRE(result.did_first_load_select);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+    REQUIRE_FALSE(controller.selection().swap_ab());
+
+    // The diff cache was marked dirty so the next render recomputes it.
+    REQUIRE(controller.diff().is_dirty());
+
+    // Per-file status was reported through the reporter; the last one
+    // wins so the current text mentions one of the loaded paths.
+    REQUIRE_FALSE(reporter.current_status.empty());
+    REQUIRE(reporter.current_status.find("Loaded:") != std::string::npos);
+}
+
+TEST_CASE("AppController::load_images appends without disturbing selection",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto a = write_tmp_png("append", "a.png");
+    const auto b = write_tmp_png("append", "b.png");
+
+    controller.load_images({a});
+
+    // The caller pretends to manually pick a different selection set
+    // (mimicking a user clicking around in the image list).
+    controller.selection().clear();
+    controller.selection().set_swap_ab(true);
+
+    const auto c = write_tmp_png("append", "c.png");
+    auto result = controller.load_images({b, c});
+
+    // Library grew but the second call is not a "first load", so the
+    // controller must NOT clobber the manual selection.
+    REQUIRE(controller.library().all().size() == 3);
+    REQUIRE_FALSE(result.did_first_load_select);
+    REQUIRE(controller.selection().indices().empty());
+    REQUIRE(controller.selection().swap_ab());
+}
+
+TEST_CASE("AppController::load_images reports failures via the status reporter",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    auto result = controller.load_images({"/no/such/file.png"});
+
+    // No entries were added, so the auto-select path did not fire.
+    REQUIRE(controller.library().all().empty());
+    REQUIRE_FALSE(result.did_first_load_select);
+
+    // The failure was surfaced through the status reporter so the
+    // user can see what went wrong.
+    REQUIRE_FALSE(reporter.current_status.empty());
+    REQUIRE(reporter.current_status.find("Failed to load:") != std::string::npos);
 }

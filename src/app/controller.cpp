@@ -13,7 +13,9 @@
 #include "domain/selection_model.h"
 #include "domain/sr_task_service.h"
 #include "domain/timeline_model.h"
+#include "util/logger.h"
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -215,6 +217,71 @@ void AppController::reload_all_images() {
                + ", " + std::to_string(failed) + " failed: " + last_fail;
     }
     status_reporter_->set_status(status);
+}
+
+AppController::LoadImagesResult
+AppController::load_images(const std::vector<std::string>& paths) {
+    LoadImagesResult result;
+
+    // Detect "first load" before any append so a later auto-select
+    // does not clobber the user's existing picks on subsequent
+    // append-style calls.
+    const bool was_empty = library_->all().empty();
+
+    for (const auto& path : paths) {
+        // Wrap the file as a single-frame MediaSource.  Decoding
+        // happens inside source->read_frame(0); the loader pipeline
+        // is identical to the previous direct ImageLoader call.
+        auto source = std::make_unique<ImageFileSource>(path, loader_backend_);
+        auto img = source->read_frame(0);
+        if (img) {
+            ImageEntry entry;
+            entry.path = path;
+            auto sep = path.find_last_of("/\\");
+            entry.filename = (sep != std::string::npos) ? path.substr(sep + 1)
+                                                        : path;
+            entry.display_label = entry.filename;
+            entry.source = std::move(source);
+            entry.image = std::move(img);
+            entry.display_image = nullptr;
+            entry.texture = nullptr;
+            entry.texture_dirty = true;
+
+            library_->add(std::move(entry));
+            status_reporter_->set_status("Loaded: " + path);
+        } else {
+            const auto err = source->last_error();
+            status_reporter_->set_status("Failed to load: " + path
+                                         + " (" + err + ")");
+            LOG_WARN("load_images failed: %s (%s)",
+                     path.c_str(), err.c_str());
+        }
+    }
+
+    sort_entries_by_name();
+    compute_display_labels();
+    diff_->mark_dirty();
+
+    // First-load convenience: pick the first up-to-two entries as A
+    // and B and flag them for texture refresh.  The viewport mode
+    // change (Overlay) is left to the caller because it lives in
+    // the UI layer.
+    if (was_empty && !library_->all().empty()) {
+        selection_->clear();
+        selection_->set_swap_ab(false);
+        const int n = static_cast<int>(library_->all().size());
+        const int pick = std::min(2, n);
+        for (int i = 0; i < pick; ++i) selection_->insert(i);
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < n) {
+                library_->all()[s].texture_dirty = true;
+            }
+        }
+        diff_->mark_dirty();
+        result.did_first_load_select = true;
+    }
+
+    return result;
 }
 
 } // namespace idiff

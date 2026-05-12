@@ -562,79 +562,38 @@ void App::setup_dock_layout() {
 }
 
 void App::load_images(const std::vector<std::string>& paths) {
-    // Detect the "first load" case — the list was empty before this call.
-    // We only auto-select / auto-switch mode in that scenario so that later
-    // "append more images" calls do not clobber the user's current picks or
-    // comparison mode.
-    const bool was_empty = entries_view().empty();
-
+    // Raw YUV files carry no decoding metadata, so we cannot load
+    // them synchronously through the controller.  Peel them off into
+    // the YUV-parameter dialog queue first; the dialog converts each
+    // path into a YuvRawSource entry on confirmation.  Everything
+    // else is forwarded to the controller in one batch so it can do
+    // the first-load auto-select correctly.
+    std::vector<std::string> still_paths;
+    still_paths.reserve(paths.size());
     for (const auto& path : paths) {
-        // Raw YUV files carry no decoding metadata, so we cannot load
-        // them synchronously here.  Queue them for the parameter dialog
-        // which runs during the next frame and creates YuvRawSource
-        // entries on confirmation.
         auto dot = path.find_last_of('.');
-        std::string ext;
-        if (dot != std::string::npos) ext = path.substr(dot);
-        std::string ext_lower = ext;
-        for (auto& c : ext_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::string ext_lower = (dot != std::string::npos) ? path.substr(dot)
+                                                           : std::string();
+        for (auto& c : ext_lower) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
         if (ext_lower == ".yuv") {
             state_->pending_yuv_paths.push_back(path);
             state_->yuv_dialog_needs_open = true;
-            continue;
-        }
-
-        // Wrap the file in an ImageFileSource so every entry looks like a
-        // (single-frame) MediaSource to the rest of the app.  Decoding
-        // happens inside source->read_frame(0), which internally uses the
-        // same ImageLoader pipeline as before.
-        auto source = std::make_unique<ImageFileSource>(path, controller_->loader_backend());
-        auto img = source->read_frame(0);
-        if (img) {
-            ImageEntry entry;
-            entry.path = path;
-            auto sep = path.find_last_of("/\\");
-            entry.filename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
-            entry.display_label = entry.filename;
-            entry.source = std::move(source);
-            entry.image = std::move(img);
-            entry.display_image = nullptr;
-            entry.texture = nullptr;
-            entry.texture_dirty = true;
-
-            library_->add(std::move(entry));
-            state_->status_text = "Loaded: " + path;
         } else {
-            state_->status_text = "Failed to load: " + path + " (" + source->last_error() + ")";
-            LOG_WARN("load_images failed: %s (%s)",
-                     path.c_str(), source->last_error().c_str());
+            still_paths.push_back(path);
         }
     }
 
-    sort_entries_by_name();
-    compute_display_labels();
-diff_service_->mark_dirty();
+    if (still_paths.empty()) return;
 
-    // Convenience: on the first successful load, auto-select up to the first
-    // two images and switch to Overlay mode.  This removes the need for the
-    // user to manually tick two checkboxes before seeing any comparison, and
-    // matches the most common use case (drop two images in, compare them).
-    if (was_empty && !entries_view().empty()) {
-        selection_->clear();
-        selection_->set_swap_ab(false);
-        int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
-        for (int i = 0; i < pick; i++) selection_->insert(i);
-        // Flag newly-selected entries for texture/display refresh so the
-        // viewport renders them immediately on the next frame.
-        for (int s : selection_->indices()) {
-            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                entries_view()[s].texture_dirty = true;
-            }
-        }
-diff_service_->mark_dirty();
-        if (state_->viewport) {
-            state_->viewport->set_mode(ComparisonMode::Overlay);
-        }
+    auto result = controller_->load_images(still_paths);
+
+    // The viewport's comparison mode is owned by the UI layer; the
+    // controller just tells us when its first-load auto-select fired
+    // so we can put the new selection on screen immediately.
+    if (result.did_first_load_select && state_->viewport) {
+        state_->viewport->set_mode(ComparisonMode::Overlay);
     }
 }
 

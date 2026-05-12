@@ -4,6 +4,8 @@
 #include "core/image_loader.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace idiff {
 
@@ -114,6 +116,27 @@ public:
     // reporter; entries whose decode fails keep their previous
     // pixel data.
     void reload_all_images();
+
+    // Outcome of load_images() the caller needs to act on.  The
+    // controller does every domain-level side effect (add entries,
+    // sort, label, mark diff dirty, run the first-load auto-select),
+    // but the viewport's comparison mode is owned by the UI layer:
+    // when did_first_load_select is true the caller should switch
+    // the viewport to Overlay so the new selection is visible.
+    struct LoadImagesResult {
+        bool did_first_load_select = false;
+    };
+
+    // Load every path as a still image entry (callers must filter
+    // out paths that need a YUV-parameter modal first, since this
+    // method decodes synchronously and assumes the file is self-
+    // describing).  Each entry is appended via the ImageLibrary,
+    // the library is then re-sorted and re-labelled; per-file
+    // status is reported through the status reporter.  Returns
+    // true in did_first_load_select when the library was empty
+    // before the call and at least one entry was added (the caller
+    // should then put the viewport in Overlay mode).
+    LoadImagesResult load_images(const std::vector<std::string>& paths);
 
 private:
     std::unique_ptr<ImageLibrary> library_;
