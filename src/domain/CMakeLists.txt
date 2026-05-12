@@ -3,6 +3,7 @@ add_library(idiff_domain
     selection_model.cpp
     timeline_model.cpp
     diff_service.cpp
+    sr_task_service.cpp
 )
 
 target_include_directories(idiff_domain PUBLIC

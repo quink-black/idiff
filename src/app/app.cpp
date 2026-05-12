@@ -14,6 +14,7 @@
 #include "domain/selection_model.h"
 #include "domain/timeline_model.h"
 #include "domain/diff_service.h"
+#include "domain/sr_task_service.h"
 #include "util/logger.h"
 
 #include <imgui.h>
@@ -130,7 +131,8 @@ struct App::State {
 App::App()
     : state_(std::make_unique<State>()),
       selection_(std::make_unique<SelectionModel>()),
-      timeline_(std::make_unique<TimelineModel>()) {}
+      timeline_(std::make_unique<TimelineModel>()),
+      sr_service_(std::make_unique<SrTaskService>()) {}
 
 App::~App() = default;
 
@@ -2057,7 +2059,7 @@ diff_service_->mark_dirty();
                               ImGuiSelectableFlags_AllowOverlap);
 
             // Show SR progress indicator if this entry is being processed
-            for (const auto& task : sr_tasks_) {
+            for (const auto& task : sr_service_->tasks()) {
                 if (task.input_path == entry.path && task.engine &&
                     task.engine->get_status() == SREngineStatus::Running) {
                     ImGui::SameLine();
@@ -2111,7 +2113,7 @@ diff_service_->mark_dirty();
                 // and at least one entry is selected.
                 if (sr_enabled_ && !selection_->empty()) {
                     bool any_running = false;
-                    for (const auto& task : sr_tasks_) {
+                    for (const auto& task : sr_service_->tasks()) {
                         if (task.engine &&
                             task.engine->get_status() == SREngineStatus::Running) {
                             any_running = true;
@@ -2122,7 +2124,7 @@ diff_service_->mark_dirty();
                         // Collect progress info for the tooltip.
                         float total_progress = 0.0f;
                         int running_count = 0;
-                        for (const auto& task : sr_tasks_) {
+                        for (const auto& task : sr_service_->tasks()) {
                             if (task.engine &&
                                 task.engine->get_status() == SREngineStatus::Running) {
                                 float p = task.engine->get_progress();
@@ -2923,13 +2925,7 @@ void App::render_error_dialog() {
 }
 
 bool App::has_running_sr_tasks() const {
-    for (const auto& task : sr_tasks_) {
-        if (task.engine &&
-            task.engine->get_status() == SREngineStatus::Running) {
-            return true;
-        }
-    }
-    return false;
+    return sr_service_->has_running();
 }
 
 void App::request_quit() {
@@ -2964,7 +2960,7 @@ void App::render_quit_confirm_dialog() {
         // Count running tasks and collect their names for display.
         int running_count = 0;
         std::string running_names;
-        for (const auto& task : sr_tasks_) {
+        for (const auto& task : sr_service_->tasks()) {
             if (task.engine &&
                 task.engine->get_status() == SREngineStatus::Running) {
                 ++running_count;
@@ -3006,9 +3002,7 @@ void App::render_quit_confirm_dialog() {
 
         if (ImGui::Button("Quit Anyway", ImVec2(button_width, 0))) {
             // Cancel all running tasks before quitting.
-            for (auto& task : sr_tasks_) {
-                if (task.engine) task.engine->cancel();
-            }
+            sr_service_->cancel_all();
             state_->quit_confirmed = true;
             state_->show_quit_confirm_dialog = false;
             ImGui::CloseCurrentPopup();
@@ -3041,139 +3035,92 @@ void App::render_sr_dialog() {
 }
 
 void App::start_sr_task(const SRTaskParams& params) {
-    auto engine = SRInferEngineFactory::instance().create_engine("seedvr2");
-    if (!engine) {
-        state_->error_dialog_title = "Super Resolution Error";
-        state_->error_dialog_message = "SR engine not available. "
-            "Make sure the seedvr2-upscaler directory exists next to "
-            "the executable or set the SEEDVR2_UPSCALER_PATH environment variable.";
+    auto factory = []() -> std::unique_ptr<SRInferEngine> {
+        return SRInferEngineFactory::instance().create_engine("seedvr2");
+    };
+    const auto result = sr_service_->start(params, factory);
+    if (!result.ok) {
+        state_->error_dialog_title = result.error_title;
+        state_->error_dialog_message = result.error_message;
         state_->show_error_dialog = true;
         state_->error_dialog_needs_open = true;
-        return;
     }
-    if (!engine->start_inference(
-            params.input_path, params.output_path,
-            params.scale, params.tile_size, params.tile_overlap,
-            params.model, params.color_correction)) {
-        auto err = engine->last_error();
-        state_->error_dialog_title = "Super Resolution Error";
-        state_->error_dialog_message = err.description;
-        state_->show_error_dialog = true;
-        state_->error_dialog_needs_open = true;
-        return;
-    }
-
-    SRTask task;
-    task.engine = std::move(engine);
-    task.input_path = params.input_path.string();
-    task.status_msg = "Super Resolution: processing " +
-                      params.input_path.filename().string() + "...";
-    sr_tasks_.push_back(std::move(task));
 }
 
 void App::poll_sr_tasks() {
-    for (auto it = sr_tasks_.begin(); it != sr_tasks_.end(); ) {
-        auto& task = *it;
-        if (!task.engine) {
-            it = sr_tasks_.erase(it);
-            continue;
+    std::vector<SrCompletion> completions;
+    std::vector<SrFailure> failures;
+    sr_service_->poll(completions, failures);
+
+    for (const auto& done : completions) {
+        // Add the output image to the image list.  load_images() calls
+        // sort_entries_by_name(), so indices computed before the call
+        // are invalid afterwards.  We must look up entries by path.
+        std::vector<std::string> paths = { done.output_path };
+        load_images(paths);
+
+        int new_idx = -1;
+        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+            if (entries_view()[i].path == done.output_path) {
+                new_idx = i;
+                break;
+            }
         }
 
-        auto status = task.engine->get_status();
-
-        if (status == SREngineStatus::Running) {
-            float progress = task.engine->get_progress();
-            if (progress >= 0) {
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "%.0f%%", progress * 100.0f);
-                task.status_msg = "Super Resolution: processing " +
-                    std::to_string(static_cast<int>(progress * 100)) + "%";
+        int input_idx = -1;
+        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+            if (entries_view()[i].path == done.input_path) {
+                input_idx = i;
+                break;
             }
-            ++it;
-        } else if (status == SREngineStatus::Completed) {
-            auto output_path = task.engine->get_output_path();
-            auto output_path_str = output_path.string();
-
-            // Add the output image to the image list.
-            // load_images() calls sort_entries_by_name(), so indices
-            // computed before the call are invalid afterwards.  We must
-            // look up entries by path instead.
-            std::vector<std::string> paths = { output_path_str };
-            load_images(paths);
-
-            // Find the newly added entry by path (sort-safe).
-            int new_idx = -1;
-            for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
-                if (entries_view()[i].path == output_path_str) {
-                    new_idx = i;
-                    break;
-                }
-            }
-
-            // Find the original input entry by path (sort-safe).
-            int input_idx = -1;
-            for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
-                if (entries_view()[i].path == task.input_path) {
-                    input_idx = i;
-                    break;
-                }
-            }
-
-            if (new_idx >= 0) {
-                auto& new_entry = entries_view()[new_idx];
-                std::string input_name;
-                if (input_idx >= 0) {
-                    input_name = entries_view()[input_idx].filename;
-                } else {
-                    input_name = new_entry.filename;
-                }
-                // Extract scale from the output path naming convention
-                int scale = 2;  // default
-                auto fname = output_path.stem().string();
-                auto pos = fname.find("_sr_");
-                if (pos != std::string::npos) {
-                    scale = std::atoi(fname.c_str() + pos + 4);
-                    if (scale <= 0) scale = 2;
-                }
-                new_entry.display_label = input_name + " (SR " +
-                    std::to_string(scale) + "x)";
-
-                // Auto-select: input as A, output as B for comparison
-                selection_->clear();
-                if (input_idx >= 0) {
-                    selection_->insert(input_idx);
-                }
-                selection_->insert(new_idx);
-                selection_->set_swap_ab(false);
-                diff_service_->mark_dirty();
-
-                // Mark textures for upload
-                for (int s : selection_->indices()) {
-                    if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                        entries_view()[s].texture_dirty = true;
-                    }
-                }
-            }
-
-            task.status_msg = "Super Resolution: completed " +
-                output_path.filename().string();
-            state_->status_msg = task.status_msg;
-
-            it = sr_tasks_.erase(it);
-        } else if (status == SREngineStatus::Failed) {
-            auto err = task.engine->last_error();
-            task.status_msg = "Super Resolution failed: " + err.description;
-            state_->status_msg = task.status_msg;
-            // Show a persistent error dialog so the user can actually
-            // read the error message before it scrolls away.
-            state_->error_dialog_title = "Super Resolution Failed";
-            state_->error_dialog_message = err.description;
-            state_->show_error_dialog = true;
-            state_->error_dialog_needs_open = true;
-            it = sr_tasks_.erase(it);
-        } else {
-            ++it;
         }
+
+        if (new_idx >= 0) {
+            auto& new_entry = entries_view()[new_idx];
+            const std::string input_name = (input_idx >= 0)
+                ? entries_view()[input_idx].filename
+                : new_entry.filename;
+
+            // Extract scale from the output path naming convention
+            // <stem>_sr_<scale>x.<ext>; default to 2x on parse failure.
+            int scale = 2;
+            const std::filesystem::path out_path(done.output_path);
+            const auto fname = out_path.stem().string();
+            const auto pos = fname.find("_sr_");
+            if (pos != std::string::npos) {
+                scale = std::atoi(fname.c_str() + pos + 4);
+                if (scale <= 0) scale = 2;
+            }
+            new_entry.display_label = input_name + " (SR " +
+                std::to_string(scale) + "x)";
+
+            // Auto-select: input as A, output as B for comparison.
+            selection_->clear();
+            if (input_idx >= 0) {
+                selection_->insert(input_idx);
+            }
+            selection_->insert(new_idx);
+            selection_->set_swap_ab(false);
+            diff_service_->mark_dirty();
+
+            for (int s : selection_->indices()) {
+                if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                    entries_view()[s].texture_dirty = true;
+                }
+            }
+        }
+
+        state_->status_msg = done.status_msg;
+    }
+
+    for (const auto& fail : failures) {
+        state_->status_msg = fail.status_msg;
+        // Persistent error dialog so the user can read the message
+        // before the status bar scrolls past.
+        state_->error_dialog_title = "Super Resolution Failed";
+        state_->error_dialog_message = fail.description;
+        state_->show_error_dialog = true;
+        state_->error_dialog_needs_open = true;
     }
 }
 
@@ -3320,8 +3267,8 @@ void App::render_status_bar() {
             }
 
             // Show active SR task progress in the status bar
-            if (!sr_tasks_.empty()) {
-                for (const auto& task : sr_tasks_) {
+            if (!sr_service_->empty()) {
+                for (const auto& task : sr_service_->tasks()) {
                     if (task.engine &&
                         task.engine->get_status() == SREngineStatus::Running) {
                         float p = task.engine->get_progress();

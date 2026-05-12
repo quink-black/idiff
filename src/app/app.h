@@ -20,11 +20,11 @@ class MediaSource;
 class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
-class SRInferEngine;
 class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
 class DiffService;
+class SrTaskService;
 struct YuvStreamParams;
 struct SRDialogState;
 
@@ -250,15 +250,13 @@ private:
     // SR configuration dialog state.
     std::unique_ptr<SRDialogState> sr_dialog_;
 
-    // A running SR task: the engine performing inference plus the
-    // original entry index so we can auto-select input & output after
-    // completion.
-    struct SRTask {
-        std::unique_ptr<SRInferEngine> engine;
-        std::string input_path;    // Path of the input image (stable across sorts)
-        std::string status_msg;    // Last status message for the status bar
-    };
-    std::vector<SRTask> sr_tasks_;
+    // Owns running SR inference tasks.  Each SrTask wraps a concrete
+    // engine (created via SRInferEngineFactory, abstracted behind an
+    // EngineFactory closure so tests can inject fakes).  App holds
+    // start/poll/has_running thin wrappers that drive the service and
+    // translate completion / failure events into library-layer
+    // bookkeeping.
+    std::unique_ptr<SrTaskService> sr_service_;
 
     // Difference-mode cache.  Owns one DiffSlot per partner image
     // compared against A.  All previously-inline diff_slots_ /
