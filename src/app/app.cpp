@@ -115,12 +115,6 @@ struct App::State {
 
     UpscaleMethod upscale_method = UpscaleMethod::Lanczos;
 
-    // Which image loader backend load_images() should prefer.  ImageMagick
-    // is chosen by default when compiled in because it handles ICC profiles
-    // and a wider set of formats; users can switch to OpenCV via the View
-    // menu to observe decoding differences.
-    LoaderBackend loader_backend = ImageLoader::default_backend();
-
     std::string status_text;
     std::string status_msg;   // Last SR/notification message
 
@@ -594,7 +588,7 @@ void App::load_images(const std::vector<std::string>& paths) {
         // (single-frame) MediaSource to the rest of the app.  Decoding
         // happens inside source->read_frame(0), which internally uses the
         // same ImageLoader pipeline as before.
-        auto source = std::make_unique<ImageFileSource>(path, state_->loader_backend);
+        auto source = std::make_unique<ImageFileSource>(path, controller_->loader_backend());
         auto img = source->read_frame(0);
         if (img) {
             ImageEntry entry;
@@ -652,42 +646,7 @@ diff_service_->mark_dirty();
 // the viewport does not suddenly go blank; a status message tells the
 // user which file failed.
 void App::reload_all_images() {
-    if (entries_view().empty()) return;
-
-    int reloaded = 0;
-    int failed = 0;
-    std::string last_fail;
-    for (auto& entry : entries_view()) {
-        // Update the backend preference on the source, then ask it to
-        // re-decode the current frame.  For video sources this will be
-        // tracked by the shared frame index once time-axis wiring lands;
-        // for still images the index is always 0.
-        if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
-            ifs->set_preferred_backend(state_->loader_backend);
-        }
-        auto img = entry.source ? entry.source->read_frame(0) : nullptr;
-        if (img) {
-            entry.image = std::move(img);
-            entry.display_image.reset();
-            entry.texture_dirty = true;
-            reloaded++;
-        } else {
-            failed++;
-            std::string err = entry.source ? entry.source->last_error() : "no source";
-            last_fail = entry.filename + " (" + err + ")";
-        }
-    }
-diff_service_->mark_dirty();
-
-    const char* name = ImageLoader::backend_name(state_->loader_backend);
-    if (failed == 0) {
-        state_->status_text = std::string("Reloaded ")
-            + std::to_string(reloaded) + " image(s) via " + name;
-    } else {
-        state_->status_text = std::string("Reloaded ")
-            + std::to_string(reloaded) + " via " + name + ", "
-            + std::to_string(failed) + " failed: " + last_fail;
-    }
+    controller_->reload_all_images();
 }
 
 void App::get_ab_indices(int& a_idx, int& b_idx) const {
@@ -1678,12 +1637,12 @@ void App::render_toolbar() {
                 // not compiled into this build.
                 auto loader_item = [&](LoaderBackend b) {
                     const bool available = ImageLoader::has_backend(b);
-                    const bool selected = (state_->loader_backend == b);
+                    const bool selected = (controller_->loader_backend() == b);
                     std::string label = ImageLoader::backend_name(b);
                     if (!available) label += "  (not compiled in)";
                     if (ImGui::MenuItem(label.c_str(), nullptr, selected,
                                         available && !selected)) {
-                        state_->loader_backend = b;
+                        controller_->set_loader_backend(b);
                         reload_all_images();
                     }
                 };

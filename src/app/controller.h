@@ -1,6 +1,8 @@
 #ifndef IDIFF_APP_CONTROLLER_H
 #define IDIFF_APP_CONTROLLER_H
 
+#include "core/image_loader.h"
+
 #include <memory>
 
 namespace idiff {
@@ -97,6 +99,22 @@ public:
     // dialog and no task is enqueued.
     void start_sr_task(const SRTaskParams& params);
 
+    // Image loader backend that load_images() / reload_all_images()
+    // currently honour.  Owned here so the headless tests can switch
+    // backends without going through the View menu, and so the
+    // reload flow can stay in the controller.
+    LoaderBackend loader_backend() const noexcept;
+    void set_loader_backend(LoaderBackend backend) noexcept;
+
+    // Re-decode every entry's current frame using loader_backend().
+    // Marks textures dirty for entries that actually changed and
+    // marks the diff cache dirty unconditionally so the next render
+    // recomputes both views.  Reports the per-batch summary
+    // ("Reloaded N image(s) via <backend>") through the status
+    // reporter; entries whose decode fails keep their previous
+    // pixel data.
+    void reload_all_images();
+
 private:
     std::unique_ptr<ImageLibrary> library_;
     std::unique_ptr<SelectionModel> selection_;
@@ -105,6 +123,7 @@ private:
     std::unique_ptr<SrTaskService> sr_tasks_;
     std::unique_ptr<ComparisonConfigService> comparison_config_;
     IStatusReporter* status_reporter_;
+    LoaderBackend loader_backend_ = ImageLoader::default_backend();
 };
 
 } // namespace idiff

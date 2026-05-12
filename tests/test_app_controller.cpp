@@ -26,6 +26,7 @@
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "core/image.h"        // IWYU pragma: keep
+#include "core/image_loader.h"
 #include "core/media_source.h" // IWYU pragma: keep
 
 #include <cstdint>
@@ -282,4 +283,35 @@ TEST_CASE("AppController::start_sr_task surfaces missing-engine errors",
     // Status bar untouched; only the modal channel was used.
     REQUIRE(reporter.status_calls.empty());
     REQUIRE(reporter.sr_status_calls.empty());
+}
+
+TEST_CASE("AppController::reload_all_images is silent on empty library",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.reload_all_images();
+
+    // No entries -> no work, no status update.  This matters because
+    // the View menu fires reload_all_images() on every backend toggle
+    // even when no images are loaded.
+    REQUIRE(reporter.status_calls.empty());
+}
+
+TEST_CASE("AppController loader_backend round-trips through the setter",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // Default matches ImageLoader::default_backend so load_images()
+    // and reload_all_images() produce identical pixels until the user
+    // explicitly switches.
+    REQUIRE(controller.loader_backend() == idiff::ImageLoader::default_backend());
+
+    // OpenCV is always compiled in, so it is the safe target for a
+    // round-trip test that runs on every CI configuration.
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+    REQUIRE(controller.loader_backend() == idiff::LoaderBackend::OpenCV);
 }

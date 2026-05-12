@@ -4,6 +4,9 @@
 #include "app/sr_infer_engine.h"
 #include "app/sr_infer_engine_factory.h"
 #include "app/status_reporter.h"
+#include "core/image.h"
+#include "core/image_loader.h"
+#include "core/media_source.h"
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
@@ -162,6 +165,56 @@ void AppController::start_sr_task(const SRTaskParams& params) {
         status_reporter_->show_error(result.error_title,
                                      result.error_message);
     }
+}
+
+LoaderBackend AppController::loader_backend() const noexcept {
+    return loader_backend_;
+}
+
+void AppController::set_loader_backend(LoaderBackend backend) noexcept {
+    loader_backend_ = backend;
+}
+
+void AppController::reload_all_images() {
+    auto& entries = library_->all();
+    if (entries.empty()) return;
+
+    int reloaded = 0;
+    int failed = 0;
+    std::string last_fail;
+    for (auto& entry : entries) {
+        // Update the backend preference on the source, then ask it to
+        // re-decode the current frame.  For video sources this will
+        // be tracked by the shared frame index once time-axis wiring
+        // lands; for still images the index is always 0.
+        if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
+            ifs->set_preferred_backend(loader_backend_);
+        }
+        auto img = entry.source ? entry.source->read_frame(0) : nullptr;
+        if (img) {
+            entry.image = std::move(img);
+            entry.display_image.reset();
+            entry.texture_dirty = true;
+            ++reloaded;
+        } else {
+            ++failed;
+            std::string err = entry.source ? entry.source->last_error()
+                                           : "no source";
+            last_fail = entry.filename + " (" + err + ")";
+        }
+    }
+    diff_->mark_dirty();
+
+    const char* name = ImageLoader::backend_name(loader_backend_);
+    std::string status;
+    if (failed == 0) {
+        status = "Reloaded " + std::to_string(reloaded)
+               + " image(s) via " + name;
+    } else {
+        status = "Reloaded " + std::to_string(reloaded) + " via " + name
+               + ", " + std::to_string(failed) + " failed: " + last_fail;
+    }
+    status_reporter_->set_status(status);
 }
 
 } // namespace idiff
