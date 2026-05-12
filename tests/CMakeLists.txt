@@ -10,12 +10,16 @@ add_executable(idiff_tests
     test_sr_engine.cpp
     test_channel_view.cpp
     test_logger.cpp
+    test_io_interfaces.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/app/seedvr2_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_dialog.cpp
     ${CMAKE_SOURCE_DIR}/src/app/settings.cpp
+    # IO adapters under test
+    ${CMAKE_SOURCE_DIR}/src/app/io/texture_uploader.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/io/file_dialog.cpp
 )
 
 # sr_dialog.cpp uses ImGui — provide a stub-free include path.
@@ -29,6 +33,8 @@ target_link_libraries(idiff_tests PRIVATE
     idiff_core
     idiff_util
     imgui
+    SDL2::SDL2
+    nfd::nfd
     Catch2::Catch2WithMain
 )
 

@@ -9,6 +9,8 @@ add_executable(idiff
     sr_infer_engine_factory.cpp
     seedvr2_engine.cpp
     sr_dialog.cpp
+    io/texture_uploader.cpp
+    io/file_dialog.cpp
 )
 
 if(APPLE)

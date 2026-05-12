@@ -8,6 +8,9 @@
 #include "app/seedvr2_engine.h"
 #include "app/platform/platform.h"
 #include "app/sr_dialog.h"
+#include "app/io/texture_uploader.h"
+#include "app/io/file_dialog.h"
+#include "util/logger.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -118,6 +121,13 @@ struct App::State {
     // can later tell which cache dump came from which comparison JSON.
     // Reset to nullptr when no config is loaded.
     std::unique_ptr<UrlCache> url_cache;
+
+    // Injectable IO collaborators.  Tests substitute fakes; the
+    // production wiring in App::init() installs the SDL/NFD-backed
+    // implementations.  Stored here (rather than as App members) so
+    // App's public header does not depend on app/io headers.
+    std::unique_ptr<ITextureUploader> texture_uploader;
+    std::unique_ptr<IFileDialog> file_dialog;
 };
 
 App::App() : state_(std::make_unique<State>()) {}
@@ -259,6 +269,13 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->diff_amplification = state_->settings.diff_amplification;
 
     NFD_Init();
+
+    // Install IO interfaces backed by the real SDL renderer and the
+    // initialised NFD library.  Replacing them with fakes from the
+    // outside is the seam tests use to drive the App without touching
+    // the platform.
+    state_->texture_uploader = std::make_unique<SdlTextureUploader>(renderer);
+    state_->file_dialog = std::make_unique<NfdFileDialog>();
 
     // Detect whether a super-resolution upscaler is available next to
     // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
@@ -1123,47 +1140,31 @@ void App::open_file_dialog() {
     // multi-filter drop-down: the user rarely cares whether something
     // is an image or a config, they just want to point at a file and
     // move on.  load_paths() takes care of routing after the fact.
-    nfdfilteritem_t filters[] = {
+    std::vector<FileDialogFilter> filters = {
         { "Images, YUV streams, and comparison configs",
-          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json" }
+          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json" },
     };
-    const nfdpathset_t* outPaths = nullptr;
-    nfdresult_t result = NFD_OpenDialogMultiple(&outPaths, filters, 1, nullptr);
-    if (result == NFD_OKAY) {
-        nfdpathsetsize_t count = 0;
-        NFD_PathSet_GetCount(outPaths, &count);
-        std::vector<std::string> paths;
-        for (nfdpathsetsize_t i = 0; i < count; i++) {
-            nfdchar_t* path = nullptr;
-            NFD_PathSet_GetPath(outPaths, i, &path);
-            if (path) {
-                paths.emplace_back(path);
-                NFD_PathSet_FreePath(path);
-            }
-        }
-        NFD_PathSet_Free(outPaths);
-        load_paths(paths);
-    } else if (result == NFD_ERROR) {
-        state_->status_text = "File dialog error: " + std::string(NFD_GetError());
+    auto result = state_->file_dialog->open_multiple(filters);
+    if (!result.error.empty()) {
+        state_->status_text = "File dialog error: " + result.error;
+        return;
+    }
+    if (!result.paths.empty()) {
+        load_paths(result.paths);
     }
 }
 
 void App::open_comparison_config_dialog() {
-    nfdfilteritem_t filters[] = {
+    std::vector<FileDialogFilter> filters = {
         { "Comparison config (JSON)", "json" },
     };
-    nfdchar_t* out_path = nullptr;
-    nfdresult_t result = NFD_OpenDialog(&out_path, filters, 1, nullptr);
-    if (result != NFD_OKAY) {
-        if (result == NFD_ERROR) {
-            state_->status_text = "Config dialog error: " +
-                                   std::string(NFD_GetError());
-        }
+    auto result = state_->file_dialog->open_single(filters);
+    if (!result.error.empty()) {
+        state_->status_text = "Config dialog error: " + result.error;
         return;
     }
-    std::string path = out_path;
-    NFD_FreePath(out_path);
-    load_comparison_config_from_path(path);
+    if (result.paths.empty()) return;
+    load_comparison_config_from_path(result.paths.front());
 }
 
 void App::load_comparison_config_from_path(const std::string& path) {
@@ -1654,23 +1655,17 @@ void App::save_viewport_dialog() {
     }
 
     // --- Ask the user for a destination path ---
-    nfdfilteritem_t filters[] = {
+    std::vector<FileDialogFilter> filters = {
         { "PNG image", "png" },
         { "JPEG image", "jpg,jpeg" },
     };
-    const char* default_name = "viewport.png";
-    nfdchar_t* out_path = nullptr;
-    nfdresult_t result = NFD_SaveDialog(&out_path, filters, 2, nullptr,
-                                         default_name);
-    if (result != NFD_OKAY) {
-        if (result == NFD_ERROR) {
-            state_->status_text = "Save dialog error: " +
-                                  std::string(NFD_GetError());
-        }
+    auto dlg = state_->file_dialog->save(filters, "viewport.png");
+    if (!dlg.error.empty()) {
+        state_->status_text = "Save dialog error: " + dlg.error;
         return;
     }
-    std::string path = out_path;
-    NFD_FreePath(out_path);
+    if (dlg.paths.empty()) return;
+    std::string path = dlg.paths.front();
 
     // NFD_SaveDialog does not always append an extension; default to .png
     // when none was given so cv::imwrite picks the right encoder.
@@ -1843,32 +1838,26 @@ void App::upload_texture(ImageEntry& entry) {
     }
 
     Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
+    (void)sdl_format;
 
     if (entry.texture) {
-        SDL_DestroyTexture(entry.texture);
+        state_->texture_uploader->destroy(entry.texture);
         entry.texture = nullptr;
     }
 
-    entry.texture = SDL_CreateTexture(state_->renderer, sdl_format,
-                                       SDL_TEXTUREACCESS_STREAMING,
-                                       w, h);
-    if (!entry.texture) return;
-
-    void* pixels = nullptr;
-    int pitch = 0;
-    if (SDL_LockTexture(entry.texture, nullptr, &pixels, &pitch) == 0) {
-        size_t src_row_bytes = static_cast<size_t>(w * channels);
-        size_t dst_pitch = static_cast<size_t>(pitch);
-
-        if (dst_pitch == src_row_bytes && upload_mat.isContinuous()) {
-            std::memcpy(pixels, upload_mat.ptr(), static_cast<size_t>(h) * src_row_bytes);
-        } else {
-            for (int y = 0; y < h; y++) {
-                std::memcpy(static_cast<uint8_t*>(pixels) + y * pitch,
-                           upload_mat.ptr(y), src_row_bytes);
-            }
-        }
-        SDL_UnlockTexture(entry.texture);
+    if (!upload_mat.isContinuous()) {
+        upload_mat = upload_mat.clone();
+    }
+    UploadRequest req;
+    req.pixels = upload_mat.ptr<std::uint8_t>();
+    req.width = w;
+    req.height = h;
+    req.channels = channels;
+    entry.texture = state_->texture_uploader->upload(req);
+    if (!entry.texture) {
+        LOG_WARN("texture upload failed for entry %s",
+                 entry.path.c_str());
+        return;
     }
 
     entry.tex_w = w;
@@ -1975,33 +1964,23 @@ void App::upload_diff_slot_texture(DiffSlot& slot) {
     channels = 4;
 
     Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
+    (void)sdl_format;
 
     if (slot.texture) {
-        SDL_DestroyTexture(slot.texture);
+        state_->texture_uploader->destroy(slot.texture);
         slot.texture = nullptr;
     }
 
-    slot.texture = SDL_CreateTexture(state_->renderer, sdl_format,
-                                      SDL_TEXTUREACCESS_STREAMING, w, h);
-    if (!slot.texture) return;
-
-    void* pixels = nullptr;
-    int pitch = 0;
-    if (SDL_LockTexture(slot.texture, nullptr, &pixels, &pitch) == 0) {
-        size_t src_row_bytes = static_cast<size_t>(w * channels);
-        size_t dst_pitch = static_cast<size_t>(pitch);
-
-        if (dst_pitch == src_row_bytes && upload_mat.isContinuous()) {
-            std::memcpy(pixels, upload_mat.ptr(),
-                        static_cast<size_t>(h) * src_row_bytes);
-        } else {
-            for (int y = 0; y < h; y++) {
-                std::memcpy(static_cast<uint8_t*>(pixels) + y * pitch,
-                            upload_mat.ptr(y), src_row_bytes);
-            }
-        }
-        SDL_UnlockTexture(slot.texture);
+    if (!upload_mat.isContinuous()) {
+        upload_mat = upload_mat.clone();
     }
+    UploadRequest req;
+    req.pixels = upload_mat.ptr<std::uint8_t>();
+    req.width = w;
+    req.height = h;
+    req.channels = channels;
+    slot.texture = state_->texture_uploader->upload(req);
+    if (!slot.texture) return;
 
     slot.tex_w = w;
     slot.tex_h = h;
