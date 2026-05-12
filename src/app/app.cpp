@@ -2,6 +2,7 @@
 #include "app/controller.h"
 #include "app/status_reporter.h"
 #include "app/ui/dialogs.h"
+#include "app/ui/image_list.h"
 #include "app/ui/status_bar.h"
 #include "app/ui/toolbar.h"
 #include "app/ui/yuv_dialog.h"
@@ -1282,265 +1283,35 @@ void App::render_toolbar() {
 }
 
 void App::render_image_list() {
-    ImGui::SetNextWindowSize(ImVec2(220, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Images", &state_->show_image_list)) {
-        ImGui::End();
-        return;
-    }
-
-    if (ImGui::Button("+ Add Images", ImVec2(-1, 0))) {
-        open_file_dialog();
-    }
-
-    // Group selector, only shown when a comparison-config is active.
-    // Switching the combo triggers an on-demand download + load of the
-    // selected group; only that one group's pixels are kept resident.
-    if (comparison_config_->current_index() >= 0 &&
-        comparison_config_->has_config()) {
-        const auto& groups = comparison_config_->config().groups;
-        int idx = comparison_config_->current_index();
-        std::string preview = (idx >= 0 &&
-                               idx < static_cast<int>(groups.size()))
-            ? groups[idx].name : std::string("(none)");
-        preview += " (" +
-            std::to_string((idx >= 0 && idx < static_cast<int>(groups.size()))
-                           ? groups[idx].items.size() : 0) + ")";
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##group", preview.c_str())) {
-            for (int i = 0; i < static_cast<int>(groups.size()); ++i) {
-                std::string label = groups[i].name + "  (" +
-                    std::to_string(groups[i].items.size()) + ")";
-                bool selected = (i == idx);
-                if (ImGui::Selectable(label.c_str(), selected)) {
-                    switch_to_comparison_group(i);
-                }
-                if (!groups[i].description.empty() &&
-                    ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("%s", groups[i].description.c_str());
-                }
-                if (selected) ImGui::SetItemDefaultFocus();
-            }
-            ImGui::EndCombo();
+    ImageListInputs in;
+    in.entries = &entries_view();
+    in.selection = selection_;
+    in.diff_service = diff_service_;
+    in.comparison_config = comparison_config_;
+    in.sr_service = sr_service_;
+    in.show_image_list = &state_->show_image_list;
+    in.sr_enabled = sr_enabled_;
+    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.entry_is_yuv = [this](int idx) -> bool {
+        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
+            return false;
         }
-        ImGui::TextDisabled("Group %d / %d",
-                            idx + 1, static_cast<int>(groups.size()));
-    }
-
-    if (selection_->size() >= 2) {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear")) {
-            selection_->clear();
-            selection_->set_swap_ab(false);
-diff_service_->mark_dirty();
-        }
-    }
-
-    ImGui::Separator();
-
-    if (!selection_->empty()) {
-        ImGui::TextColored(ImVec4(0.40f, 0.80f, 1.00f, 1.00f),
-                           "%zu selected", selection_->size());
-    }
-
-    float list_height = ImGui::GetContentRegionAvail().y;
-    if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
-        // The first two selected entries drive overlay / diff. A/B may be
-        // swapped by the user via the viewport's Swap A/B button.
-        int ab_idx[2] = {-1, -1};
-        get_ab_indices(ab_idx[0], ab_idx[1]);
-
-        for (int i = 0; i < static_cast<int>(entries_view().size()); i++) {
-            auto& entry = entries_view()[i];
-            ImGui::PushID(i);
-
-            bool is_sel = selection_->contains(i);
-            const char* ab_tag = (i == ab_idx[0]) ? "A"
-                                : (i == ab_idx[1]) ? "B" : nullptr;
-
-            if (is_sel) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f, 0.80f, 1.00f, 1.00f));
-            }
-
-            bool checked = is_sel;
-            if (ImGui::Checkbox("##sel", &checked)) {
-                if (checked) {
-                    selection_->insert(i);
-                } else {
-                    selection_->erase(i);
-                }
-                // Selection membership changed -- reset A/B swap so the
-                // user's intent isn't attached to stale slot mapping.
-                selection_->set_swap_ab(false);
-                // Selection change affects upscale targets for all selected images
-                for (int s : selection_->indices()) {
-                    if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                        entries_view()[s].texture_dirty = true;
-                    }
-                }
-diff_service_->mark_dirty();
-                // Statistics panel cache is pointer-keyed and self-prunes,
-                // so no explicit invalidation is needed on selection change.
-            }
-
-            ImGui::SameLine();
-
-            // Draw A / B tag as a pill in front of the label so the user
-            // can tell which selected entries feed overlay / diff.
-            if (ab_tag) {
-                ImVec4 pill_col = (ab_tag[0] == 'A')
-                    ? ImVec4(0.30f, 0.70f, 1.00f, 1.00f)    // A: blue
-                    : ImVec4(1.00f, 0.55f, 0.25f, 1.00f);   // B: orange
-                ImGui::PushStyleColor(ImGuiCol_Button, pill_col);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pill_col);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, pill_col);
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
-                ImGui::SmallButton(ab_tag);
-                ImGui::PopStyleColor(4);
-                ImGui::SameLine();
-            }
-
-            // Selectable for the label — also serves as drag source/target
-            ImGui::Selectable(entry.display_label.c_str(), is_sel,
-                              ImGuiSelectableFlags_AllowOverlap);
-
-            // Show SR progress indicator if this entry is being processed
-            for (const auto& task : sr_service_->tasks()) {
-                if (task.input_path == entry.path && task.engine &&
-                    task.engine->get_status() == SREngineStatus::Running) {
-                    ImGui::SameLine();
-                    float p = task.engine->get_progress();
-                    if (p >= 0) {
-                        ImGui::TextColored(
-                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
-                            "SR %d%%", static_cast<int>(p * 100));
-                    } else {
-                        ImGui::TextColored(
-                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SR...");
-                    }
-                    break;
-                }
-            }
-
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", entry.path.c_str());
-            }
-
-            // Drag source
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-                drag_source_idx_ = i;
-                ImGui::SetDragDropPayload("IMAGE_REORDER", &i, sizeof(int));
-                ImGui::Text("%s", entry.display_label.c_str());
-                ImGui::EndDragDropSource();
-            }
-
-            // Drop target
-            if (ImGui::BeginDragDropTarget()) {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("IMAGE_REORDER")) {
-                    int src = *static_cast<const int*>(payload->Data);
-                    move_entry(src, i);
-                    drag_source_idx_ = -1;
-                    drag_target_idx_ = -1;
-                }
-                ImGui::EndDragDropTarget();
-            }
-
-            if (ImGui::BeginPopupContextItem("entry_ctx")) {
-                // Only YUV streams can have their decoder parameters
-                // re-edited after load; other sources (still images)
-                // don't have user-visible parameters.
-                if (dynamic_cast<YuvRawSource*>(entry.source.get())) {
-                    if (ImGui::MenuItem("Edit YUV parameters...")) {
-                        begin_edit_yuv_entry(i);
-                    }
-                    ImGui::Separator();
-                }
-                // Super Resolution — only shown when an upscaler is detected
-                // and at least one entry is selected.
-                if (sr_enabled_ && !selection_->empty()) {
-                    bool any_running = false;
-                    for (const auto& task : sr_service_->tasks()) {
-                        if (task.engine &&
-                            task.engine->get_status() == SREngineStatus::Running) {
-                            any_running = true;
-                            break;
-                        }
-                    }
-                    if (any_running) {
-                        // Collect progress info for the tooltip.
-                        float total_progress = 0.0f;
-                        int running_count = 0;
-                        for (const auto& task : sr_service_->tasks()) {
-                            if (task.engine &&
-                                task.engine->get_status() == SREngineStatus::Running) {
-                                float p = task.engine->get_progress();
-                                if (p >= 0) total_progress += p;
-                                ++running_count;
-                            }
-                        }
-                        char sr_label[64];
-                        if (running_count > 0 && total_progress >= 0) {
-                            int pct = static_cast<int>(
-                                total_progress / running_count * 100.0f);
-                            std::snprintf(sr_label, sizeof(sr_label),
-                                          "Super Resolution... (%d%%)", pct);
-                        } else {
-                            std::snprintf(sr_label, sizeof(sr_label),
-                                          "Super Resolution... (running)");
-                        }
-                        ImGui::MenuItem(sr_label, nullptr, false, false);
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                            ImGui::BeginTooltip();
-                            if (running_count == 1) {
-                                ImGui::TextUnformatted(
-                                    "A super resolution task is running.");
-                            } else {
-                                char buf[64];
-                                std::snprintf(buf, sizeof(buf),
-                                    "%d super resolution tasks are running.",
-                                    running_count);
-                                ImGui::TextUnformatted(buf);
-                            }
-                            ImGui::TextDisabled(
-                                "Please wait for it to finish before\n"
-                                "starting a new task.");
-                            ImGui::EndTooltip();
-                        }
-                    } else {
-                        if (ImGui::MenuItem("Super Resolution...")) {
-                            // Use only the right-clicked entry as the SR
-                            // input.  Previously we gathered all selected
-                            // entries, which caused stale selections (e.g.
-                            // auto-selected input+output from a previous
-                            // SR run) to spawn duplicate tasks.
-                            std::vector<std::filesystem::path> inputs;
-                            inputs.emplace_back(entries_view()[i].path);
-                            if (!sr_dialog_) {
-                                sr_dialog_ = std::make_unique<SRDialogState>();
-                            }
-                            sr_dialog_open(*sr_dialog_, inputs, state_->settings);
-                        }
-                    }
-                    ImGui::Separator();
-                }
-                if (ImGui::MenuItem("Remove")) { remove_entry(i); }
-                ImGui::EndPopup();
-            }
-
-            if (is_sel) {
-                ImGui::PopStyleColor();
-            }
-
-            ImGui::PopID();
-        }
-    }
-    ImGui::EndChild();
-
-    if (entries_view().empty()) {
-        ImGui::TextDisabled("No images loaded.");
-        ImGui::TextDisabled("Ctrl+O or click '+' to add.");
-    }
-
-    ImGui::End();
+        return dynamic_cast<YuvRawSource*>(
+            entries_view()[idx].source.get()) != nullptr;
+    };
+    in.on_open_files = [this]() { open_file_dialog(); };
+    in.on_switch_comparison_group =
+        [this](int g) { switch_to_comparison_group(g); };
+    in.on_move_entry = [this](int from, int to) { move_entry(from, to); };
+    in.on_remove_entry = [this](int idx) { remove_entry(idx); };
+    in.on_edit_yuv_entry = [this](int idx) { begin_edit_yuv_entry(idx); };
+    in.on_open_sr_dialog = [this](int idx) {
+        std::vector<std::filesystem::path> inputs;
+        inputs.emplace_back(entries_view()[idx].path);
+        if (!sr_dialog_) sr_dialog_ = std::make_unique<SRDialogState>();
+        sr_dialog_open(*sr_dialog_, inputs, state_->settings);
+    };
+    idiff::render_image_list(in);
 }
 
 void App::render_viewport() {

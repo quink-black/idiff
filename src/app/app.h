@@ -237,10 +237,6 @@ private:
     // the selection.
     bool sel_drag_is_ctrl_ = false;
 
-    // Drag-reorder state for image list
-    int drag_source_idx_ = -1;
-    int drag_target_idx_ = -1;
-
     // Maps each slot index passed to Viewport::render (in order) back to
     // the corresponding entries_ index.  Populated by render_viewport() and
     // consumed by render_status_bar() to map the viewport's hover pixel

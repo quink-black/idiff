@@ -13,6 +13,7 @@ add_executable(idiff
     io/texture_uploader.cpp
     io/file_dialog.cpp
     ui/dialogs.cpp
+    ui/image_list.cpp
     ui/status_bar.cpp
     ui/toolbar.cpp
     ui/yuv_dialog.cpp
