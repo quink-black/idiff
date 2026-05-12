@@ -1,6 +1,7 @@
 #ifndef IDIFF_APP_H
 #define IDIFF_APP_H
 
+#include "app/measurement.h"
 #include "core/channel_view.h"
 
 #include <memory>
@@ -55,6 +56,12 @@ struct ImageEntry {
     // changed.
     int frame_offset = 0;
     int cached_frame = 0;
+
+    // Measurements anchored in this image's native pixel coordinates.
+    // Populated when the viewport's measurement set is saved back on
+    // selection change; loaded when the image is shown again.
+    std::vector<Measurement> measurements;
+    int next_measurement_id = 1;
 };
 
 // One heatmap comparing A to a specific partner entry.  The partner index

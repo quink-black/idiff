@@ -118,6 +118,341 @@ void Viewport::draw_selection_rect() {
     dl->AddRectFilled(sel_min_, sel_max_, IM_COL32(255, 200, 50, 30));
 }
 
+// --- Measurement ---
+
+bool Viewport::resolve_cell_at(ImVec2 screen_pt,
+                               int& cell_index,
+                               int& tex_w, int& tex_h,
+                               ImVec2& cell_origin, ImVec2& cell_size) const {
+    if (screen_pt.x < vp_origin_.x || screen_pt.x >= vp_origin_.x + vp_size_.x ||
+        screen_pt.y < vp_origin_.y || screen_pt.y >= vp_origin_.y + vp_size_.y) {
+        return false;
+    }
+
+    float cell_w = vp_size_.x / split_cols_;
+    float cell_h = vp_size_.y / split_rows_;
+    int col = static_cast<int>((screen_pt.x - vp_origin_.x) / cell_w);
+    int row = static_cast<int>((screen_pt.y - vp_origin_.y) / cell_h);
+    col = std::clamp(col, 0, split_cols_ - 1);
+    row = std::clamp(row, 0, split_rows_ - 1);
+    int grid_idx = row * split_cols_ + col;
+
+    // Map the on-screen grid cell to a logical slot index into
+    // cell_layouts_.  In Split/Difference the mapping is identity.  In
+    // Overlay the single grid cell hosts two slots (A and B); pick the
+    // one whose half of the A/B slider the cursor is over so the
+    // measurement is recorded against the correct source image.
+    int slot = grid_idx;
+    if (mode_ == ComparisonMode::Overlay && cell_layouts_.size() >= 2) {
+        float slider_screen_x = vp_origin_.x + vp_size_.x * slider_pos_;
+        slot = (screen_pt.x < slider_screen_x) ? 0 : 1;
+    }
+
+    if (slot < 0 || slot >= static_cast<int>(cell_layouts_.size())) return false;
+    const auto& cl = cell_layouts_[slot];
+    if (cl.tex_w <= 0 || cl.tex_h <= 0) return false;
+
+    cell_index = slot;
+    tex_w = cl.tex_w;
+    tex_h = cl.tex_h;
+    cell_origin = ImVec2(vp_origin_.x + col * cell_w,
+                         vp_origin_.y + row * cell_h);
+    cell_size = ImVec2(cell_w, cell_h);
+    return true;
+}
+
+void Viewport::screen_to_image_px(ImVec2 screen_pt,
+                                   int cell_index,
+                                   int tex_w, int tex_h,
+                                   ImVec2 cell_origin, ImVec2 cell_size,
+                                   float& out_px, float& out_py) const {
+    // Screen layout is driven by the composite canvas size (which equals
+    // tex_w/h outside Overlay).  The measurement coordinate system is
+    // the source image's native pixels, so the per-pixel screen scale is
+    // (composite_screen_size / composite_w) * (composite_w / tex_w),
+    // which simplifies to fit_scale_composite * (composite_w / tex_w).
+    int comp_w = tex_w;
+    int comp_h = tex_h;
+    if (cell_index >= 0 && cell_index < static_cast<int>(cell_layouts_.size())) {
+        const auto& cl = cell_layouts_[cell_index];
+        if (cl.composite_w > 0 && cl.composite_h > 0) {
+            comp_w = cl.composite_w;
+            comp_h = cl.composite_h;
+        }
+    }
+
+    float fit_scale = std::min(cell_size.x / comp_w, cell_size.y / comp_h);
+    float zoom = fit_scale * zoom_;
+    if (zoom <= 0.0f || tex_w <= 0 || tex_h <= 0) {
+        out_px = 0.0f; out_py = 0.0f; return;
+    }
+
+    float disp_w = comp_w * zoom;
+    float disp_h = comp_h * zoom;
+    float img_x = cell_origin.x + (cell_size.x - disp_w) * 0.5f + pan_x_;
+    float img_y = cell_origin.y + (cell_size.y - disp_h) * 0.5f + pan_y_;
+
+    // Convert from screen to composite-space pixels, then rescale into
+    // the source image's own pixel grid.
+    float comp_px = (screen_pt.x - img_x) / zoom;
+    float comp_py = (screen_pt.y - img_y) / zoom;
+    out_px = comp_px * static_cast<float>(tex_w) / static_cast<float>(comp_w);
+    out_py = comp_py * static_cast<float>(tex_h) / static_cast<float>(comp_h);
+}
+
+void Viewport::image_px_to_screen(int cell_index,
+                                   int tex_w, int tex_h,
+                                   float px, float py,
+                                   ImVec2& out_screen) const {
+    // Screen projection mirrors screen_to_image_px: lay out the cell on
+    // the composite canvas, then map the source-pixel coordinate into
+    // composite space before applying the screen scale.
+    int cols = std::max(1, split_cols_);
+    int rows = std::max(1, split_rows_);
+
+    int comp_w = tex_w;
+    int comp_h = tex_h;
+    int grid_idx = std::clamp(cell_index, 0, cols * rows - 1);
+    if (cell_index >= 0 && cell_index < static_cast<int>(cell_layouts_.size())) {
+        const auto& cl = cell_layouts_[cell_index];
+        if (cl.composite_w > 0 && cl.composite_h > 0) {
+            comp_w = cl.composite_w;
+            comp_h = cl.composite_h;
+        }
+        // grid_cell remembers which on-screen cell hosts this slot; in
+        // Overlay multiple slots collapse onto grid cell 0.
+        grid_idx = std::clamp(cl.grid_cell, 0, cols * rows - 1);
+    }
+
+    float cell_w = vp_size_.x / cols;
+    float cell_h = vp_size_.y / rows;
+    int col = grid_idx % cols;
+    int row = grid_idx / cols;
+    float cell_x = vp_origin_.x + col * cell_w;
+    float cell_y = vp_origin_.y + row * cell_h;
+
+    if (comp_w <= 0 || comp_h <= 0 || tex_w <= 0 || tex_h <= 0) {
+        out_screen = ImVec2(cell_x, cell_y);
+        return;
+    }
+
+    float fit_scale = std::min(cell_w / comp_w, cell_h / comp_h);
+    float zoom = fit_scale * zoom_;
+    float disp_w = comp_w * zoom;
+    float disp_h = comp_h * zoom;
+    float img_x = cell_x + (cell_w - disp_w) * 0.5f + pan_x_;
+    float img_y = cell_y + (cell_h - disp_h) * 0.5f + pan_y_;
+
+    // Source pixel -> composite pixel -> screen.
+    float comp_px = px * static_cast<float>(comp_w) / static_cast<float>(tex_w);
+    float comp_py = py * static_cast<float>(comp_h) / static_cast<float>(tex_h);
+    out_screen = ImVec2(img_x + comp_px * zoom, img_y + comp_py * zoom);
+}
+
+void Viewport::begin_measurement(ImVec2 screen_pt) {
+    int cell_idx, tw, th;
+    ImVec2 co, cs;
+    if (!resolve_cell_at(screen_pt, cell_idx, tw, th, co, cs)) {
+        measuring_ = false;
+        return;
+    }
+    float px, py;
+    screen_to_image_px(screen_pt, cell_idx, tw, th, co, cs, px, py);
+
+    measuring_ = true;
+    meas_drag_cell_ = cell_idx;
+    meas_drag_tex_w_ = tw;
+    meas_drag_tex_h_ = th;
+    meas_drag_x0_ = meas_drag_x1_ = px;
+    meas_drag_y0_ = meas_drag_y1_ = py;
+}
+
+void Viewport::update_measurement(ImVec2 screen_pt) {
+    if (!measuring_ || meas_drag_cell_ < 0) return;
+    // The drag is anchored on the slot resolved at mouse-down.  Recompute
+    // its on-screen grid cell rect from the last-rendered grid so pan/
+    // zoom between frames does not corrupt the mapping.  In Overlay,
+    // multiple slots map onto the same grid cell (cell 0).
+    int cols = std::max(1, split_cols_);
+    int rows = std::max(1, split_rows_);
+    int grid_idx = meas_drag_cell_;
+    if (meas_drag_cell_ >= 0 &&
+        meas_drag_cell_ < static_cast<int>(cell_layouts_.size())) {
+        grid_idx = cell_layouts_[meas_drag_cell_].grid_cell;
+    }
+    grid_idx = std::clamp(grid_idx, 0, cols * rows - 1);
+    float cell_w = vp_size_.x / cols;
+    float cell_h = vp_size_.y / rows;
+    int col = grid_idx % cols;
+    int row = grid_idx / cols;
+    ImVec2 co(vp_origin_.x + col * cell_w, vp_origin_.y + row * cell_h);
+    ImVec2 cs(cell_w, cell_h);
+
+    float px, py;
+    screen_to_image_px(screen_pt, meas_drag_cell_,
+                       meas_drag_tex_w_, meas_drag_tex_h_, co, cs,
+                       px, py);
+    meas_drag_x1_ = px;
+    meas_drag_y1_ = py;
+}
+
+const Measurement* Viewport::end_measurement() {
+    if (!measuring_) return nullptr;
+    measuring_ = false;
+
+    float w = std::abs(meas_drag_x1_ - meas_drag_x0_);
+    float h = std::abs(meas_drag_y1_ - meas_drag_y0_);
+    // Discard near-zero boxes (treated as a stray click).  One-pixel
+    // resolution is the smallest meaningful unit for the source image.
+    if (w < 1.0f || h < 1.0f) return nullptr;
+
+    Measurement m;
+    m.id = next_measurement_id_++;
+    m.source_cell_index = meas_drag_cell_;
+    m.src_tex_w = meas_drag_tex_w_;
+    m.src_tex_h = meas_drag_tex_h_;
+    m.x0 = std::min(meas_drag_x0_, meas_drag_x1_);
+    m.y0 = std::min(meas_drag_y0_, meas_drag_y1_);
+    m.x1 = std::max(meas_drag_x0_, meas_drag_x1_);
+    m.y1 = std::max(meas_drag_y0_, meas_drag_y1_);
+    measurements_.push_back(m);
+    return &measurements_.back();
+}
+
+void Viewport::cancel_measurement() {
+    measuring_ = false;
+}
+
+void Viewport::remove_measurement(int id) {
+    measurements_.erase(
+        std::remove_if(measurements_.begin(), measurements_.end(),
+                       [id](const Measurement& m) { return m.id == id; }),
+        measurements_.end());
+}
+
+void Viewport::clear_measurements() {
+    measurements_.clear();
+}
+
+void Viewport::add_measurement(const Measurement& m) {
+    measurements_.push_back(m);
+}
+
+void Viewport::draw_measurements() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 stroke_saved = IM_COL32(0x33, 0xE6, 0xFF, 230);
+    const ImU32 fill_saved   = IM_COL32(0x33, 0xE6, 0xFF, 25);
+    const ImU32 stroke_live  = IM_COL32(0xFF, 0xC8, 0x32, 220);
+    const ImU32 fill_live    = IM_COL32(0xFF, 0xC8, 0x32, 30);
+    const ImU32 label_bg     = IM_COL32(0, 0, 0, 180);
+    const ImU32 label_fg     = IM_COL32(0xFF, 0xFF, 0xFF, 235);
+    const ImU32 x_bg         = IM_COL32(0, 0, 0, 200);
+    const ImU32 x_bg_hot     = IM_COL32(0xFF, 0x55, 0x55, 230);
+    const ImU32 x_fg         = IM_COL32(0xFF, 0xFF, 0xFF, 235);
+
+    hover_measurement_id_ = -1;
+    hover_close_hot_ = false;
+
+    // Live drag preview (drawn first so it sits under saved rects visually
+    // if they overlap; the live box is only visible during the drag).
+    if (measuring_ && meas_drag_cell_ >= 0 && meas_drag_tex_w_ > 0) {
+        ImVec2 p0, p1;
+        image_px_to_screen(meas_drag_cell_, meas_drag_tex_w_, meas_drag_tex_h_,
+                           std::min(meas_drag_x0_, meas_drag_x1_),
+                           std::min(meas_drag_y0_, meas_drag_y1_), p0);
+        image_px_to_screen(meas_drag_cell_, meas_drag_tex_w_, meas_drag_tex_h_,
+                           std::max(meas_drag_x0_, meas_drag_x1_),
+                           std::max(meas_drag_y0_, meas_drag_y1_), p1);
+        dl->AddRectFilled(p0, p1, fill_live);
+        dl->AddRect(p0, p1, stroke_live, 0.0f, 0, 2.0f);
+
+        int w_px = static_cast<int>(std::round(std::abs(meas_drag_x1_ - meas_drag_x0_)));
+        int h_px = static_cast<int>(std::round(std::abs(meas_drag_y1_ - meas_drag_y0_)));
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%d x %d px", w_px, h_px);
+        ImVec2 ts = ImGui::CalcTextSize(buf);
+        ImVec2 lp(p0.x, p0.y - ts.y - 6.0f);
+        if (lp.y < vp_origin_.y + 2.0f) lp.y = p0.y + 4.0f;
+        dl->AddRectFilled(ImVec2(lp.x - 4, lp.y - 2),
+                          ImVec2(lp.x + ts.x + 4, lp.y + ts.y + 2),
+                          label_bg, 3.0f);
+        dl->AddText(lp, label_fg, buf);
+    }
+
+    // Saved measurements.
+    ImVec2 mouse = ImGui::GetIO().MousePos;
+    for (const auto& m : measurements_) {
+        ImVec2 p0, p1;
+        image_px_to_screen(m.source_cell_index, m.src_tex_w, m.src_tex_h,
+                           m.x0, m.y0, p0);
+        image_px_to_screen(m.source_cell_index, m.src_tex_w, m.src_tex_h,
+                           m.x1, m.y1, p1);
+
+        dl->AddRectFilled(p0, p1, fill_saved);
+        dl->AddRect(p0, p1, stroke_saved, 0.0f, 0, 2.0f);
+
+        int w_px = static_cast<int>(std::round(m.x1 - m.x0));
+        int h_px = static_cast<int>(std::round(m.y1 - m.y0));
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "#%d  %d x %d px", m.id, w_px, h_px);
+        ImVec2 ts = ImGui::CalcTextSize(buf);
+        ImVec2 lp(p0.x, p0.y - ts.y - 6.0f);
+        if (lp.y < vp_origin_.y + 2.0f) lp.y = p0.y + 4.0f;
+        dl->AddRectFilled(ImVec2(lp.x - 4, lp.y - 2),
+                          ImVec2(lp.x + ts.x + 4, lp.y + ts.y + 2),
+                          label_bg, 3.0f);
+        dl->AddText(lp, label_fg, buf);
+
+        // Hover detection + delete button.  We check hover against the
+        // rectangle's bounding box (order-insensitive for p0/p1).
+        float bx0 = std::min(p0.x, p1.x);
+        float by0 = std::min(p0.y, p1.y);
+        float bx1 = std::max(p0.x, p1.x);
+        float by1 = std::max(p0.y, p1.y);
+        bool hovered = mouse.x >= bx0 && mouse.x <= bx1 &&
+                       mouse.y >= by0 && mouse.y <= by1;
+        if (hovered) {
+            hover_measurement_id_ = m.id;
+
+            // x button at the top-right corner of the rect (inside the
+            // viewport clip so it never leaks into the menu bar).
+            const float sz = 16.0f;
+            ImVec2 xr_min(std::min(bx1, vp_origin_.x + vp_size_.x) - sz - 2.0f,
+                          std::max(by0, vp_origin_.y) + 2.0f);
+            ImVec2 xr_max(xr_min.x + sz, xr_min.y + sz);
+
+            bool x_hot = mouse.x >= xr_min.x && mouse.x <= xr_max.x &&
+                         mouse.y >= xr_min.y && mouse.y <= xr_max.y;
+            if (x_hot) hover_close_hot_ = true;
+            dl->AddRectFilled(xr_min, xr_max, x_hot ? x_bg_hot : x_bg, 3.0f);
+            // Draw the X glyph as two strokes so it stays readable at any
+            // font.  Padding keeps the strokes clear of the box edges.
+            float pad = 4.0f;
+            dl->AddLine(ImVec2(xr_min.x + pad, xr_min.y + pad),
+                        ImVec2(xr_max.x - pad, xr_max.y - pad),
+                        x_fg, 1.6f);
+            dl->AddLine(ImVec2(xr_max.x - pad, xr_min.y + pad),
+                        ImVec2(xr_min.x + pad, xr_max.y - pad),
+                        x_fg, 1.6f);
+
+            if (x_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                pending_delete_id_ = m.id;
+            }
+        }
+    }
+
+    // Apply pending delete from the x button.  The measurement is removed
+    // from the viewport display immediately; App reads
+    // consume_pending_delete() after render to also remove it from the
+    // owning ImageEntry.
+    if (pending_delete_id_ >= 0) {
+        int id = pending_delete_id_;
+        pending_delete_id_ = -1;
+        remove_measurement(id);
+        last_deleted_id_ = id;
+    }
+}
+
 // --- Grid layout computation ---
 
 void Viewport::compute_grid(int n, GridLayout layout, int user_cols,
@@ -432,6 +767,72 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     }
     slider_dragging_ = false;
 
+    // Rebuild per-slot tex dimensions.  Downstream measurement code
+    // resolves slots through `cell_layouts_`, so the table must mirror
+    // the grid drawn below for the current mode.  In Split/Difference,
+    // each slot is its own grid cell and the composite size equals the
+    // source size.  In Overlay, both slots share grid cell 0 but each
+    // keeps its native source size; the composite (max of A and B) is
+    // the canvas the renderer stretches both sources onto.
+    cell_layouts_.clear();
+    switch (mode_) {
+        case ComparisonMode::Split:
+            cell_layouts_.reserve(tex_ptrs.size());
+            for (size_t i = 0; i < tex_ptrs.size(); ++i) {
+                CellLayout cl;
+                if (tex_ptrs[i] && tex_ws[i] > 0 && tex_hs[i] > 0) {
+                    cl.tex_w = tex_ws[i];
+                    cl.tex_h = tex_hs[i];
+                    cl.composite_w = tex_ws[i];
+                    cl.composite_h = tex_hs[i];
+                }
+                cl.grid_cell = static_cast<int>(i);
+                cell_layouts_.push_back(cl);
+            }
+            break;
+        case ComparisonMode::Overlay: {
+            // Overlay shares one grid cell between two slots.  Push one
+            // CellLayout per slot so resolve_cell_at can return the slot
+            // index based on which side of the A/B slider was clicked,
+            // and the per-source tex_w/h drives the reported region size.
+            int comp_w = 0, comp_h = 0;
+            if (!tex_ptrs.empty() && tex_ptrs[0]) {
+                comp_w = tex_ws[0];
+                comp_h = tex_hs[0];
+            }
+            if (tex_ptrs.size() >= 2 && tex_ptrs[1]) {
+                comp_w = std::max(comp_w, tex_ws[1]);
+                comp_h = std::max(comp_h, tex_hs[1]);
+            }
+            for (size_t i = 0; i < tex_ptrs.size() && i < 2; ++i) {
+                CellLayout cl;
+                if (tex_ptrs[i] && tex_ws[i] > 0 && tex_hs[i] > 0) {
+                    cl.tex_w = tex_ws[i];
+                    cl.tex_h = tex_hs[i];
+                    cl.composite_w = comp_w;
+                    cl.composite_h = comp_h;
+                }
+                cl.grid_cell = 0;
+                cell_layouts_.push_back(cl);
+            }
+            break;
+        }
+        case ComparisonMode::Difference:
+            cell_layouts_.reserve(diff_tex_ptrs.size());
+            for (size_t i = 0; i < diff_tex_ptrs.size(); ++i) {
+                CellLayout cl;
+                if (diff_tex_ptrs[i] && diff_tex_ws[i] > 0 && diff_tex_hs[i] > 0) {
+                    cl.tex_w = diff_tex_ws[i];
+                    cl.tex_h = diff_tex_hs[i];
+                    cl.composite_w = diff_tex_ws[i];
+                    cl.composite_h = diff_tex_hs[i];
+                }
+                cl.grid_cell = static_cast<int>(i);
+                cell_layouts_.push_back(cl);
+            }
+            break;
+    }
+
     switch (mode_) {
         case ComparisonMode::Split:
             render_split(tex_ptrs, tex_ws, tex_hs, labels);
@@ -547,6 +948,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     }
 
     draw_selection_rect();
+    draw_measurements();
 
     dl->PopClipRect();
 
@@ -673,7 +1075,15 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         return;
     }
 
-    // Two-image A/B slider overlay
+    // Two-image A/B slider overlay.
+    //
+    // tex_ws/tex_hs are the source images' native pixel sizes (e.g.
+    // A=2520x1440, B=5040x2880).  The SDL textures themselves have
+    // already been resampled by update_display_image so both share the
+    // composite size (max of A and B); that is what makes per-pixel
+    // overlay alignment well defined.  Lay the screen rect out in the
+    // composite coordinate system, then sample the full texture (UV
+    // 0..1) for each side.
     int img_w = std::max(tex_ws[0], tex_ws[1]);
     int img_h = std::max(tex_hs[0], tex_hs[1]);
 
@@ -682,27 +1092,20 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
 
     float line_x = vp_origin_.x + vp_size_.x * slider_pos_;
 
-    float uv_a_scale_x = static_cast<float>(tex_ws[0]) / img_w;
-    float uv_b_scale_x = static_cast<float>(tex_ws[1]) / img_w;
-
     // Draw image B (right side)
     {
         dl->PushClipRect(ImVec2(line_x, vp_origin_.y),
                          ImVec2(vp_origin_.x + vp_size_.x, vp_origin_.y + vp_size_.y), true);
-        ImVec2 uv0(0, 0);
-        ImVec2 uv1(uv_b_scale_x, 1);
         dl->AddImage(to_tex_id(tex_ptrs[1]), pos,
-                     ImVec2(pos.x + size.x, pos.y + size.y), uv0, uv1);
+                     ImVec2(pos.x + size.x, pos.y + size.y));
         dl->PopClipRect();
     }
 
     // Draw image A (left side)
     {
         dl->PushClipRect(vp_origin_, ImVec2(line_x, vp_origin_.y + vp_size_.y), true);
-        ImVec2 uv0(0, 0);
-        ImVec2 uv1(uv_a_scale_x, 1);
         dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
-                     ImVec2(pos.x + size.x, pos.y + size.y), uv0, uv1);
+                     ImVec2(pos.x + size.x, pos.y + size.y));
         dl->PopClipRect();
     }
 

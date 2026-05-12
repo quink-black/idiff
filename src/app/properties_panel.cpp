@@ -2,8 +2,10 @@
 
 #include <imgui.h>
 
+#include <cmath>
 #include <cstdio>
 
+#include "app/viewport.h"
 #include "core/image.h"
 
 namespace idiff {
@@ -117,6 +119,99 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
         } else {
             ImGui::TextDisabled("No ICC profile");
         }
+    }
+}
+
+void PropertiesPanel::render_measurements(
+    Viewport& viewport,
+    const std::vector<const char*>& slot_labels,
+    std::vector<int>& out_deleted_ids,
+    bool& out_clear_all) {
+    out_deleted_ids.clear();
+    out_clear_all = false;
+
+    const auto& items = viewport.measurements();
+
+    if (items.empty()) {
+        ImGui::TextDisabled("No measurements.");
+        ImGui::TextDisabled("Toggle \"Measure\" in the viewport toolbar, then");
+        ImGui::TextDisabled("left-drag a region to record its source-image size.");
+        return;
+    }
+
+    int hover_id = viewport.hover_measurement_id();
+
+    if (ImGui::BeginTable("##measurements_table", 4,
+                           ImGuiTableFlags_BordersInnerV |
+                           ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("#",      ImGuiTableColumnFlags_WidthFixed, 36.0f);
+        ImGui::TableSetupColumn("Size",   ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed, 28.0f);
+        ImGui::TableHeadersRow();
+
+        int pending_delete = -1;
+        for (const auto& m : items) {
+            ImGui::TableNextRow();
+            bool is_hover = (hover_id == m.id);
+            if (is_hover) {
+                // Subtle cyan wash to mirror the viewport's accent color
+                // on the hovered rect.
+                ImU32 tint = IM_COL32(0x33, 0xE6, 0xFF, 32);
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, tint);
+            }
+
+            ImGui::PushID(m.id);
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", m.id);
+
+            ImGui::TableNextColumn();
+            int w_px = static_cast<int>(std::round(m.x1 - m.x0));
+            int h_px = static_cast<int>(std::round(m.y1 - m.y0));
+            ImGui::Text("%d x %d px", w_px, h_px);
+
+            ImGui::TableNextColumn();
+            const char* src = "(unknown)";
+            if (m.source_cell_index >= 0 &&
+                m.source_cell_index < static_cast<int>(slot_labels.size()) &&
+                slot_labels[m.source_cell_index]) {
+                src = slot_labels[m.source_cell_index];
+            }
+            ImGui::TextUnformatted(src);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Native %d x %d px\nRect: (%.0f, %.0f) to (%.0f, %.0f)",
+                                  m.src_tex_w, m.src_tex_h,
+                                  m.x0, m.y0, m.x1, m.y1);
+            }
+
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton("x")) {
+                pending_delete = m.id;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Remove measurement #%d", m.id);
+            }
+
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+
+        if (pending_delete >= 0) {
+            out_deleted_ids.push_back(pending_delete);
+            viewport.remove_measurement(pending_delete);
+        }
+    }
+
+    ImGui::Spacing();
+    float button_w = 90.0f;
+    float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > button_w) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - button_w);
+    }
+    if (ImGui::Button("Clear All", ImVec2(button_w, 0))) {
+        out_clear_all = true;
+        viewport.clear_measurements();
     }
 }
 

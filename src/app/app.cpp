@@ -2428,6 +2428,19 @@ diff_dirty_ = true;
 }
 
 void App::render_viewport() {
+    // Snapshot diff_dirty_ at the top of the frame: update_diff_texture()
+    // below clears it, but the measurement reload path further down still
+    // needs to know whether the image set or selection just changed.
+    bool selection_changed = diff_dirty_;
+
+    // When the image set or selection changes, clear the viewport's
+    // measurement display and reload from the new entries.  Measurements
+    // are persisted per-entry and synced immediately on create/delete,
+    // so no "save back" step is needed here.
+    if (selection_changed && state_->viewport) {
+        state_->viewport->clear_measurements();
+    }
+
     // Upload dirty textures for selected images
     for (int s : selected_) {
         if (s >= 0 && s < static_cast<int>(entries_.size())) {
@@ -2460,12 +2473,23 @@ void App::render_viewport() {
 
     auto push_entry = [&](int s, const char* prefix) {
         if (s < 0 || s >= static_cast<int>(entries_.size())) return;
-        tex_ptrs.push_back(entries_[s].texture);
-        tex_ws.push_back(entries_[s].tex_w);
-        tex_hs.push_back(entries_[s].tex_h);
+        const auto& e = entries_[s];
+        tex_ptrs.push_back(e.texture);
+        // Report the source image's native pixel dimensions, not the SDL
+        // texture size.  When two selected images differ in resolution,
+        // update_display_image upscales the smaller one to max(W, H) for
+        // pixel-aligned diffing, which inflates entry.tex_w/tex_h.  Using
+        // those inflated values would make rulers and measurements report
+        // sizes in the upscaled coordinate system (e.g. a 110 px feature
+        // on a 2520-wide image would read as 220 px when the partner is
+        // 5040-wide).  The source image keeps the original dimensions.
+        int src_w = e.image ? e.image->info().width  : e.tex_w;
+        int src_h = e.image ? e.image->info().height : e.tex_h;
+        tex_ws.push_back(src_w);
+        tex_hs.push_back(src_h);
         std::string lbl = prefix
-            ? (std::string("[") + prefix + "] " + entries_[s].display_label)
-            : entries_[s].display_label;
+            ? (std::string("[") + prefix + "] " + e.display_label)
+            : e.display_label;
         label_storage.push_back(std::move(lbl));
         labels.push_back(label_storage.back().c_str());
         viewport_slot_to_entry_.push_back(s);
@@ -2476,6 +2500,26 @@ void App::render_viewport() {
     for (int s : selected_) {
         if (s == ab_idx[0] || s == ab_idx[1]) continue;
         push_entry(s, nullptr);
+    }
+
+    // Load saved measurements from the newly-mapped entries into the
+    // viewport.  source_cell_index is rewritten to the current slot
+    // position so the viewport can project the rectangles correctly.
+    if (selection_changed && state_->viewport) {
+        auto& vp = *state_->viewport;
+        int max_id = 1;
+        for (int slot = 0; slot < static_cast<int>(viewport_slot_to_entry_.size()); slot++) {
+            int entry_idx = viewport_slot_to_entry_[slot];
+            if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
+                for (const auto& m : entries_[entry_idx].measurements) {
+                    Measurement copy = m;
+                    copy.source_cell_index = slot;
+                    vp.add_measurement(copy);
+                }
+                max_id = std::max(max_id, entries_[entry_idx].next_measurement_id);
+            }
+        }
+        vp.set_next_measurement_id(max_id);
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
@@ -2515,13 +2559,73 @@ void App::render_viewport() {
     // left-mouse drags for the A/B slider.  Only pan when that slider is
     // NOT being dragged, no selection is in progress, and Ctrl is NOT held
     // (Ctrl+left-drag is selection-zoom), so all interactions remain
-    // mutually exclusive.
+    // mutually exclusive.  Also skip when Measure mode is active: the
+    // left-drag is handled by the measurement block below.
     if (hovered && !vp.selecting() && !io.KeyCtrl &&
+        !vp.measure_mode() && !vp.measuring() &&
         ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
         bool overlay_slider_active = vp.overlay_slider_dragging();
         if (!overlay_slider_active) {
             ImVec2 delta = io.MouseDelta;
             vp.set_pan(vp.pan_x() + delta.x, vp.pan_y() + delta.y);
+        }
+    }
+
+    // --- Measurement drag (Measure mode, left button) ---
+    // Mutually exclusive with pan and with selection-zoom.  The drag is
+    // anchored on mouse-down at the cell under the cursor and that cell's
+    // source-tex dimensions are frozen for the lifetime of the drag, so
+    // dragging past the cell edge extrapolates in the source image's
+    // coordinate system instead of re-resolving to another cell.
+    //
+    // Measure mode is a hold-to-activate toggle driven by the M key (no
+    // checkbox in the toolbar).  Holding M arms the next left-drag as a
+    // measurement; releasing M during a drag does NOT abort, so the user
+    // can let go of the key once the drag has started.  This avoids the
+    // accidental measurement rectangles that a sticky checkbox produced.
+    // WantTextInput (not WantCaptureKeyboard) is the correct guard:
+    // WantCaptureKeyboard is true whenever any ImGui window is focused,
+    // which includes the viewport itself and would block the hotkey
+    // entirely.  WantTextInput is true only while a text field is
+    // actively receiving input, matching the Ctrl+O guard above.
+    bool measure_armed = !io.WantTextInput &&
+                         ImGui::IsKeyDown(ImGuiKey_M);
+    if (measure_armed != vp.measure_mode()) {
+        vp.set_measure_mode(measure_armed);
+        if (!measure_armed && !vp.measuring()) {
+            vp.cancel_measurement();
+        }
+    }
+    if (vp.measure_mode() || vp.measuring()) {
+        bool click_left = hovered && !io.KeyCtrl &&
+                          ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        // Clicking directly on an existing measurement's x button removes
+        // it; do not also start a new drag from that click position.
+        if (click_left && !vp.hover_measurement_close_hot() && !vp.selecting()) {
+            vp.begin_measurement(io.MousePos);
+        }
+        if (vp.measuring()) {
+            vp.update_measurement(io.MousePos);
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                const Measurement* committed = vp.end_measurement();
+                // Sync the new measurement to its source entry so it
+                // persists across selection changes.
+                if (committed) {
+                    int slot = committed->source_cell_index;
+                    if (slot >= 0 && slot < static_cast<int>(viewport_slot_to_entry_.size())) {
+                        int entry_idx = viewport_slot_to_entry_[slot];
+                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
+                            entries_[entry_idx].measurements.push_back(*committed);
+                            entries_[entry_idx].next_measurement_id =
+                                std::max(entries_[entry_idx].next_measurement_id,
+                                         committed->id + 1);
+                        }
+                    }
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                vp.cancel_measurement();
+            }
         }
     }
 
@@ -2573,7 +2677,11 @@ void App::render_viewport() {
     }
 
     // --- Double-click to fit ---
-    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    // Disabled in Measure mode: left-clicks there belong to the
+    // measurement drag interaction and a surprise fit would wipe the
+    // context the user is trying to measure in.
+    if (hovered && !vp.measure_mode() &&
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
         vp.fit_to_content();
     }
 
@@ -2744,6 +2852,30 @@ diff_dirty_ = true;
             }
         }
 
+        // --- Measurement mode ---
+        // Measurement is a hold-to-activate gesture: hold M and left-drag
+        // a region.  No persistent checkbox in the toolbar -- a sticky
+        // toggle was too easy to leave on, causing stray clicks to draw
+        // unwanted measurement rectangles.
+        if (!vp.measurements().empty()) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear Measurements")) {
+                vp.clear_measurements();
+                // Also clear from the owning entries so they don't
+                // reappear on the next selection change.
+                for (int entry_idx : viewport_slot_to_entry_) {
+                    if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
+                        entries_[entry_idx].measurements.clear();
+                    }
+                }
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Remove all saved measurements");
+            }
+        }
+
         if (sel_count > 0) {
             ImGui::SameLine();
             ImGui::Spacing();
@@ -2755,8 +2887,16 @@ diff_dirty_ = true;
         ImGui::Separator();
 
         // Hint about mouse interactions
-        ImGui::TextColored(ImVec4(0.60f, 0.60f, 0.60f, 1.00f),
-                           "Drag: pan | Right-drag / Ctrl+drag: zoom to selection");
+        if (vp.measure_mode()) {
+            ImGui::TextColored(ImVec4(0xFF/255.0f, 0xC8/255.0f, 0x32/255.0f, 1.00f),
+                               "Measure (M held): left-drag a region | "
+                               "Right-drag / Ctrl+drag: zoom to selection | "
+                               "Hover a rect and click x to remove");
+        } else {
+            ImGui::TextColored(ImVec4(0.60f, 0.60f, 0.60f, 1.00f),
+                               "Drag: pan | Right-drag / Ctrl+drag: zoom to selection | "
+                               "Hold M + drag: measure region");
+        }
     }
 
     // Build diff texture/label vectors for Difference mode.  Each slot
@@ -2812,6 +2952,20 @@ diff_dirty_ = true;
 
     ImGui::End();
     ImGui::PopStyleVar();
+
+    // Sync measurement deletions from the viewport (x button clicks
+    // processed during draw_measurements) back to the owning entries.
+    int deleted_id;
+    while ((deleted_id = vp.consume_pending_delete()) >= 0) {
+        for (auto& entry : entries_) {
+            auto& ms = entry.measurements;
+            ms.erase(std::remove_if(ms.begin(), ms.end(),
+                                    [deleted_id](const Measurement& m) {
+                                        return m.id == deleted_id;
+                                    }),
+                     ms.end());
+        }
+    }
 }
 
 void App::render_right_sidebar() {
@@ -2905,6 +3059,50 @@ void App::render_right_sidebar() {
                 }
 
                 state_->metrics_panel->render_statistics(stat_images);
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Measurements")) {
+            if (state_->properties_panel) {
+                // Build slot labels in the same order viewport_slot_to_entry_
+                // was populated by render_viewport, so Measurement.source_cell_index
+                // resolves to the right image name.  Keep the strings alive
+                // for the duration of the call.
+                std::vector<std::string> slot_storage;
+                std::vector<const char*> slot_labels;
+                slot_storage.reserve(viewport_slot_to_entry_.size());
+                slot_labels.reserve(viewport_slot_to_entry_.size());
+                for (int entry_idx : viewport_slot_to_entry_) {
+                    if (entry_idx >= 0 &&
+                        entry_idx < static_cast<int>(entries_.size())) {
+                        slot_storage.push_back(entries_[entry_idx].display_label);
+                    } else {
+                        slot_storage.emplace_back("(unknown)");
+                    }
+                    slot_labels.push_back(slot_storage.back().c_str());
+                }
+                std::vector<int> deleted_ids;
+                bool clear_all = false;
+                state_->properties_panel->render_measurements(
+                    *state_->viewport, slot_labels, deleted_ids, clear_all);
+                // Sync deletions back to the owning entries.
+                if (clear_all) {
+                    for (int entry_idx : viewport_slot_to_entry_) {
+                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
+                            entries_[entry_idx].measurements.clear();
+                        }
+                    }
+                }
+                for (int del_id : deleted_ids) {
+                    for (auto& entry : entries_) {
+                        auto& ms = entry.measurements;
+                        ms.erase(std::remove_if(ms.begin(), ms.end(),
+                                                [del_id](const Measurement& m) {
+                                                    return m.id == del_id;
+                                                }),
+                                 ms.end());
+                    }
+                }
             }
             ImGui::EndTabItem();
         }
@@ -3305,10 +3503,12 @@ void App::render_status_bar() {
                     int ent = viewport_slot_to_entry_[cell];
                     if (ent >= 0 && ent < static_cast<int>(entries_.size())) {
                         const auto& e = entries_[ent];
-                        // Prefer display_image because pixel coords from the
-                        // viewport correspond to the image that was rendered.
-                        src_img = e.display_image ? e.display_image.get()
-                                                  : e.image.get();
+                        // Hover px/py from the viewport are in the source
+                        // image's native coordinate system (see push_entry
+                        // in render_viewport), so read pixels from the
+                        // original image rather than display_image, which
+                        // may be upscaled with interpolated pixels.
+                        src_img = e.image.get();
                         src_label = e.display_label.c_str();
                     }
                 }
