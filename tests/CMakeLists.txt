@@ -17,6 +17,7 @@ add_executable(idiff_tests
     test_diff_service.cpp
     test_sr_task_service.cpp
     test_comparison_config_service.cpp
+    test_app_controller.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
@@ -26,6 +27,9 @@ add_executable(idiff_tests
     # IO adapters under test
     ${CMAKE_SOURCE_DIR}/src/app/io/texture_uploader.cpp
     ${CMAKE_SOURCE_DIR}/src/app/io/file_dialog.cpp
+    # Controller is part of app/, not idiff_domain — pull it in for
+    # test_app_controller.cpp without dragging in the full app.cpp.
+    ${CMAKE_SOURCE_DIR}/src/app/controller.cpp
 )
 
 # sr_dialog.cpp uses ImGui — provide a stub-free include path.

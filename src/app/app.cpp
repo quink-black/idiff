@@ -612,7 +612,7 @@ diff_service_->mark_dirty();
 }
 
 void App::get_ab_indices(int& a_idx, int& b_idx) const {
-    selection_->get_ab_indices(a_idx, b_idx);
+    controller_->get_ab_indices(a_idx, b_idx);
 }
 
 bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) {
@@ -895,7 +895,7 @@ void App::render_yuv_params_dialog() {
 }
 
 int App::timeline_length() const {
-    return TimelineModel::length(entries_view());
+    return controller_->timeline_length();
 }
 
 void App::sync_entries_to_timeline() {
@@ -1017,49 +1017,12 @@ float App::render_timeline_bar() {
     return bar_h;
 }
 
-
-
-namespace {
-
-// Split a filename into (stem, extension) using the last '.' as the
-// delimiter.  A leading dot (e.g. ".hidden") does not start an extension —
-// the whole string is treated as the stem, matching the convention used
-// by most shells and file managers.
-std::pair<std::string_view, std::string_view>
-split_stem_ext(std::string_view name) {
-    if (name.size() <= 1) return {name, {}};
-    auto dot = name.find_last_of('.');
-    if (dot == std::string_view::npos || dot == 0) return {name, {}};
-    return {name.substr(0, dot), name.substr(dot + 1)};
-}
-
-// Compare filenames by (stem, extension) so that a "base" name like
-// "kid.jpg" sorts before its derived siblings ("kid-pisa.jpg",
-// "kid-pisa-v0.jpg").  The default std::string operator< puts '-' (0x2D)
-// before '.' (0x2E) which is the wrong answer here: the user expects the
-// shorter root name to come first.
-bool filename_less(const std::string& a, const std::string& b) {
-    auto [a_stem, a_ext] = split_stem_ext(a);
-    auto [b_stem, b_ext] = split_stem_ext(b);
-    if (a_stem != b_stem) return a_stem < b_stem;
-    return a_ext < b_ext;
-}
-
-} // namespace
-
 void App::sort_entries_by_name() {
-    auto remap = library_->sort_with(&filename_less);
-    selection_->apply_remap(remap);
+    controller_->sort_entries_by_name();
 }
 
 void App::move_entry(int from, int to) {
-    if (from == to) return;
-    if (from < 0 || from >= static_cast<int>(entries_view().size())) return;
-    if (to < 0 || to >= static_cast<int>(entries_view().size())) return;
-
-    auto remap = library_->move(static_cast<std::size_t>(from),
-                                static_cast<std::size_t>(to));
-    selection_->apply_remap(remap);
+    controller_->move_entry(from, to);
 }
 
 void App::open_file_dialog() {
@@ -1487,45 +1450,11 @@ void App::save_viewport_dialog() {
 }
 
 void App::remove_entry(int index) {
-    if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
-
-    // The library destroys the entry's texture via ITextureUploader and
-    // returns a remap so we can fix up selection indices.  apply_remap
-    // tells us whether membership actually changed; if so, the A/B swap
-    // toggle no longer refers to a meaningful pair and must reset.
-    auto remap = library_->remove(static_cast<std::size_t>(index));
-    if (selection_->apply_remap(remap)) {
-        selection_->set_swap_ab(false);
-    }
-
-    compute_display_labels();
-    diff_service_->mark_dirty();
+    controller_->remove_entry(index);
 }
 
 void App::compute_display_labels() {
-    if (entries_view().empty()) return;
-
-    std::unordered_map<std::string, int> name_counts;
-    for (const auto& entry : entries_view()) {
-        name_counts[entry.filename]++;
-    }
-
-    for (auto& entry : entries_view()) {
-        if (name_counts[entry.filename] > 1) {
-            auto sep = entry.path.find_last_of("/\\");
-            if (sep != std::string::npos) {
-                auto parent = entry.path.substr(0, sep);
-                auto sep2 = parent.find_last_of("/\\");
-                std::string dir_name = (sep2 != std::string::npos)
-                    ? parent.substr(sep2 + 1) : parent;
-                entry.display_label = dir_name + "/" + entry.filename;
-            } else {
-                entry.display_label = entry.filename;
-            }
-        } else {
-            entry.display_label = entry.filename;
-        }
-    }
+    controller_->compute_display_labels();
 }
 
 void App::update_display_image(int index) {
@@ -2786,7 +2715,7 @@ void App::render_error_dialog() {
 }
 
 bool App::has_running_sr_tasks() const {
-    return sr_service_->has_running();
+    return controller_->has_running_sr_tasks();
 }
 
 void App::request_quit() {

@@ -20,11 +20,10 @@ class ComparisonConfigService;
 // the headless domain layer: tests instantiate the controller alone
 // to exercise behaviour without bringing up SDL or ImGui.
 //
-// At this stage the controller is a structural shim.  Business
-// orchestration methods (load_paths, switch_to_comparison_group, ...)
-// still live on App and reach into the services through the
-// accessors below.  A follow-up commit will move that orchestration
-// here, leaving App with only frame composition and event dispatch.
+// Business orchestration that touches only the domain services lives
+// here.  Methods that still need access to UI-level state (status
+// text, error dialog, viewport options, ...) remain on App pending a
+// dedicated StatusReporter abstraction.
 class AppController {
 public:
     // The texture uploader is borrowed for the controller's lifetime.
@@ -41,6 +40,46 @@ public:
     DiffService& diff() noexcept;
     SrTaskService& sr_tasks() noexcept;
     ComparisonConfigService& comparison_config() noexcept;
+
+    // ---- Business orchestration ------------------------------------
+    //
+    // Each helper coordinates two or more services at once.  They are
+    // exposed on the controller (rather than as inline call sequences
+    // at every site) so the same flow can be exercised from headless
+    // tests without bringing up the SDL / ImGui front-end.
+
+    // Returns the entry indices used as A and B for overlay / diff.
+    // Derived from the first two selected items (in selection order),
+    // honouring the user-controlled swap flag.  Missing slots are -1.
+    void get_ab_indices(int& a_idx, int& b_idx) const;
+
+    // Length of the shared timeline, i.e. the maximum number of frames
+    // across all multi-frame entries (clamped to at least 1).
+    int timeline_length() const;
+
+    // Recompute every entry's display_label so duplicates of the same
+    // filename are disambiguated by their parent directory.  No-op on
+    // an empty library.
+    void compute_display_labels();
+
+    // Sort the library by filename and patch the selection model so
+    // selected indices follow their entries to the new positions.
+    void sort_entries_by_name();
+
+    // Move the entry at `from` to position `to` and patch the
+    // selection accordingly.  Out-of-range indices are ignored; a
+    // no-op move (from == to) returns immediately.
+    void move_entry(int from, int to);
+
+    // Remove the entry at `index` (destroying its texture via the
+    // injected ITextureUploader), patch the selection, refresh
+    // display labels and mark the diff dirty.  Resets the A/B swap
+    // toggle if the removed entry was actually selected.  Out-of-
+    // range indices are ignored.
+    void remove_entry(int index);
+
+    // True while at least one super-resolution task is still running.
+    bool has_running_sr_tasks() const;
 
 private:
     std::unique_ptr<ImageLibrary> library_;
