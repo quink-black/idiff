@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "app/controller.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
@@ -114,11 +115,7 @@ struct App::State {
 };
 
 App::App()
-    : state_(std::make_unique<State>()),
-      selection_(std::make_unique<SelectionModel>()),
-      timeline_(std::make_unique<TimelineModel>()),
-      sr_service_(std::make_unique<SrTaskService>()),
-      comparison_config_(std::make_unique<ComparisonConfigService>()) {}
+    : state_(std::make_unique<State>()) {}
 
 App::~App() = default;
 
@@ -281,13 +278,17 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->texture_uploader = std::make_unique<SdlTextureUploader>(renderer);
     state_->file_dialog = std::make_unique<NfdFileDialog>();
 
-    // The library borrows the texture uploader by reference, so it
-    // must be constructed after the uploader and destroyed before it.
-    library_ = std::make_unique<ImageLibrary>(*state_->texture_uploader);
-
-    // Same lifetime contract as library_: borrows the uploader, owns
-    // SDL textures, must be torn down before the uploader.
-    diff_service_ = std::make_unique<DiffService>(*state_->texture_uploader);
+    // Bring up every domain service in one place.  The controller
+    // borrows the texture uploader by reference, so it must be
+    // constructed after the uploader and destroyed before it (handled
+    // by destruction order in App::shutdown / ~App).
+    controller_ = std::make_unique<AppController>(*state_->texture_uploader);
+    library_ = &controller_->library();
+    selection_ = &controller_->selection();
+    timeline_ = &controller_->timeline();
+    diff_service_ = &controller_->diff();
+    sr_service_ = &controller_->sr_tasks();
+    comparison_config_ = &controller_->comparison_config();
 
     // Detect whether a super-resolution upscaler is available next to
     // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
@@ -321,10 +322,17 @@ void App::shutdown() {
     state_->metrics_panel.reset();
     state_->properties_panel.reset();
 
-    // Tear down the diff service and library before the texture
-    // uploader they both borrow.
-    diff_service_.reset();
-    library_.reset();
+    // Tear down every domain service (and the SDL textures they own)
+    // before the texture uploader they borrow.  Clearing the raw
+    // observer pointers here keeps any post-shutdown access caught by
+    // null deref instead of dangling.
+    controller_.reset();
+    library_ = nullptr;
+    selection_ = nullptr;
+    timeline_ = nullptr;
+    diff_service_ = nullptr;
+    sr_service_ = nullptr;
+    comparison_config_ = nullptr;
 
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();

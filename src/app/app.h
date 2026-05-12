@@ -20,6 +20,7 @@ class MediaSource;
 class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
+class AppController;
 class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
@@ -204,21 +205,24 @@ private:
     struct State;
     std::unique_ptr<State> state_;
 
-    // Owned image collection.  All mutating access (add/remove/move/sort)
-    // goes through ImageLibrary which destroys SDL textures via the
-    // ITextureUploader installed in App::init().  Read-only access uses
-    // entries_view() which returns library_->all().
-    std::unique_ptr<ImageLibrary> library_;
+    // Owns every non-UI service.  Constructed in App::init() once the
+    // texture uploader is available and destroyed before App::shutdown
+    // tears that uploader down.  The library_ / selection_ / ...
+    // members below are non-owning observers refreshed from the
+    // controller after construction; they exist only so the existing
+    // call sites can keep using `library_->X` directly.  Any new code
+    // should prefer controller_->library() etc.
+    std::unique_ptr<AppController> controller_;
 
-    // Selection of entry indices and the user-controlled A/B swap
-    // toggle.  All previously-inline selected_ / swap_ab_ logic now
-    // routes through this service.
-    std::unique_ptr<SelectionModel> selection_;
-
-    // Shared timeline index for multi-frame entries; owns
-    // current_frame and the sync_to / length helpers that used to
-    // live inline in App.
-    std::unique_ptr<TimelineModel> timeline_;
+    // Non-owning views into controller_.  Null between App() and
+    // App::init(); set to controller_-owned services in init().  Never
+    // delete through these; the controller manages lifetime.
+    ImageLibrary* library_ = nullptr;
+    SelectionModel* selection_ = nullptr;
+    TimelineModel* timeline_ = nullptr;
+    DiffService* diff_service_ = nullptr;
+    SrTaskService* sr_service_ = nullptr;
+    ComparisonConfigService* comparison_config_ = nullptr;
 
     // Convenience accessors so call sites can keep using the same
     // syntactic form (`entries_view()[i]`, `entries_view().size()`) as
@@ -250,28 +254,6 @@ private:
 
     // SR configuration dialog state.
     std::unique_ptr<SRDialogState> sr_dialog_;
-
-    // Owns running SR inference tasks.  Each SrTask wraps a concrete
-    // engine (created via SRInferEngineFactory, abstracted behind an
-    // EngineFactory closure so tests can inject fakes).  App holds
-    // start/poll/has_running thin wrappers that drive the service and
-    // translate completion / failure events into library-layer
-    // bookkeeping.
-    std::unique_ptr<SrTaskService> sr_service_;
-
-    // Difference-mode cache.  Owns one DiffSlot per partner image
-    // compared against A.  All previously-inline diff_slots_ /
-    // diff_dirty_ / update_diff_texture() / upload_diff_slot_texture()
-    // logic now routes through this service; every trigger that used
-    // to set diff_dirty_ now calls diff_service_->mark_dirty().
-    std::unique_ptr<DiffService> diff_service_;
-
-    // Comparison-config session.  Owns the parsed groups, the per-config
-    // UrlCache (with its background prefetch pool), and the current
-    // group index.  App still does the library / selection / diff
-    // teardown between groups; the service only reports which paths
-    // to load and how to label them.
-    std::unique_ptr<ComparisonConfigService> comparison_config_;
 
     // Last known channel view mode, tracked so we can detect changes
     // triggered inside the Viewport combo and mark textures dirty.

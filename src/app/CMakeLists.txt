@@ -1,6 +1,7 @@
 add_executable(idiff
     main.cpp
     app.cpp
+    controller.cpp
     viewport.cpp
     metrics_panel.cpp
     properties_panel.cpp
