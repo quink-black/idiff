@@ -4,6 +4,7 @@ add_library(idiff_domain
     timeline_model.cpp
     diff_service.cpp
     sr_task_service.cpp
+    comparison_config_service.cpp
 )
 
 target_include_directories(idiff_domain PUBLIC

@@ -15,6 +15,7 @@
 #include "domain/timeline_model.h"
 #include "domain/diff_service.h"
 #include "domain/sr_task_service.h"
+#include "domain/comparison_config_service.h"
 #include "util/logger.h"
 
 #include <imgui.h>
@@ -30,7 +31,6 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <iostream>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -44,8 +44,6 @@
 #include "core/image_processor.h"
 #include "core/image_comparator.h"
 #include "core/media_source.h"
-#include "core/comparison_config.h"
-#include "core/url_cache.h"
 #include "core/detail/platform_utf8.h"
 
 namespace idiff {
@@ -107,19 +105,6 @@ struct App::State {
     // once the edit is confirmed or cancelled.
     int editing_yuv_entry_idx = -1;
 
-    // Comparison-config support.  When the user opens a JSON config we
-    // keep the parsed groups here and load them on demand.  Only one
-    // group at a time is loaded into `entries_view()` so memory stays bounded
-    // regardless of how many groups the document lists.
-    ComparisonConfig comparison_config;
-    int current_group_idx = -1;  // -1 = no config loaded
-    // Download cache, scoped to the currently-loaded config.  Each
-    // config gets its own subdirectory (idiff_cache_<stem>_<timestamp>)
-    // under the configured cache root / Downloads folder, so the user
-    // can later tell which cache dump came from which comparison JSON.
-    // Reset to nullptr when no config is loaded.
-    std::unique_ptr<UrlCache> url_cache;
-
     // Injectable IO collaborators.  Tests substitute fakes; the
     // production wiring in App::init() installs the SDL/NFD-backed
     // implementations.  Stored here (rather than as App members) so
@@ -132,7 +117,8 @@ App::App()
     : state_(std::make_unique<State>()),
       selection_(std::make_unique<SelectionModel>()),
       timeline_(std::make_unique<TimelineModel>()),
-      sr_service_(std::make_unique<SrTaskService>()) {}
+      sr_service_(std::make_unique<SrTaskService>()),
+      comparison_config_(std::make_unique<ComparisonConfigService>()) {}
 
 App::~App() = default;
 
@@ -1101,81 +1087,26 @@ void App::open_comparison_config_dialog() {
 }
 
 void App::load_comparison_config_from_path(const std::string& path) {
-    ComparisonConfig cfg = load_comparison_config(path);
-    if (!cfg.error.empty()) {
-        state_->status_text = "Config: " + cfg.error;
+    auto result = comparison_config_->load(path);
+    if (!result.ok) {
+        state_->status_text = result.status_message;
         return;
-    }
-
-    // Resolve (or create) the cache directory up front, before we
-    // drop any of the currently-loaded state.  Anything that can
-    // fail here must bail out while the existing session is still
-    // intact so the user doesn't end up with a blank window and a
-    // stale url_cache when e.g. the cache root is unwritable.  The
-    // directory name encodes the JSON stem + a short hash of the
-    // JSON content, so re-opening the same config reuses every image
-    // it already downloaded; prepare_for_config() also drops a
-    // byte-identical "source.json" into the directory as a
-    // collision guard.
-    std::filesystem::path cache_root = UrlCache::resolve_default_root();
-    std::string cache_status;
-    std::filesystem::path cache_dir = UrlCache::prepare_for_config(
-        cache_root, std::filesystem::path(path), &cache_status);
-    if (cache_dir.empty()) {
-        state_->status_text = "Config load aborted: " + cache_status;
-        std::cerr << "[idiff] config load aborted: "
-                  << cache_status << std::endl;
-        return;
-    }
-    // Also log to stdout so the user can review which cache directory
-    // was reused or created -- the UI status bar gets overwritten as
-    // soon as the first group finishes loading, so a terminal log is
-    // the only place the message stays visible.
-    if (!cache_status.empty()) {
-        std::cout << "[idiff] " << cache_status
-                  << " at " << cache_dir.string() << std::endl;
     }
 
     // Drop whatever was previously loaded so the user sees a clean
-    // switch.  Per the task brief, we keep at most one group's worth of
-    // images resident in memory, so we also release entries from any
-    // previously-loaded config.
+    // switch.  We keep at most one group's worth of images resident
+    // in memory, so we also release entries from any previously-
+    // loaded config.
     library_->clear();
     selection_->clear();
     selection_->set_swap_ab(false);
     diff_service_->clear();
     diff_service_->mark_dirty();
 
-    state_->comparison_config = std::move(cfg);
-    state_->current_group_idx = -1;
-
-    state_->url_cache = std::make_unique<UrlCache>(cache_dir);
-
-    // Feed every URL from every group into the cache up front so it
-    // can compute the shared host / path prefix and trim it from the
-    // local paths.  This keeps the cache directory as shallow as
-    // possible while still guaranteeing distinct local files per URL.
-    std::vector<std::string> all_urls;
-    for (const auto& g : state_->comparison_config.groups) {
-        for (const auto& it : g.items) {
-            if (!it.url.empty()) all_urls.push_back(it.url);
-        }
-    }
-    state_->url_cache->register_urls(all_urls);
-
-    int total_items = 0;
-    for (const auto& g : state_->comparison_config.groups) {
-        total_items += static_cast<int>(g.items.size());
-    }
-    state_->status_text = "Loaded config: " +
-        std::to_string(state_->comparison_config.groups.size()) +
-        " group(s), " + std::to_string(total_items) + " image(s). " +
-        cache_status;
+    state_->status_text = result.status_message;
 
     // Start on the first group so the user sees pixels immediately.
-    // switch_to_comparison_group() is responsible for the actual
-    // download + load_images() handoff.
-    if (!state_->comparison_config.groups.empty()) {
+    if (comparison_config_->has_config()) {
         switch_to_comparison_group(0);
     }
 }
@@ -1220,11 +1151,10 @@ void App::load_paths(const std::vector<std::string>& paths) {
 }
 
 void App::switch_to_comparison_group(int group_idx) {
-    if (group_idx < 0 ||
-        group_idx >= static_cast<int>(state_->comparison_config.groups.size())) {
-        return;
-    }
-    if (group_idx == state_->current_group_idx) return;
+    // Service does the bounds-check, prefetch scheduling, and URL
+    // fetching.  We drive the side effects on library/selection/diff
+    // here so the service stays free of view-model dependencies.
+    if (group_idx == comparison_config_->current_index()) return;
 
     // Release the previous group's images first so we never hold two
     // groups' pixels in memory simultaneously.  This is the main memory
@@ -1235,120 +1165,43 @@ void App::switch_to_comparison_group(int group_idx) {
     diff_service_->clear();
     diff_service_->mark_dirty();
 
-    const auto& group = state_->comparison_config.groups[group_idx];
-
-    // Fetch each URL to disk (reusing cached entries when present) and
-    // collect the local paths.  fetch() streams straight to disk so the
-    // app's resident set stays small even when a group contains very
-    // large images.
-    std::vector<std::string> local_paths;
-    local_paths.reserve(group.items.size());
-    int failures = 0;
-    std::string last_err;
-    if (!state_->url_cache) {
-        // Should not happen -- open_comparison_config_dialog() always
-        // creates the cache before we get here -- but guard anyway so
-        // a stray call does not dereference nullptr.
-        state_->status_text = "No cache configured for comparison group";
+    auto result = comparison_config_->switch_to(group_idx);
+    if (!result.ok) {
+        state_->status_text = result.status_message;
         return;
     }
 
-    // Whenever the user picks a new group, the old prefetch plan (that
-    // was centred on the previous group) is no longer interesting --
-    // the neighbours of the NEW group are what the user will likely
-    // visit next.  Cancel the pending queue first, then re-schedule
-    // around group_idx.  Workers currently busy with an old task are
-    // allowed to finish; their result still lands in the cache and is
-    // reusable, it just might not be "nearby" anymore.
-    state_->url_cache->cancel_pending_prefetches();
-    {
-        constexpr int kPrefetchRadius = 3;
-        const int total = static_cast<int>(
-            state_->comparison_config.groups.size());
-        // Schedule in increasing |offset| order so the nearest groups
-        // (most likely to be clicked next) get lower priority values.
-        // We interleave +offset and -offset so adjacent "next" and
-        // "previous" groups compete fairly at the same priority.
-        for (int off = 1; off <= kPrefetchRadius; ++off) {
-            for (int sign : {+1, -1}) {
-                int idx = group_idx + sign * off;
-                if (idx < 0 || idx >= total) continue;
-                const auto& g = state_->comparison_config.groups[idx];
-                for (const auto& it : g.items) {
-                    if (!it.url.empty()) {
-                        state_->url_cache->prefetch(it.url, off);
-                    }
-                }
-            }
-        }
-    }
-
-    for (const auto& item : group.items) {
-        auto p = state_->url_cache->fetch(item.url);
-        if (p.empty()) {
-            failures++;
-            last_err = state_->url_cache->last_error();
-            continue;
-        }
-        local_paths.push_back(p.string());
-    }
-
-    state_->current_group_idx = group_idx;
-
-    if (!local_paths.empty()) {
+    if (!result.entries.empty()) {
+        std::vector<std::string> local_paths;
+        local_paths.reserve(result.entries.size());
+        for (const auto& e : result.entries) local_paths.push_back(e.local_path);
         load_images(local_paths);
     }
 
-    // After load_images(), re-label entries with the human-friendly names
-    // from the config (item.title, or the URL's basename when no title was
-    // provided) instead of the opaque sha256 cache filenames that
-    // load_images() inferred from the cached paths.  Match entries back to
-    // their original config item by local path so the labelling survives
-    // sort_entries_by_name() re-ordering.
+    // Apply the human-friendly labels supplied by the service so the
+    // image list shows config titles instead of opaque cache filenames.
+    // Match by path; load_images() may have re-ordered the entries
+    // through sort_entries_by_name().
     if (!entries_view().empty()) {
-        // Build (local cache path -> group item) lookup for this group.
-        // We only populate it for items we actually fetched successfully;
-        // everything else keeps its auto-derived filename.
-        std::unordered_map<std::string, const ComparisonItem*> by_path;
-        for (const auto& item : group.items) {
-            auto p = state_->url_cache->path_for(item.url);
-            by_path[p.string()] = &item;
-        }
-        auto url_basename = [](const std::string& url) -> std::string {
-            std::size_t end = url.size();
-            if (auto q = url.find_first_of("?#"); q != std::string::npos) {
-                end = q;
+        std::unordered_map<std::string, std::string> label_by_path;
+        for (const auto& e : result.entries) {
+            if (!e.display_label.empty()) {
+                label_by_path[e.local_path] = e.display_label;
             }
-            std::size_t slash = url.find_last_of('/',
-                                    end ? end - 1 : 0);
-            std::size_t beg = (slash == std::string::npos) ? 0 : slash + 1;
-            if (beg >= end) return {};
-            return url.substr(beg, end - beg);
-        };
-        for (auto& e : entries_view()) {
-            auto it = by_path.find(e.path);
-            if (it == by_path.end() || !it->second) continue;
-            const auto& item = *it->second;
-            std::string label = !item.title.empty()
-                                ? item.title : url_basename(item.url);
-            if (label.empty()) continue;
-            e.filename = label;
-            e.display_label = label;
         }
-        // compute_display_labels() will uniquify labels if duplicates
-        // exist after the rename.
-        compute_display_labels();
+        if (!label_by_path.empty()) {
+            for (auto& e : entries_view()) {
+                auto it = label_by_path.find(e.path);
+                if (it == label_by_path.end()) continue;
+                e.filename = it->second;
+                e.display_label = it->second;
+            }
+            // compute_display_labels() will uniquify duplicates.
+            compute_display_labels();
+        }
     }
 
-    std::string msg = "Group \"" + group.name + "\": loaded " +
-                       std::to_string(local_paths.size()) + "/" +
-                       std::to_string(group.items.size()) + " image(s)";
-    if (failures > 0) {
-        msg += " (" + std::to_string(failures) + " download failure";
-        if (failures > 1) msg += "s";
-        msg += ": " + last_err + ")";
-    }
-    state_->status_text = std::move(msg);
+    state_->status_text = result.status_message;
 }
 
 
@@ -1950,10 +1803,10 @@ void App::render_image_list() {
     // Group selector, only shown when a comparison-config is active.
     // Switching the combo triggers an on-demand download + load of the
     // selected group; only that one group's pixels are kept resident.
-    if (state_->current_group_idx >= 0 &&
-        !state_->comparison_config.groups.empty()) {
-        const auto& groups = state_->comparison_config.groups;
-        int idx = state_->current_group_idx;
+    if (comparison_config_->current_index() >= 0 &&
+        comparison_config_->has_config()) {
+        const auto& groups = comparison_config_->config().groups;
+        int idx = comparison_config_->current_index();
         std::string preview = (idx >= 0 &&
                                idx < static_cast<int>(groups.size()))
             ? groups[idx].name : std::string("(none)");

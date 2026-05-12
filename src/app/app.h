@@ -25,6 +25,7 @@ class SelectionModel;
 class TimelineModel;
 class DiffService;
 class SrTaskService;
+class ComparisonConfigService;
 struct YuvStreamParams;
 struct SRDialogState;
 
@@ -264,6 +265,13 @@ private:
     // logic now routes through this service; every trigger that used
     // to set diff_dirty_ now calls diff_service_->mark_dirty().
     std::unique_ptr<DiffService> diff_service_;
+
+    // Comparison-config session.  Owns the parsed groups, the per-config
+    // UrlCache (with its background prefetch pool), and the current
+    // group index.  App still does the library / selection / diff
+    // teardown between groups; the service only reports which paths
+    // to load and how to label them.
+    std::unique_ptr<ComparisonConfigService> comparison_config_;
 
     // Last known channel view mode, tracked so we can detect changes
     // triggered inside the Viewport combo and mark textures dirty.
