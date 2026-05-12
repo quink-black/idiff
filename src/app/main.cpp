@@ -1,5 +1,6 @@
 #include "app/app.h"
 #include "app/platform/platform.h"
+#include "util/logger.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -13,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <vector>
 
 #ifdef _WIN32
@@ -112,7 +114,72 @@ void set_window_icon(SDL_Window* window) {
 }
 
 int main(int argc, char** argv) {
+    // Install the logger before anything else so init failures get
+    // captured.  Console sink defaults to Info; the file sink keeps
+    // Debug for richer post-mortem diagnostics.  IDIFF_LOG_LEVEL=trace|
+    // debug|info|warn|error overrides the console threshold.
+    {
+        namespace ilog = idiff::log;
+        auto pick_level = [](const char* env, ilog::Level fallback) {
+            if (!env || !*env) return fallback;
+            std::string v(env);
+            for (auto& c : v) c = static_cast<char>(std::tolower(c));
+            if (v == "trace") return ilog::Level::Trace;
+            if (v == "debug") return ilog::Level::Debug;
+            if (v == "info")  return ilog::Level::Info;
+            if (v == "warn")  return ilog::Level::Warn;
+            if (v == "error") return ilog::Level::Error;
+            if (v == "off")   return ilog::Level::Off;
+            return fallback;
+        };
+        const char* env_level = std::getenv("IDIFF_LOG_LEVEL");
+        ilog::Level console_level = pick_level(env_level, ilog::Level::Info);
+
+        std::filesystem::path log_path;
+        if (const char* env_path = std::getenv("IDIFF_LOG_FILE")) {
+            log_path = env_path;
+        } else {
+            // Fall back to the platform's per-user data dir.  Keep it
+            // best-effort: if the directory cannot be created the file
+            // sink simply drops records, the console sink still works.
+#if defined(_WIN32)
+            const char* base = std::getenv("LOCALAPPDATA");
+#elif defined(__APPLE__)
+            const char* home = std::getenv("HOME");
+            std::string mac_dir = home ? std::string(home) +
+                "/Library/Logs/idiff" : std::string();
+            const char* base = mac_dir.empty() ? nullptr : mac_dir.c_str();
+#else
+            const char* xdg = std::getenv("XDG_STATE_HOME");
+            std::string lin_dir;
+            if (xdg && *xdg) {
+                lin_dir = std::string(xdg) + "/idiff";
+            } else if (const char* h = std::getenv("HOME")) {
+                lin_dir = std::string(h) + "/.local/state/idiff";
+            }
+            const char* base = lin_dir.empty() ? nullptr : lin_dir.c_str();
+#endif
+            if (base && *base) {
+                log_path = std::filesystem::path(base) / "idiff.log";
+            }
+        }
+
+        std::vector<std::unique_ptr<ilog::ILogSink>> sinks;
+        sinks.emplace_back(std::make_unique<ilog::ConsoleSink>(console_level));
+        if (!log_path.empty()) {
+            sinks.emplace_back(std::make_unique<ilog::RotatingFileSink>(
+                log_path.string(),
+                /*max_bytes=*/2u * 1024u * 1024u,
+                /*max_files=*/5,
+                ilog::Level::Debug));
+        }
+        ilog::set_sink(std::make_unique<ilog::MultiSink>(std::move(sinks)));
+        LOG_INFO("idiff starting (log_file=%s)",
+                 log_path.empty() ? "<console-only>" : log_path.string().c_str());
+    }
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        LOG_ERROR("SDL_Init failed: %s", SDL_GetError());
         std::fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
         return 1;
     }
@@ -198,5 +265,10 @@ int main(int argc, char** argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+    LOG_INFO("idiff exiting cleanly");
+    idiff::log::sink().flush();
+    // Drop the active sink before main returns so the file sink's
+    // worker thread joins while the runtime is still healthy.
+    idiff::log::set_sink(nullptr);
     return 0;
 }

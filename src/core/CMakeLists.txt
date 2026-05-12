@@ -17,6 +17,7 @@ target_include_directories(idiff_core PUBLIC
 )
 
 target_link_libraries(idiff_core PUBLIC
+    idiff_util
     opencv_core
     opencv_imgcodecs
     opencv_imgproc

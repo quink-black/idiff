@@ -27,6 +27,7 @@ endif()
 
 target_link_libraries(idiff PRIVATE
     idiff_core
+    idiff_util
     imgui
     SDL2::SDL2
     SDL2::SDL2main
