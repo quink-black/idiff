@@ -22,6 +22,8 @@ class MetricsPanel;
 class PropertiesPanel;
 class SRInferEngine;
 class ImageLibrary;
+class SelectionModel;
+class TimelineModel;
 struct YuvStreamParams;
 struct SRDialogState;
 
@@ -109,7 +111,7 @@ public:
     void load_paths(const std::vector<std::string>& paths);
 
     const std::vector<ImageEntry>& entries() const noexcept;
-    const std::set<int>& selected() const noexcept { return selected_; }
+    const std::set<int>& selected() const noexcept;
 
 private:
     void setup_dock_layout();
@@ -208,6 +210,16 @@ private:
     // entries_view() which returns library_->all().
     std::unique_ptr<ImageLibrary> library_;
 
+    // Selection of entry indices and the user-controlled A/B swap
+    // toggle.  All previously-inline selected_ / swap_ab_ logic now
+    // routes through this service.
+    std::unique_ptr<SelectionModel> selection_;
+
+    // Shared timeline index for multi-frame entries; owns
+    // current_frame and the sync_to / length helpers that used to
+    // live inline in App.
+    std::unique_ptr<TimelineModel> timeline_;
+
     // Convenience accessors so call sites can keep using the same
     // syntactic form (`entries_view()[i]`, `entries_view().size()`) as
     // the previous `entries_` member without churning every read site
@@ -215,20 +227,7 @@ private:
     std::vector<ImageEntry>& entries_view() noexcept;
     const std::vector<ImageEntry>& entries_view() const noexcept;
 
-    // Apply a remap returned by ImageLibrary::remove/move/sort_by_filename
-    // to `selected_`.  Indices mapped to ImageLibrary::kRemoved are
-    // dropped from the selection.  Returns true if the membership of the
-    // selection actually changed (independent of permutation), so the
-    // caller can decide whether to also reset swap_ab_.
-    bool apply_remap_to_selection(const std::vector<int>& remap);
-
-    std::set<int> selected_;
     bool first_frame_ = true;
-
-    // When true, the A/B assignment derived from `selected_` is swapped.
-    // Reset whenever the selection content changes.
-    bool swap_ab_ = false;
-
     // True while a selection-zoom drag was initiated with Ctrl+left-click
     // (as opposed to right-click).  Determines which mouse-up event ends
     // the selection.

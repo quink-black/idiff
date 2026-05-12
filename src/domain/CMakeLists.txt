@@ -1,5 +1,7 @@
 add_library(idiff_domain
     image_library.cpp
+    selection_model.cpp
+    timeline_model.cpp
 )
 
 target_include_directories(idiff_domain PUBLIC

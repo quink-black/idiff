@@ -11,6 +11,8 @@
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
 #include "domain/image_library.h"
+#include "domain/selection_model.h"
+#include "domain/timeline_model.h"
 #include "util/logger.h"
 
 #include <imgui.h>
@@ -103,12 +105,6 @@ struct App::State {
     // once the edit is confirmed or cancelled.
     int editing_yuv_entry_idx = -1;
 
-    // Shared timeline index.  All multi-frame entries display
-    // frame(current_frame + entry.frame_offset), clamped to each entry's
-    // own frame_count.  Single-frame entries ignore this value.  The
-    // timeline bar exposes this as a slider.
-    int current_frame = 0;
-
     // Comparison-config support.  When the user opens a JSON config we
     // keep the parsed groups here and load them on demand.  Only one
     // group at a time is loaded into `entries_view()` so memory stays bounded
@@ -130,12 +126,19 @@ struct App::State {
     std::unique_ptr<IFileDialog> file_dialog;
 };
 
-App::App() : state_(std::make_unique<State>()) {}
+App::App()
+    : state_(std::make_unique<State>()),
+      selection_(std::make_unique<SelectionModel>()),
+      timeline_(std::make_unique<TimelineModel>()) {}
 
 App::~App() = default;
 
 const std::vector<ImageEntry>& App::entries() const noexcept {
     return library_->all();
+}
+
+const std::set<int>& App::selected() const noexcept {
+    return selection_->indices();
 }
 
 std::vector<ImageEntry>& App::entries_view() noexcept {
@@ -144,27 +147,6 @@ std::vector<ImageEntry>& App::entries_view() noexcept {
 
 const std::vector<ImageEntry>& App::entries_view() const noexcept {
     return library_->all();
-}
-
-bool App::apply_remap_to_selection(const std::vector<int>& remap) {
-    if (remap.empty()) return false;
-    std::set<int> remapped;
-    bool dropped = false;
-    for (int s : selected_) {
-        if (s < 0 || s >= static_cast<int>(remap.size())) {
-            dropped = true;
-            continue;
-        }
-        int n = remap[s];
-        if (n == ImageLibrary::kRemoved) {
-            dropped = true;
-            continue;
-        }
-        remapped.insert(n);
-    }
-    const bool membership_changed = (remapped.size() != selected_.size()) || dropped;
-    selected_ = std::move(remapped);
-    return membership_changed;
 }
 
 bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
@@ -375,7 +357,7 @@ void App::frame() {
             }
 
             // Channel view shortcuts: 1-9 cycle through modes.
-            if (!selected_.empty()) {
+            if (!selection_->empty()) {
                 static constexpr ChannelViewMode kModeMap[9] = {
                     ChannelViewMode::None,
                     ChannelViewMode::RGB,
@@ -390,7 +372,7 @@ void App::frame() {
                 for (int i = 0; i < 9; ++i) {
                     if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i))) {
                         state_->viewport->set_channel_view_mode(kModeMap[i]);
-                        for (int s : selected_) {
+                        for (int s : selection_->indices()) {
                             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                                 entries_view()[s].texture_dirty = true;
                             }
@@ -563,13 +545,13 @@ diff_dirty_ = true;
     // user to manually tick two checkboxes before seeing any comparison, and
     // matches the most common use case (drop two images in, compare them).
     if (was_empty && !entries_view().empty()) {
-        selected_.clear();
-        swap_ab_ = false;
+        selection_->clear();
+        selection_->set_swap_ab(false);
         int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
-        for (int i = 0; i < pick; i++) selected_.insert(i);
+        for (int i = 0; i < pick; i++) selection_->insert(i);
         // Flag newly-selected entries for texture/display refresh so the
         // viewport renders them immediately on the next frame.
-        for (int s : selected_) {
+        for (int s : selection_->indices()) {
             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                 entries_view()[s].texture_dirty = true;
             }
@@ -628,15 +610,7 @@ diff_dirty_ = true;
 }
 
 void App::get_ab_indices(int& a_idx, int& b_idx) const {
-    a_idx = -1;
-    b_idx = -1;
-    int k = 0;
-    for (int s : selected_) {
-        if (k == 0) a_idx = s;
-        else if (k == 1) { b_idx = s; break; }
-        k++;
-    }
-    if (swap_ab_) std::swap(a_idx, b_idx);
+    selection_->get_ab_indices(a_idx, b_idx);
 }
 
 bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) {
@@ -686,11 +660,11 @@ diff_dirty_ = true;
     // entry list was empty before this add, auto-select up to the first
     // two items and switch to Overlay.
     if (was_empty && !entries_view().empty()) {
-        selected_.clear();
-        swap_ab_ = false;
+        selection_->clear();
+        selection_->set_swap_ab(false);
         int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
-        for (int i = 0; i < pick; i++) selected_.insert(i);
-        for (int s : selected_) {
+        for (int i = 0; i < pick; i++) selection_->insert(i);
+        for (int s : selection_->indices()) {
             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                 entries_view()[s].texture_dirty = true;
             }
@@ -731,7 +705,7 @@ bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
     }
     // Attempt to keep the current timeline position when possible so the
     // user sees what the fix did on the frame they were inspecting.
-    int target_frame = state_->current_frame + entry.frame_offset;
+    int target_frame = timeline_->current_frame() + entry.frame_offset;
     if (target_frame < 0) target_frame = 0;
     if (target_frame >= source->frame_count()) {
         target_frame = source->frame_count() - 1;
@@ -919,46 +893,12 @@ void App::render_yuv_params_dialog() {
 }
 
 int App::timeline_length() const {
-    int max_frames = 1;
-    for (const auto& e : entries_view()) {
-        if (e.source) {
-            max_frames = std::max(max_frames, e.source->frame_count());
-        }
-    }
-    return max_frames;
+    return TimelineModel::length(entries_view());
 }
 
 void App::sync_entries_to_timeline() {
-    bool any_changed = false;
-    for (auto& e : entries_view()) {
-        if (!e.source) continue;
-        const int count = e.source->frame_count();
-        if (count <= 1) continue;  // still image -- timeline doesn't apply
-
-        // Clamp the effective frame index into the entry's own range so
-        // offsets that would run past either end simply pin to the edge.
-        int target = state_->current_frame + e.frame_offset;
-        if (target < 0) target = 0;
-        if (target >= count) target = count - 1;
-
-        if (target == e.cached_frame && e.image) continue;
-
-        auto img = e.source->read_frame(target);
-        if (!img) {
-            // Leave the previously-decoded frame in place so the viewport
-            // doesn't go blank; surface the error to the status bar.
-            state_->status_text = "Frame read failed for " + e.filename
-                                + " (" + e.source->last_error() + ")";
-            continue;
-        }
-        e.image = std::move(img);
-        e.display_image.reset();
-        e.texture_dirty = true;
-        e.cached_frame = target;
-        any_changed = true;
-    }
-    if (any_changed) {
-diff_dirty_ = true;
+    if (timeline_->sync_to(entries_view(), state_->status_text)) {
+        diff_dirty_ = true;
     }
 }
 
@@ -968,8 +908,7 @@ float App::render_timeline_bar() {
 
     // Clamp the shared index once per frame so any external mutation
     // (e.g. adding / removing entries) can't leave it past the new end.
-    if (state_->current_frame < 0) state_->current_frame = 0;
-    if (state_->current_frame >= length) state_->current_frame = length - 1;
+    timeline_->clamp_to_length(entries_view());
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
     const float row_h = ImGui::GetFrameHeightWithSpacing();
@@ -1008,25 +947,25 @@ float App::render_timeline_bar() {
         // scrubbing.  The slider uses length-1 as the max so the label
         // reads as a frame index (0..N-1).
         if (ImGui::SmallButton("<")) {
-            if (state_->current_frame > 0) {
-                state_->current_frame--;
+            if (timeline_->current_frame() > 0) {
+                timeline_->set_current_frame(timeline_->current_frame() - 1);
                 frame_changed = true;
             }
         }
         ImGui::SameLine();
         if (ImGui::SmallButton(">")) {
-            if (state_->current_frame < length - 1) {
-                state_->current_frame++;
+            if (timeline_->current_frame() < length - 1) {
+                timeline_->set_current_frame(timeline_->current_frame() + 1);
                 frame_changed = true;
             }
         }
         ImGui::SameLine();
 
-        int frame = state_->current_frame;
+        int frame = timeline_->current_frame();
         ImGui::SetNextItemWidth(-200.0f);  // leave room for the label
         if (ImGui::SliderInt("##frame", &frame, 0, length - 1,
                              "Frame %d")) {
-            state_->current_frame = frame;
+            timeline_->set_current_frame(frame);
             frame_changed = true;
         }
         ImGui::SameLine();
@@ -1043,7 +982,7 @@ float App::render_timeline_bar() {
                 if (!e.source || e.source->frame_count() <= 1) continue;
 
                 // Effective frame for display feedback.
-                int effective = state_->current_frame + e.frame_offset;
+                int effective = timeline_->current_frame() + e.frame_offset;
                 if (effective < 0) effective = 0;
                 int cnt = e.source->frame_count();
                 if (effective >= cnt) effective = cnt - 1;
@@ -1108,7 +1047,7 @@ bool filename_less(const std::string& a, const std::string& b) {
 
 void App::sort_entries_by_name() {
     auto remap = library_->sort_with(&filename_less);
-    apply_remap_to_selection(remap);
+    selection_->apply_remap(remap);
 }
 
 void App::move_entry(int from, int to) {
@@ -1118,7 +1057,7 @@ void App::move_entry(int from, int to) {
 
     auto remap = library_->move(static_cast<std::size_t>(from),
                                 static_cast<std::size_t>(to));
-    apply_remap_to_selection(remap);
+    selection_->apply_remap(remap);
 }
 
 void App::open_file_dialog() {
@@ -1194,8 +1133,8 @@ void App::load_comparison_config_from_path(const std::string& path) {
     // images resident in memory, so we also release entries from any
     // previously-loaded config.
     library_->clear();
-    selected_.clear();
-    swap_ab_ = false;
+    selection_->clear();
+    selection_->set_swap_ab(false);
     for (auto& slot : diff_slots_) {
         if (slot.texture) SDL_DestroyTexture(slot.texture);
     }
@@ -1286,8 +1225,8 @@ void App::switch_to_comparison_group(int group_idx) {
     // groups' pixels in memory simultaneously.  This is the main memory
     // lever for configs with many large groups.
     library_->clear();
-    selected_.clear();
-    swap_ab_ = false;
+    selection_->clear();
+    selection_->set_swap_ab(false);
     for (auto& slot : diff_slots_) {
         if (slot.texture) SDL_DestroyTexture(slot.texture);
     }
@@ -1447,7 +1386,7 @@ void App::save_viewport_dialog() {
     };
     if (ab_idx[0] >= 0) push_slot(ab_idx[0], "A");
     if (ab_idx[1] >= 0) push_slot(ab_idx[1], "B");
-    for (int s : selected_) {
+    for (int s : selection_->indices()) {
         if (s == ab_idx[0] || s == ab_idx[1]) continue;
         push_slot(s, nullptr);
     }
@@ -1687,20 +1626,17 @@ void App::save_viewport_dialog() {
 void App::remove_entry(int index) {
     if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
 
-    // Snapshot the selection so we can detect membership change after the
-    // remap.  The texture for the removed entry is destroyed by the
-    // library via ITextureUploader.
-    const auto previous_selected = selected_;
+    // The library destroys the entry's texture via ITextureUploader and
+    // returns a remap so we can fix up selection indices.  apply_remap
+    // tells us whether membership actually changed; if so, the A/B swap
+    // toggle no longer refers to a meaningful pair and must reset.
     auto remap = library_->remove(static_cast<std::size_t>(index));
-    apply_remap_to_selection(remap);
-
-    // Membership changed -- reset A/B swap so it doesn't apply to a different pair.
-    if (selected_ != previous_selected) {
-        swap_ab_ = false;
+    if (selection_->apply_remap(remap)) {
+        selection_->set_swap_ab(false);
     }
 
     compute_display_labels();
-diff_dirty_ = true;
+    diff_dirty_ = true;
 }
 
 void App::compute_display_labels() {
@@ -1738,7 +1674,7 @@ void App::update_display_image(int index) {
     int target_w = entry.image->info().width;
     int target_h = entry.image->info().height;
 
-    for (int s : selected_) {
+    for (int s : selection_->indices()) {
         if (s == index) continue;
         if (s < 0 || s >= static_cast<int>(entries_view().size())) continue;
         const auto& other = entries_view()[s];
@@ -1847,7 +1783,7 @@ void App::update_diff_texture() {
     // Tear down any previously-uploaded textures before recomputing.  The
     // full vector is discarded every refresh because the set of partners
     // (and their A counterpart) is tiny (typically <= 6) and always
-    // reconstructed from selected_ anyway.
+    // reconstructed from the selection anyway.
     for (auto& slot : diff_slots_) {
         if (slot.texture) {
             SDL_DestroyTexture(slot.texture);
@@ -1856,7 +1792,7 @@ void App::update_diff_texture() {
     }
     diff_slots_.clear();
 
-    if (selected_.size() < 2) return;
+    if (selection_->size() < 2) return;
 
     int idx_a = -1, idx_b_unused = -1;
     get_ab_indices(idx_a, idx_b_unused);
@@ -1873,11 +1809,11 @@ void App::update_diff_texture() {
     // visual/spatial layout predictable across modes and makes the
     // metrics table row order match what the viewport shows.
     std::vector<int> partners;
-    partners.reserve(selected_.size());
+    partners.reserve(selection_->size());
     if (idx_b_unused >= 0 && idx_b_unused < static_cast<int>(entries_view().size())) {
         partners.push_back(idx_b_unused);
     }
-    for (int s : selected_) {
+    for (int s : selection_->indices()) {
         if (s == idx_a) continue;
         if (s == idx_b_unused) continue;
         partners.push_back(s);
@@ -2065,7 +2001,7 @@ void App::render_toolbar() {
                     if (ImGui::Selectable(channel_view_mode_label(m), is_selected)) {
                         state_->viewport->set_channel_view_mode(m);
                         last_channel_view_mode_ = m;
-                        for (int s : selected_) {
+                        for (int s : selection_->indices()) {
                             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                                 entries_view()[s].texture_dirty = true;
                             }
@@ -2101,7 +2037,7 @@ void App::render_toolbar() {
                     bool is_selected = (cur_bg == b);
                     if (ImGui::Selectable(view_background_label(b), is_selected)) {
                         state_->viewport->set_view_background(b);
-                        for (int s : selected_) {
+                        for (int s : selection_->indices()) {
                             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                                 entries_view()[s].texture_dirty = true;
                             }
@@ -2164,20 +2100,20 @@ void App::render_image_list() {
                             idx + 1, static_cast<int>(groups.size()));
     }
 
-    if (selected_.size() >= 2) {
+    if (selection_->size() >= 2) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear")) {
-            selected_.clear();
-            swap_ab_ = false;
+            selection_->clear();
+            selection_->set_swap_ab(false);
 diff_dirty_ = true;
         }
     }
 
     ImGui::Separator();
 
-    if (!selected_.empty()) {
+    if (!selection_->empty()) {
         ImGui::TextColored(ImVec4(0.40f, 0.80f, 1.00f, 1.00f),
-                           "%zu selected", selected_.size());
+                           "%zu selected", selection_->size());
     }
 
     float list_height = ImGui::GetContentRegionAvail().y;
@@ -2191,7 +2127,7 @@ diff_dirty_ = true;
             auto& entry = entries_view()[i];
             ImGui::PushID(i);
 
-            bool is_sel = selected_.count(i) > 0;
+            bool is_sel = selection_->contains(i);
             const char* ab_tag = (i == ab_idx[0]) ? "A"
                                 : (i == ab_idx[1]) ? "B" : nullptr;
 
@@ -2202,15 +2138,15 @@ diff_dirty_ = true;
             bool checked = is_sel;
             if (ImGui::Checkbox("##sel", &checked)) {
                 if (checked) {
-                    selected_.insert(i);
+                    selection_->insert(i);
                 } else {
-                    selected_.erase(i);
+                    selection_->erase(i);
                 }
                 // Selection membership changed -- reset A/B swap so the
                 // user's intent isn't attached to stale slot mapping.
-                swap_ab_ = false;
+                selection_->set_swap_ab(false);
                 // Selection change affects upscale targets for all selected images
-                for (int s : selected_) {
+                for (int s : selection_->indices()) {
                     if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                         entries_view()[s].texture_dirty = true;
                     }
@@ -2294,7 +2230,7 @@ diff_dirty_ = true;
                 }
                 // Super Resolution — only shown when an upscaler is detected
                 // and at least one entry is selected.
-                if (sr_enabled_ && !selected_.empty()) {
+                if (sr_enabled_ && !selection_->empty()) {
                     bool any_running = false;
                     for (const auto& task : sr_tasks_) {
                         if (task.engine &&
@@ -2396,7 +2332,7 @@ void App::render_viewport() {
     }
 
     // Upload dirty textures for selected images
-    for (int s : selected_) {
+    for (int s : selection_->indices()) {
         if (s >= 0 && s < static_cast<int>(entries_view().size())) {
             if (entries_view()[s].texture_dirty) {
                 update_display_image(s);
@@ -2415,12 +2351,12 @@ void App::render_viewport() {
     std::vector<const char*> labels;
     // Hold label storage so const char* remains valid for the frame
     std::vector<std::string> label_storage;
-    label_storage.reserve(selected_.size());
+    label_storage.reserve(selection_->size());
 
     // Reset the slot->entry mapping; repopulated below in lockstep with the
     // vectors above so render_status_bar can map hovered slots back.
     viewport_slot_to_entry_.clear();
-    viewport_slot_to_entry_.reserve(selected_.size());
+    viewport_slot_to_entry_.reserve(selection_->size());
 
     int ab_idx[2] = {-1, -1};
     get_ab_indices(ab_idx[0], ab_idx[1]);
@@ -2451,7 +2387,7 @@ void App::render_viewport() {
 
     if (ab_idx[0] >= 0) push_entry(ab_idx[0], "A");
     if (ab_idx[1] >= 0) push_entry(ab_idx[1], "B");
-    for (int s : selected_) {
+    for (int s : selection_->indices()) {
         if (s == ab_idx[0] || s == ab_idx[1]) continue;
         push_entry(s, nullptr);
     }
@@ -2752,7 +2688,7 @@ void App::render_viewport() {
         ImGui::Spacing();
         ImGui::SameLine();
         bool can_save = !entries_view().empty() &&
-                        (!selected_.empty() ||
+                        (!selection_->empty() ||
                          (vp.mode() == ComparisonMode::Difference && !diff_slots_.empty()));
         ImGui::BeginDisabled(!can_save);
         if (ImGui::SmallButton("Save...")) {
@@ -2764,13 +2700,13 @@ void App::render_viewport() {
                               "to a PNG or JPEG file");
         }
 
-        int sel_count = static_cast<int>(selected_.size());
+        int sel_count = static_cast<int>(selection_->size());
         if (sel_count >= 2) {
             ImGui::SameLine();
             ImGui::Spacing();
             ImGui::SameLine();
             if (ImGui::SmallButton("Swap A/B")) {
-                swap_ab_ = !swap_ab_;
+                selection_->toggle_swap_ab();
 diff_dirty_ = true;
             }
             if (ImGui::IsItemHovered()) {
@@ -2897,7 +2833,7 @@ diff_dirty_ = true;
     // with the new channel extraction on the next frame.
     if (vp.channel_view_mode() != last_channel_view_mode_) {
         last_channel_view_mode_ = vp.channel_view_mode();
-        for (int s : selected_) {
+        for (int s : selection_->indices()) {
             if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                 entries_view()[s].texture_dirty = true;
             }
@@ -2979,7 +2915,7 @@ void App::render_right_sidebar() {
                     partners.emplace_back(e.display_label, disp);
                 };
                 if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
-                for (int s : selected_) {
+                for (int s : selection_->indices()) {
                     if (s == ab_idx[0] || s == ab_idx[1]) continue;
                     add_partner(s);
                 }
@@ -3007,7 +2943,7 @@ void App::render_right_sidebar() {
 
                 add_entry(ab_idx[0], "A");
                 add_entry(ab_idx[1], "B");
-                for (int s : selected_) {
+                for (int s : selection_->indices()) {
                     if (s == ab_idx[0] || s == ab_idx[1]) continue;
                     add_entry(s, nullptr);
                 }
@@ -3318,16 +3254,16 @@ void App::poll_sr_tasks() {
                     std::to_string(scale) + "x)";
 
                 // Auto-select: input as A, output as B for comparison
-                selected_.clear();
+                selection_->clear();
                 if (input_idx >= 0) {
-                    selected_.insert(input_idx);
+                    selection_->insert(input_idx);
                 }
-                selected_.insert(new_idx);
-                swap_ab_ = false;
+                selection_->insert(new_idx);
+                selection_->set_swap_ab(false);
                 diff_dirty_ = true;
 
                 // Mark textures for upload
-                for (int s : selected_) {
+                for (int s : selection_->indices()) {
                     if (s >= 0 && s < static_cast<int>(entries_view().size())) {
                         entries_view()[s].texture_dirty = true;
                     }
@@ -3389,7 +3325,7 @@ void App::render_status_bar() {
         if (ImGui::BeginMenuBar()) {
             char buf[1024];
             int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
-                                   entries_view().size(), selected_.size());
+                                   entries_view().size(), selection_->size());
             auto append = [&](const char* fmt, ...) {
                 if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) return;
                 va_list ap;
@@ -3407,7 +3343,7 @@ void App::render_status_bar() {
             if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries_view().size())) {
                 append(" | B: %s", entries_view()[ab_idx[1]].display_label.c_str());
             }
-            int extra = static_cast<int>(selected_.size()) -
+            int extra = static_cast<int>(selection_->size()) -
                         ((ab_idx[0] >= 0 ? 1 : 0) + (ab_idx[1] >= 0 ? 1 : 0));
             if (extra > 0) {
                 append(" (+%d shown, ignored by overlay/diff)", extra);

@@ -12,6 +12,8 @@ add_executable(idiff_tests
     test_logger.cpp
     test_io_interfaces.cpp
     test_image_library.cpp
+    test_selection_model.cpp
+    test_timeline_model.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
