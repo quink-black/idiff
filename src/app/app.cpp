@@ -3,6 +3,7 @@
 #include "app/status_reporter.h"
 #include "app/ui/dialogs.h"
 #include "app/ui/image_list.h"
+#include "app/ui/inspector.h"
 #include "app/ui/status_bar.h"
 #include "app/ui/toolbar.h"
 #include "app/ui/yuv_dialog.h"
@@ -1862,147 +1863,16 @@ diff_service_->mark_dirty();
 }
 
 void App::render_right_sidebar() {
-    ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Inspector", &state_->show_inspector)) {
-        ImGui::End();
-        return;
-    }
-
-    // Resolve A and B via the shared helper so the inspector matches the
-    // viewport / image list labeling (including the Swap A/B toggle).
-    int ab_idx[2] = {-1, -1};
-    get_ab_indices(ab_idx[0], ab_idx[1]);
-
-    auto get_entry = [&](int idx) -> const ImageEntry* {
-        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return nullptr;
-        return &entries_view()[idx];
-    };
-    const ImageEntry* entry_a = get_entry(ab_idx[0]);
-    const ImageEntry* entry_b = get_entry(ab_idx[1]);
-
-    const Image* img_a = entry_a ? entry_a->image.get() : nullptr;
-    const Image* img_b = entry_b ? entry_b->image.get() : nullptr;
-    const Image* disp_a = entry_a ? (entry_a->display_image ? entry_a->display_image.get()
-                                                            : entry_a->image.get())
-                                  : nullptr;
-    const Image* disp_b = entry_b ? (entry_b->display_image ? entry_b->display_image.get()
-                                                            : entry_b->image.get())
-                                  : nullptr;
-    const char* name_a = entry_a ? entry_a->display_label.c_str() : nullptr;
-    const char* name_b = entry_b ? entry_b->display_label.c_str() : nullptr;
-
-    if (ImGui::BeginTabBar("##inspector_tabs")) {
-        if (ImGui::BeginTabItem("Properties")) {
-            if (state_->properties_panel) {
-                state_->properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
-                                                        name_a, name_b);
-            }
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Metrics")) {
-            if (state_->metrics_panel) {
-                // Multi-image metrics: compare A against every other
-                // selected entry (B, C, D, ...).  Rows follow the same
-                // order as the viewport cells and as diff_service_->slots(), so the
-                // visual/spatial layout and the metrics table stay in
-                // lockstep.
-                std::vector<std::pair<std::string, const Image*>> partners;
-                auto add_partner = [&](int idx) {
-                    if (idx < 0 ||
-                        idx >= static_cast<int>(entries_view().size())) return;
-                    const auto& e = entries_view()[idx];
-                    const Image* disp = e.display_image
-                                            ? e.display_image.get()
-                                            : e.image.get();
-                    if (!disp) return;
-                    partners.emplace_back(e.display_label, disp);
-                };
-                if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
-                for (int s : selection_->indices()) {
-                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
-                    add_partner(s);
-                }
-                state_->metrics_panel->render_pair_metrics(disp_a, partners);
-            }
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Statistics")) {
-            if (state_->metrics_panel) {
-                // Gather all selected images with their names for per-image stats
-                std::vector<std::pair<std::string, const Image*>> stat_images;
-
-                // A first, then B, then remaining selected (same order as viewport)
-                auto add_entry = [&](int idx, const char* prefix) {
-                    if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return;
-                    const auto& e = entries_view()[idx];
-                    const Image* disp = e.display_image ? e.display_image.get()
-                                                        : e.image.get();
-                    if (!disp) return;
-                    std::string label = prefix
-                        ? (std::string("[") + prefix + "] " + e.display_label)
-                        : e.display_label;
-                    stat_images.emplace_back(std::move(label), disp);
-                };
-
-                add_entry(ab_idx[0], "A");
-                add_entry(ab_idx[1], "B");
-                for (int s : selection_->indices()) {
-                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
-                    add_entry(s, nullptr);
-                }
-
-                state_->metrics_panel->render_statistics(stat_images);
-            }
-            ImGui::EndTabItem();
-        }
-        if (ImGui::BeginTabItem("Measurements")) {
-            if (state_->properties_panel) {
-                // Build slot labels in the same order viewport_slot_to_entry_
-                // was populated by render_viewport, so Measurement.source_cell_index
-                // resolves to the right image name.  Keep the strings alive
-                // for the duration of the call.
-                std::vector<std::string> slot_storage;
-                std::vector<const char*> slot_labels;
-                slot_storage.reserve(viewport_slot_to_entry_.size());
-                slot_labels.reserve(viewport_slot_to_entry_.size());
-                for (int entry_idx : viewport_slot_to_entry_) {
-                    if (entry_idx >= 0 &&
-                        entry_idx < static_cast<int>(entries_view().size())) {
-                        slot_storage.push_back(entries_view()[entry_idx].display_label);
-                    } else {
-                        slot_storage.emplace_back("(unknown)");
-                    }
-                    slot_labels.push_back(slot_storage.back().c_str());
-                }
-                std::vector<int> deleted_ids;
-                bool clear_all = false;
-                state_->properties_panel->render_measurements(
-                    *state_->viewport, slot_labels, deleted_ids, clear_all);
-                // Sync deletions back to the owning entries.
-                if (clear_all) {
-                    for (int entry_idx : viewport_slot_to_entry_) {
-                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_view().size())) {
-                            entries_view()[entry_idx].measurements.clear();
-                        }
-                    }
-                }
-                for (int del_id : deleted_ids) {
-                    for (auto& entry : entries_view()) {
-                        auto& ms = entry.measurements;
-                        ms.erase(std::remove_if(ms.begin(), ms.end(),
-                                                [del_id](const Measurement& m) {
-                                                    return m.id == del_id;
-                                                }),
-                                 ms.end());
-                    }
-                }
-            }
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
-
-    ImGui::End();
+    InspectorInputs in;
+    in.entries = &entries_view();
+    in.selection = selection_;
+    in.viewport = state_->viewport.get();
+    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.viewport_slot_to_entry = &viewport_slot_to_entry_;
+    in.properties_panel = state_->properties_panel.get();
+    in.metrics_panel = state_->metrics_panel.get();
+    in.show_inspector = &state_->show_inspector;
+    idiff::render_right_sidebar(in);
 }
 
 void App::render_error_dialog() {
