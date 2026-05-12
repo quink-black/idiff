@@ -17,6 +17,7 @@ add_executable(idiff
     ui/inspector.cpp
     ui/status_bar.cpp
     ui/toolbar.cpp
+    ui/viewport_panel.cpp
     ui/yuv_dialog.cpp
 )
 
