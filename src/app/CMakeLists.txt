@@ -13,6 +13,7 @@ add_executable(idiff
     io/texture_uploader.cpp
     io/file_dialog.cpp
     ui/dialogs.cpp
+    ui/yuv_dialog.cpp
 )
 
 if(APPLE)

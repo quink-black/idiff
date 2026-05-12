@@ -2,6 +2,7 @@
 #include "app/controller.h"
 #include "app/status_reporter.h"
 #include "app/ui/dialogs.h"
+#include "app/ui/yuv_dialog.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
@@ -132,18 +133,12 @@ struct App::State {
     // successfully added.
     AppSettings settings;
 
-    // YUV-parameters dialog state.  When pending_yuv_paths is non-empty,
-    // frame() opens a modal for the front element; the user either
-    // confirms (turning it into a YuvRawSource entry) or skips it.
-    std::vector<std::string> pending_yuv_paths;
-    YuvStreamParams yuv_dialog_params{};
-    // When true, the dialog was just primed with a new path and must call
-    // ImGui::OpenPopup on the next render.  Gets cleared after opening.
-    bool yuv_dialog_needs_open = false;
-    // When >= 0, the YUV dialog is in "edit" mode targeting entries_view()[idx]
-    // rather than loading a new file from pending_yuv_paths.  Reset to -1
-    // once the edit is confirmed or cancelled.
-    int editing_yuv_entry_idx = -1;
+    // YUV-parameters dialog state.  When yuv_dialog.pending_paths is
+    // non-empty, frame() opens a modal for the front element; the user
+    // either confirms (turning it into a YuvRawSource entry) or skips.
+    // When yuv_dialog.editing_entry_idx >= 0 the dialog is in "edit"
+    // mode targeting that entry instead of loading a new file.
+    YuvDialogState yuv_dialog;
 
     // Injectable IO collaborators.  Tests substitute fakes; the
     // production wiring in App::init() installs the SDL/NFD-backed
@@ -304,7 +299,7 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->settings = AppSettings::load();
     // Seed the dialog with whatever the user last confirmed so they do
     // not have to retype resolution / pixel-format for each file.
-    state_->yuv_dialog_params = state_->settings.last_yuv_params;
+    state_->yuv_dialog.params = state_->settings.last_yuv_params;
     // Restore viewport overlay toggles from the last session.
     state_->viewport->set_show_ruler(state_->settings.show_ruler);
     state_->viewport->set_show_grid(state_->settings.show_grid);
@@ -564,8 +559,8 @@ void App::load_images(const std::vector<std::string>& paths) {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
         if (ext_lower == ".yuv") {
-            state_->pending_yuv_paths.push_back(path);
-            state_->yuv_dialog_needs_open = true;
+            state_->yuv_dialog.pending_paths.push_back(path);
+            state_->yuv_dialog.needs_open = true;
         } else {
             still_paths.push_back(path);
         }
@@ -672,9 +667,9 @@ void App::begin_edit_yuv_entry(int index) {
     // Seed the dialog with this entry's actual current parameters so the
     // user tweaks from the existing configuration rather than from
     // settings defaults or last_yuv_params.
-    state_->yuv_dialog_params = yuv->params();
-    state_->editing_yuv_entry_idx = index;
-    state_->yuv_dialog_needs_open = true;
+    state_->yuv_dialog.params = yuv->params();
+    state_->yuv_dialog.editing_entry_idx = index;
+    state_->yuv_dialog.needs_open = true;
 }
 
 bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
@@ -734,147 +729,23 @@ diff_service_->mark_dirty();
 
 
 void App::render_yuv_params_dialog() {
-    const bool editing = state_->editing_yuv_entry_idx >= 0;
-
-    // In load mode the dialog is driven by the pending-paths queue.
-    // In edit mode it targets an existing entry; nothing is queued.
-    if (!editing && state_->pending_yuv_paths.empty()) return;
-
-    // Resolve the path used for the header / file-size preview.
-    std::string current_path;
-    if (editing) {
-        int idx = state_->editing_yuv_entry_idx;
-        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
-            // Entry disappeared (removed, reordered out of range, ...).
-            // Abort the edit session silently.
-            state_->editing_yuv_entry_idx = -1;
-            return;
-        }
-        current_path = entries_view()[idx].path;
-    } else {
-        current_path = state_->pending_yuv_paths.front();
-    }
-
-    // First-frame priming: seed dialog params with the appropriate source.
-    // Load mode uses the last-confirmed defaults + filename guess; edit
-    // mode uses the entry's actual current parameters so the user starts
-    // from what the stream is configured with today.
-    if (state_->yuv_dialog_needs_open) {
-        if (!editing) {
-            state_->yuv_dialog_params = state_->settings.last_yuv_params;
-            guess_yuv_params_from_filename(current_path, state_->yuv_dialog_params);
-        }
-        // In edit mode, begin_edit_yuv_entry() has already set
-        // yuv_dialog_params from the existing source; don't overwrite it.
-        ImGui::OpenPopup("YUV Parameters");
-        state_->yuv_dialog_needs_open = false;
-    }
-
-    // Center the modal over the main viewport.
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-
-    if (ImGui::BeginPopupModal("YUV Parameters", nullptr,
-                                ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(editing
-            ? "Edit decoder parameters for:"
-            : "Configure decoder parameters for:");
-        ImGui::TextDisabled("%s", current_path.c_str());
-        ImGui::Separator();
-
-        auto& params = state_->yuv_dialog_params;
-
-        ImGui::InputInt("Width",  &params.width);
-        ImGui::InputInt("Height", &params.height);
-
-        const char* fmt_items[] = { "YUV420P (I420)", "YUV422P", "YUV444P" };
-        int fmt_idx = static_cast<int>(params.pixel_format);
-        if (ImGui::Combo("Pixel format", &fmt_idx, fmt_items,
-                         IM_ARRAYSIZE(fmt_items))) {
-            params.pixel_format = static_cast<YuvPixelFormat>(fmt_idx);
-        }
-
-        const char* range_items[] = { "Limited (TV, 16-235)", "Full (PC, 0-255)" };
-        int range_idx = static_cast<int>(params.color_range);
-        if (ImGui::Combo("Color range", &range_idx, range_items,
-                         IM_ARRAYSIZE(range_items))) {
-            params.color_range = static_cast<YuvColorRange>(range_idx);
-        }
-
-        // Preview the frame size / frame count.  Guards against div-by-zero
-        // and provides early feedback when the user types a bad resolution.
-        std::size_t frame_bytes = yuv_frame_size_bytes(params);
-        if (frame_bytes == 0) {
-            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
-                "Invalid: width/height must be positive (and even for 4:2:0/4:2:2)");
-        } else {
-            std::error_code ec;
-            auto fsize = std::filesystem::file_size(current_path, ec);
-            if (ec) {
-                ImGui::TextDisabled("Frame size: %zu bytes",
-                                     static_cast<size_t>(frame_bytes));
-            } else {
-                int fc = static_cast<int>(fsize / frame_bytes);
-                ImGui::Text("Frame size: %zu bytes  |  File has %d frame(s)",
-                            static_cast<size_t>(frame_bytes), fc);
-                if (fsize % frame_bytes != 0) {
-                    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
-                        "Warning: file size is not an exact multiple of frame size");
-                }
-            }
-        }
-
-        ImGui::Separator();
-
-        bool confirmed = false;
-        bool skipped   = false;
-        bool cancelled = false;
-        const char* confirm_label = editing ? "Apply" : "Load";
-        if (ImGui::Button(confirm_label, ImVec2(100, 0))) {
-            confirmed = true;
-        }
-        ImGui::SameLine();
-        if (editing) {
-            if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-                cancelled = true;
-            }
-        } else {
-            if (ImGui::Button("Skip", ImVec2(100, 0))) {
-                skipped = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel all", ImVec2(100, 0))) {
-                state_->pending_yuv_paths.clear();
-                ImGui::CloseCurrentPopup();
-            }
-        }
-
-        if (confirmed) {
-            if (editing) {
-                update_yuv_entry_params(state_->editing_yuv_entry_idx, params);
-                state_->editing_yuv_entry_idx = -1;
-            } else {
-                add_yuv_entry(current_path, params);
-                state_->pending_yuv_paths.erase(state_->pending_yuv_paths.begin());
-                // If there's another file in the queue, arm the dialog for it.
-                if (!state_->pending_yuv_paths.empty()) {
-                    state_->yuv_dialog_needs_open = true;
-                }
-            }
-            ImGui::CloseCurrentPopup();
-        } else if (skipped) {
-            state_->pending_yuv_paths.erase(state_->pending_yuv_paths.begin());
-            ImGui::CloseCurrentPopup();
-            if (!state_->pending_yuv_paths.empty()) {
-                state_->yuv_dialog_needs_open = true;
-            }
-        } else if (cancelled) {
-            state_->editing_yuv_entry_idx = -1;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
+    YuvDialogCallbacks cb;
+    cb.resolve_entry_path = [this](int idx) -> std::string {
+        const auto& entries = entries_view();
+        if (idx < 0 || idx >= static_cast<int>(entries.size())) return {};
+        return entries[idx].path;
+    };
+    cb.default_load_params = [this]() {
+        return state_->settings.last_yuv_params;
+    };
+    cb.on_load_confirm = [this](const std::string& path,
+                                const YuvStreamParams& params) {
+        add_yuv_entry(path, params);
+    };
+    cb.on_edit_apply = [this](int idx, const YuvStreamParams& params) {
+        update_yuv_entry_params(idx, params);
+    };
+    idiff::render_yuv_params_dialog(state_->yuv_dialog, cb);
 }
 
 int App::timeline_length() const {
