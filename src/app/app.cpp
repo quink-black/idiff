@@ -1,5 +1,6 @@
 #include "app/app.h"
 #include "app/controller.h"
+#include "app/status_reporter.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
@@ -49,10 +50,65 @@
 
 namespace idiff {
 
+namespace {
+
+// IStatusReporter implementation that writes directly into App::State.
+// Constructed with raw pointers to the State fields so the reporter
+// has no notion of App at all and is trivially substitutable in
+// tests.  Lifetime: the reporter is owned by State; the fields it
+// borrows live in the same struct so the pointers stay valid for as
+// long as the reporter does.
+class StateStatusReporter : public IStatusReporter {
+public:
+    StateStatusReporter(std::string* status_text,
+                        std::string* status_msg,
+                        std::string* error_title,
+                        std::string* error_message,
+                        bool* show_error_dialog,
+                        bool* error_dialog_needs_open) noexcept
+        : status_text_(status_text),
+          status_msg_(status_msg),
+          error_title_(error_title),
+          error_message_(error_message),
+          show_error_dialog_(show_error_dialog),
+          error_dialog_needs_open_(error_dialog_needs_open) {}
+
+    void set_status(const std::string& text) override {
+        *status_text_ = text;
+    }
+
+    void append_status(const std::string& text) override {
+        if (text.empty()) return;
+        if (!status_text_->empty()) *status_text_ += " | ";
+        *status_text_ += text;
+    }
+
+    void set_sr_status(const std::string& text) override {
+        *status_msg_ = text;
+    }
+
+    void show_error(const std::string& title,
+                    const std::string& message) override {
+        *error_title_ = title;
+        *error_message_ = message;
+        *show_error_dialog_ = true;
+        *error_dialog_needs_open_ = true;
+    }
+
+private:
+    std::string* status_text_;
+    std::string* status_msg_;
+    std::string* error_title_;
+    std::string* error_message_;
+    bool* show_error_dialog_;
+    bool* error_dialog_needs_open_;
+};
+
+} // namespace
+
 struct App::State {
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
-
     std::unique_ptr<Viewport> viewport;
     std::unique_ptr<MetricsPanel> metrics_panel;
     std::unique_ptr<PropertiesPanel> properties_panel;
@@ -112,6 +168,12 @@ struct App::State {
     // App's public header does not depend on app/io headers.
     std::unique_ptr<ITextureUploader> texture_uploader;
     std::unique_ptr<IFileDialog> file_dialog;
+
+    // IStatusReporter implementation that forwards into the status /
+    // error fields above.  Lazily constructed in App::init() so its
+    // borrowed pointers always reach a stable State; cleared in
+    // App::shutdown() before State is destroyed.
+    std::unique_ptr<IStatusReporter> status_reporter;
 };
 
 App::App()
@@ -278,11 +340,24 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->texture_uploader = std::make_unique<SdlTextureUploader>(renderer);
     state_->file_dialog = std::make_unique<NfdFileDialog>();
 
+    // Wire the status reporter to the State fields the UI already
+    // reads when drawing the status bar / error dialog.  Constructed
+    // here (rather than inline at AppController) so the borrowed
+    // pointers stay stable for the controller's full lifetime.
+    state_->status_reporter = std::make_unique<StateStatusReporter>(
+        &state_->status_text,
+        &state_->status_msg,
+        &state_->error_dialog_title,
+        &state_->error_dialog_message,
+        &state_->show_error_dialog,
+        &state_->error_dialog_needs_open);
+
     // Bring up every domain service in one place.  The controller
-    // borrows the texture uploader by reference, so it must be
-    // constructed after the uploader and destroyed before it (handled
-    // by destruction order in App::shutdown / ~App).
-    controller_ = std::make_unique<AppController>(*state_->texture_uploader);
+    // borrows the texture uploader and status reporter by reference,
+    // so both must outlive it (handled by destruction order in
+    // App::shutdown / ~App).
+    controller_ = std::make_unique<AppController>(
+        *state_->texture_uploader, *state_->status_reporter);
     library_ = &controller_->library();
     selection_ = &controller_->selection();
     timeline_ = &controller_->timeline();
@@ -333,6 +408,10 @@ void App::shutdown() {
     diff_service_ = nullptr;
     sr_service_ = nullptr;
     comparison_config_ = nullptr;
+
+    // Status reporter is borrowed by the controller, so it must be
+    // released after the controller is gone.
+    state_->status_reporter.reset();
 
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
@@ -899,9 +978,7 @@ int App::timeline_length() const {
 }
 
 void App::sync_entries_to_timeline() {
-    if (timeline_->sync_to(entries_view(), state_->status_text)) {
-        diff_service_->mark_dirty();
-    }
+    controller_->sync_entries_to_timeline();
 }
 
 float App::render_timeline_bar() {
@@ -2825,16 +2902,7 @@ void App::render_sr_dialog() {
 }
 
 void App::start_sr_task(const SRTaskParams& params) {
-    auto factory = []() -> std::unique_ptr<SRInferEngine> {
-        return SRInferEngineFactory::instance().create_engine("seedvr2");
-    };
-    const auto result = sr_service_->start(params, factory);
-    if (!result.ok) {
-        state_->error_dialog_title = result.error_title;
-        state_->error_dialog_message = result.error_message;
-        state_->show_error_dialog = true;
-        state_->error_dialog_needs_open = true;
-    }
+    controller_->start_sr_task(params);
 }
 
 void App::poll_sr_tasks() {

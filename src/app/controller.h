@@ -6,12 +6,14 @@
 namespace idiff {
 
 class ITextureUploader;
+class IStatusReporter;
 class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
 class DiffService;
 class SrTaskService;
 class ComparisonConfigService;
+struct SRTaskParams;
 
 // Owns every non-UI service that drives the application.  Constructed
 // once per process inside App::init() after the platform IO seam (the
@@ -26,9 +28,10 @@ class ComparisonConfigService;
 // dedicated StatusReporter abstraction.
 class AppController {
 public:
-    // The texture uploader is borrowed for the controller's lifetime.
-    // Caller (App) must keep it alive until ~AppController returns.
-    explicit AppController(ITextureUploader& texture_uploader);
+    // Both collaborators are borrowed for the controller's lifetime.
+    // Caller (App) must keep them alive until ~AppController returns.
+    AppController(ITextureUploader& texture_uploader,
+                  IStatusReporter& status_reporter);
     ~AppController();
 
     AppController(const AppController&) = delete;
@@ -81,6 +84,19 @@ public:
     // True while at least one super-resolution task is still running.
     bool has_running_sr_tasks() const;
 
+    // Re-decode every multi-frame entry so it matches the shared
+    // timeline index (plus each entry's per-entry frame_offset).
+    // No-op for libraries with only single-frame entries.  Marks the
+    // diff cache dirty when any entry actually changes; failures are
+    // reported through the injected status reporter.
+    void sync_entries_to_timeline();
+
+    // Spawn an SR engine for `params` and append it to the task queue.
+    // The engine is built via the global SRInferEngineFactory; on
+    // failure the error is forwarded to the status reporter as a modal
+    // dialog and no task is enqueued.
+    void start_sr_task(const SRTaskParams& params);
+
 private:
     std::unique_ptr<ImageLibrary> library_;
     std::unique_ptr<SelectionModel> selection_;
@@ -88,6 +104,7 @@ private:
     std::unique_ptr<DiffService> diff_;
     std::unique_ptr<SrTaskService> sr_tasks_;
     std::unique_ptr<ComparisonConfigService> comparison_config_;
+    IStatusReporter* status_reporter_;
 };
 
 } // namespace idiff

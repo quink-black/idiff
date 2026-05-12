@@ -1,5 +1,9 @@
 #include "app/controller.h"
 
+#include "app/sr_dialog.h"
+#include "app/sr_infer_engine.h"
+#include "app/sr_infer_engine_factory.h"
+#include "app/status_reporter.h"
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
@@ -14,13 +18,15 @@
 
 namespace idiff {
 
-AppController::AppController(ITextureUploader& texture_uploader)
+AppController::AppController(ITextureUploader& texture_uploader,
+                             IStatusReporter& status_reporter)
     : library_(std::make_unique<ImageLibrary>(texture_uploader)),
       selection_(std::make_unique<SelectionModel>()),
       timeline_(std::make_unique<TimelineModel>()),
       diff_(std::make_unique<DiffService>(texture_uploader)),
       sr_tasks_(std::make_unique<SrTaskService>()),
-      comparison_config_(std::make_unique<ComparisonConfigService>()) {}
+      comparison_config_(std::make_unique<ComparisonConfigService>()),
+      status_reporter_(&status_reporter) {}
 
 AppController::~AppController() = default;
 
@@ -131,6 +137,31 @@ void AppController::remove_entry(int index) {
 
 bool AppController::has_running_sr_tasks() const {
     return sr_tasks_->has_running();
+}
+
+void AppController::sync_entries_to_timeline() {
+    std::string status_buf;
+    if (timeline_->sync_to(library_->all(), status_buf)) {
+        diff_->mark_dirty();
+    }
+    // sync_to() only writes to out_status on a per-frame read failure.
+    // Use append so the message decorates whatever prior text the
+    // status bar was showing (matching the previous in-place behaviour
+    // when state_->status_text was passed directly).
+    if (!status_buf.empty()) {
+        status_reporter_->append_status(status_buf);
+    }
+}
+
+void AppController::start_sr_task(const SRTaskParams& params) {
+    auto factory = []() -> std::unique_ptr<SRInferEngine> {
+        return SRInferEngineFactory::instance().create_engine("seedvr2");
+    };
+    const auto result = sr_tasks_->start(params, factory);
+    if (!result.ok) {
+        status_reporter_->show_error(result.error_title,
+                                     result.error_message);
+    }
 }
 
 } // namespace idiff

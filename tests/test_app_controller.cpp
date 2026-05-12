@@ -19,6 +19,8 @@
 
 #include "app/controller.h"
 #include "app/io/texture_uploader.h"
+#include "app/sr_dialog.h"
+#include "app/status_reporter.h"
 #include "app/app.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
@@ -28,6 +30,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -49,6 +52,36 @@ private:
     int destroy_count_ = 0;
 };
 
+// Records every call so tests can assert what reached the UI.
+class RecordingStatusReporter : public idiff::IStatusReporter {
+public:
+    void set_status(const std::string& text) override {
+        status_calls.push_back(text);
+        current_status = text;
+    }
+    void append_status(const std::string& text) override {
+        append_calls.push_back(text);
+        if (text.empty()) return;
+        if (!current_status.empty()) current_status += " | ";
+        current_status += text;
+    }
+    void set_sr_status(const std::string& text) override {
+        sr_status_calls.push_back(text);
+    }
+    void show_error(const std::string& title,
+                    const std::string& message) override {
+        error_titles.push_back(title);
+        error_messages.push_back(message);
+    }
+
+    std::vector<std::string> status_calls;
+    std::vector<std::string> append_calls;
+    std::vector<std::string> sr_status_calls;
+    std::vector<std::string> error_titles;
+    std::vector<std::string> error_messages;
+    std::string current_status;
+};
+
 idiff::ImageEntry make_entry(const std::string& path,
                              const std::string& filename) {
     idiff::ImageEntry e;
@@ -63,7 +96,8 @@ idiff::ImageEntry make_entry(const std::string& path,
 TEST_CASE("AppController::remove_entry coordinates library, selection, diff",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     controller.library().add(make_entry("/a/x.png", "x.png"));
     controller.library().add(make_entry("/b/y.png", "y.png"));
@@ -94,7 +128,8 @@ TEST_CASE("AppController::remove_entry coordinates library, selection, diff",
 TEST_CASE("AppController::remove_entry ignores out-of-range indices",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     controller.library().add(make_entry("/a/x.png", "x.png"));
 
@@ -109,7 +144,8 @@ TEST_CASE("AppController::remove_entry ignores out-of-range indices",
 TEST_CASE("AppController::sort_entries_by_name remaps the selection",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     // Reverse alphabetical order so the sort actually moves entries.
     controller.library().add(make_entry("/p/c.png", "c.png"));
@@ -132,7 +168,8 @@ TEST_CASE("AppController::sort_entries_by_name remaps the selection",
 TEST_CASE("AppController::move_entry rejects no-op and bad indices",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     controller.library().add(make_entry("/p/a.png", "a.png"));
     controller.library().add(make_entry("/p/b.png", "b.png"));
@@ -159,7 +196,8 @@ TEST_CASE("AppController::move_entry rejects no-op and bad indices",
 TEST_CASE("AppController::compute_display_labels disambiguates duplicates",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     controller.library().add(make_entry("/run1/frame.png", "frame.png"));
     controller.library().add(make_entry("/run2/frame.png", "frame.png"));
@@ -175,7 +213,8 @@ TEST_CASE("AppController::compute_display_labels disambiguates duplicates",
 TEST_CASE("AppController::compute_display_labels is a no-op on empty library",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     controller.compute_display_labels(); // must not crash
 
@@ -185,7 +224,8 @@ TEST_CASE("AppController::compute_display_labels is a no-op on empty library",
 TEST_CASE("AppController forwards trivial queries to its services",
           "[controller]") {
     CountingUploader uploader;
-    idiff::AppController controller(uploader);
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
 
     // Empty selection -> both A and B are -1.
     int a = 99, b = 99;
@@ -198,4 +238,48 @@ TEST_CASE("AppController forwards trivial queries to its services",
 
     // No SR tasks have been started.
     REQUIRE_FALSE(controller.has_running_sr_tasks());
+}
+
+TEST_CASE("AppController::sync_entries_to_timeline is silent on empty library",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.sync_entries_to_timeline();
+
+    // No entries means sync_to() never reports anything; the reporter
+    // must remain untouched and the diff must stay in its initial
+    // (dirty) state without an extra mark_dirty edge.
+    REQUIRE(reporter.status_calls.empty());
+    REQUIRE(reporter.append_calls.empty());
+}
+
+TEST_CASE("AppController::start_sr_task surfaces missing-engine errors",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // No SR engine is registered in the test binary; the underlying
+    // SrTaskService should refuse to enqueue a task and the
+    // controller must forward the diagnostic to the reporter as a
+    // modal error rather than as a status-bar string.
+    idiff::SRTaskParams params{};
+    params.input_path = "/tmp/missing.png";
+    params.output_path = "/tmp/missing_sr_2x.png";
+
+    controller.start_sr_task(params);
+
+    REQUIRE(reporter.error_titles.size() == 1);
+    REQUIRE(reporter.error_messages.size() == 1);
+    REQUIRE(reporter.error_titles.front() == "Super Resolution Error");
+    REQUIRE_FALSE(reporter.error_messages.front().empty());
+
+    // Failed start must not enqueue anything.
+    REQUIRE_FALSE(controller.has_running_sr_tasks());
+
+    // Status bar untouched; only the modal channel was used.
+    REQUIRE(reporter.status_calls.empty());
+    REQUIRE(reporter.sr_status_calls.empty());
 }
