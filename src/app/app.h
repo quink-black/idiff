@@ -21,6 +21,7 @@ class Viewport;
 class MetricsPanel;
 class PropertiesPanel;
 class SRInferEngine;
+class ImageLibrary;
 struct YuvStreamParams;
 struct SRDialogState;
 
@@ -107,7 +108,7 @@ public:
     // with a half-loaded state.
     void load_paths(const std::vector<std::string>& paths);
 
-    const std::vector<ImageEntry>& entries() const noexcept { return entries_; }
+    const std::vector<ImageEntry>& entries() const noexcept;
     const std::set<int>& selected() const noexcept { return selected_; }
 
 private:
@@ -201,7 +202,26 @@ private:
     struct State;
     std::unique_ptr<State> state_;
 
-    std::vector<ImageEntry> entries_;
+    // Owned image collection.  All mutating access (add/remove/move/sort)
+    // goes through ImageLibrary which destroys SDL textures via the
+    // ITextureUploader installed in App::init().  Read-only access uses
+    // entries_view() which returns library_->all().
+    std::unique_ptr<ImageLibrary> library_;
+
+    // Convenience accessors so call sites can keep using the same
+    // syntactic form (`entries_view()[i]`, `entries_view().size()`) as
+    // the previous `entries_` member without churning every read site
+    // when ownership moved into ImageLibrary.
+    std::vector<ImageEntry>& entries_view() noexcept;
+    const std::vector<ImageEntry>& entries_view() const noexcept;
+
+    // Apply a remap returned by ImageLibrary::remove/move/sort_by_filename
+    // to `selected_`.  Indices mapped to ImageLibrary::kRemoved are
+    // dropped from the selection.  Returns true if the membership of the
+    // selection actually changed (independent of permutation), so the
+    // caller can decide whether to also reset swap_ab_.
+    bool apply_remap_to_selection(const std::vector<int>& remap);
+
     std::set<int> selected_;
     bool first_frame_ = true;
 

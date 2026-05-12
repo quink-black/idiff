@@ -10,6 +10,7 @@
 #include "app/sr_dialog.h"
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
+#include "domain/image_library.h"
 #include "util/logger.h"
 
 #include <imgui.h>
@@ -26,7 +27,6 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
-#include <numeric>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -98,7 +98,7 @@ struct App::State {
     // When true, the dialog was just primed with a new path and must call
     // ImGui::OpenPopup on the next render.  Gets cleared after opening.
     bool yuv_dialog_needs_open = false;
-    // When >= 0, the YUV dialog is in "edit" mode targeting entries_[idx]
+    // When >= 0, the YUV dialog is in "edit" mode targeting entries_view()[idx]
     // rather than loading a new file from pending_yuv_paths.  Reset to -1
     // once the edit is confirmed or cancelled.
     int editing_yuv_entry_idx = -1;
@@ -111,7 +111,7 @@ struct App::State {
 
     // Comparison-config support.  When the user opens a JSON config we
     // keep the parsed groups here and load them on demand.  Only one
-    // group at a time is loaded into `entries_` so memory stays bounded
+    // group at a time is loaded into `entries_view()` so memory stays bounded
     // regardless of how many groups the document lists.
     ComparisonConfig comparison_config;
     int current_group_idx = -1;  // -1 = no config loaded
@@ -133,6 +133,39 @@ struct App::State {
 App::App() : state_(std::make_unique<State>()) {}
 
 App::~App() = default;
+
+const std::vector<ImageEntry>& App::entries() const noexcept {
+    return library_->all();
+}
+
+std::vector<ImageEntry>& App::entries_view() noexcept {
+    return library_->all();
+}
+
+const std::vector<ImageEntry>& App::entries_view() const noexcept {
+    return library_->all();
+}
+
+bool App::apply_remap_to_selection(const std::vector<int>& remap) {
+    if (remap.empty()) return false;
+    std::set<int> remapped;
+    bool dropped = false;
+    for (int s : selected_) {
+        if (s < 0 || s >= static_cast<int>(remap.size())) {
+            dropped = true;
+            continue;
+        }
+        int n = remap[s];
+        if (n == ImageLibrary::kRemoved) {
+            dropped = true;
+            continue;
+        }
+        remapped.insert(n);
+    }
+    const bool membership_changed = (remapped.size() != selected_.size()) || dropped;
+    selected_ = std::move(remapped);
+    return membership_changed;
+}
 
 bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->window = window;
@@ -277,6 +310,10 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->texture_uploader = std::make_unique<SdlTextureUploader>(renderer);
     state_->file_dialog = std::make_unique<NfdFileDialog>();
 
+    // The library borrows the texture uploader by reference, so it
+    // must be constructed after the uploader and destroyed before it.
+    library_ = std::make_unique<ImageLibrary>(*state_->texture_uploader);
+
     // Detect whether a super-resolution upscaler is available next to
     // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
     // SeedVR2 engine only when detected so the UI can hide SR controls
@@ -297,13 +334,9 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
 void App::shutdown() {
     NFD_Quit();
 
-    for (auto& entry : entries_) {
-        if (entry.texture) {
-            SDL_DestroyTexture(entry.texture);
-            entry.texture = nullptr;
-        }
+    if (library_) {
+        library_->clear();
     }
-    entries_.clear();
 
     for (auto& slot : diff_slots_) {
         if (slot.texture) SDL_DestroyTexture(slot.texture);
@@ -313,6 +346,9 @@ void App::shutdown() {
     state_->viewport.reset();
     state_->metrics_panel.reset();
     state_->properties_panel.reset();
+
+    // Tear down the library before the texture uploader it borrows.
+    library_.reset();
 
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
@@ -333,7 +369,7 @@ void App::frame() {
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
                 open_file_dialog();
             }
-            if (!entries_.empty() &&
+            if (!entries_view().empty() &&
                 ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
                 save_viewport_dialog();
             }
@@ -355,8 +391,8 @@ void App::frame() {
                     if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_1 + i))) {
                         state_->viewport->set_channel_view_mode(kModeMap[i]);
                         for (int s : selected_) {
-                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                                entries_[s].texture_dirty = true;
+                            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                                entries_view()[s].texture_dirty = true;
                             }
                         }
                         break;
@@ -383,7 +419,7 @@ void App::frame() {
     float timeline_h = 0.0f;
     if (timeline_length() > 1) {
         int offset_rows = 0;
-        for (const auto& e : entries_) {
+        for (const auto& e : entries_view()) {
             if (e.source && e.source->frame_count() > 1) offset_rows++;
         }
         int visible_offset_rows = std::min(offset_rows, 4);
@@ -473,7 +509,7 @@ void App::load_images(const std::vector<std::string>& paths) {
     // We only auto-select / auto-switch mode in that scenario so that later
     // "append more images" calls do not clobber the user's current picks or
     // comparison mode.
-    const bool was_empty = entries_.empty();
+    const bool was_empty = entries_view().empty();
 
     for (const auto& path : paths) {
         // Raw YUV files carry no decoding metadata, so we cannot load
@@ -509,10 +545,12 @@ void App::load_images(const std::vector<std::string>& paths) {
             entry.texture = nullptr;
             entry.texture_dirty = true;
 
-            entries_.push_back(std::move(entry));
+            library_->add(std::move(entry));
             state_->status_text = "Loaded: " + path;
         } else {
             state_->status_text = "Failed to load: " + path + " (" + source->last_error() + ")";
+            LOG_WARN("load_images failed: %s (%s)",
+                     path.c_str(), source->last_error().c_str());
         }
     }
 
@@ -524,16 +562,16 @@ diff_dirty_ = true;
     // two images and switch to Overlay mode.  This removes the need for the
     // user to manually tick two checkboxes before seeing any comparison, and
     // matches the most common use case (drop two images in, compare them).
-    if (was_empty && !entries_.empty()) {
+    if (was_empty && !entries_view().empty()) {
         selected_.clear();
         swap_ab_ = false;
-        int pick = std::min<int>(2, static_cast<int>(entries_.size()));
+        int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
         for (int i = 0; i < pick; i++) selected_.insert(i);
         // Flag newly-selected entries for texture/display refresh so the
         // viewport renders them immediately on the next frame.
         for (int s : selected_) {
-            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                entries_[s].texture_dirty = true;
+            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                entries_view()[s].texture_dirty = true;
             }
         }
 diff_dirty_ = true;
@@ -551,12 +589,12 @@ diff_dirty_ = true;
 // the viewport does not suddenly go blank; a status message tells the
 // user which file failed.
 void App::reload_all_images() {
-    if (entries_.empty()) return;
+    if (entries_view().empty()) return;
 
     int reloaded = 0;
     int failed = 0;
     std::string last_fail;
-    for (auto& entry : entries_) {
+    for (auto& entry : entries_view()) {
         // Update the backend preference on the source, then ask it to
         // re-decode the current frame.  For video sources this will be
         // tracked by the shared frame index once time-axis wiring lands;
@@ -614,7 +652,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
         return false;
     }
 
-    const bool was_empty = entries_.empty();
+    const bool was_empty = entries_view().empty();
 
     ImageEntry entry;
     entry.path = path;
@@ -633,7 +671,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
     entry.texture = nullptr;
     entry.texture_dirty = true;
 
-    entries_.push_back(std::move(entry));
+    library_->add(std::move(entry));
 
     sort_entries_by_name();
     compute_display_labels();
@@ -647,14 +685,14 @@ diff_dirty_ = true;
     // Mirror the "first load" convenience from load_images(): if the
     // entry list was empty before this add, auto-select up to the first
     // two items and switch to Overlay.
-    if (was_empty && !entries_.empty()) {
+    if (was_empty && !entries_view().empty()) {
         selected_.clear();
         swap_ab_ = false;
-        int pick = std::min<int>(2, static_cast<int>(entries_.size()));
+        int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
         for (int i = 0; i < pick; i++) selected_.insert(i);
         for (int s : selected_) {
-            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                entries_[s].texture_dirty = true;
+            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                entries_view()[s].texture_dirty = true;
             }
         }
 diff_dirty_ = true;
@@ -668,8 +706,8 @@ diff_dirty_ = true;
 }
 
 void App::begin_edit_yuv_entry(int index) {
-    if (index < 0 || index >= static_cast<int>(entries_.size())) return;
-    auto* yuv = dynamic_cast<YuvRawSource*>(entries_[index].source.get());
+    if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
+    auto* yuv = dynamic_cast<YuvRawSource*>(entries_view()[index].source.get());
     if (!yuv) return;  // not a YUV stream; silently ignore
 
     // Seed the dialog with this entry's actual current parameters so the
@@ -681,8 +719,8 @@ void App::begin_edit_yuv_entry(int index) {
 }
 
 bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
-    if (index < 0 || index >= static_cast<int>(entries_.size())) return false;
-    auto& entry = entries_[index];
+    if (index < 0 || index >= static_cast<int>(entries_view().size())) return false;
+    auto& entry = entries_view()[index];
 
     // Build the new source first; only swap on success so a bad edit
     // leaves the existing (working) stream untouched.
@@ -747,13 +785,13 @@ void App::render_yuv_params_dialog() {
     std::string current_path;
     if (editing) {
         int idx = state_->editing_yuv_entry_idx;
-        if (idx < 0 || idx >= static_cast<int>(entries_.size())) {
+        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
             // Entry disappeared (removed, reordered out of range, ...).
             // Abort the edit session silently.
             state_->editing_yuv_entry_idx = -1;
             return;
         }
-        current_path = entries_[idx].path;
+        current_path = entries_view()[idx].path;
     } else {
         current_path = state_->pending_yuv_paths.front();
     }
@@ -882,7 +920,7 @@ void App::render_yuv_params_dialog() {
 
 int App::timeline_length() const {
     int max_frames = 1;
-    for (const auto& e : entries_) {
+    for (const auto& e : entries_view()) {
         if (e.source) {
             max_frames = std::max(max_frames, e.source->frame_count());
         }
@@ -892,7 +930,7 @@ int App::timeline_length() const {
 
 void App::sync_entries_to_timeline() {
     bool any_changed = false;
-    for (auto& e : entries_) {
+    for (auto& e : entries_view()) {
         if (!e.source) continue;
         const int count = e.source->frame_count();
         if (count <= 1) continue;  // still image -- timeline doesn't apply
@@ -940,7 +978,7 @@ float App::render_timeline_bar() {
     // (capped to 4 so a large number of streams doesn't consume the
     // whole window -- the scrollable child handles overflow).
     int offset_rows = 0;
-    for (const auto& e : entries_) {
+    for (const auto& e : entries_view()) {
         if (e.source && e.source->frame_count() > 1) offset_rows++;
     }
     const int visible_offset_rows = std::min(offset_rows, 4);
@@ -1000,8 +1038,8 @@ float App::render_timeline_bar() {
             ImGui::BeginChild("##offsets",
                               ImVec2(0, row_h * visible_offset_rows),
                               false);
-            for (std::size_t i = 0; i < entries_.size(); ++i) {
-                auto& e = entries_[i];
+            for (std::size_t i = 0; i < entries_view().size(); ++i) {
+                auto& e = entries_view()[i];
                 if (!e.source || e.source->frame_count() <= 1) continue;
 
                 // Effective frame for display feedback.
@@ -1069,70 +1107,18 @@ bool filename_less(const std::string& a, const std::string& b) {
 } // namespace
 
 void App::sort_entries_by_name() {
-    // Build a mapping from old index to entry pointer for selected_ fixup
-    std::vector<int> old_indices(entries_.size());
-    std::iota(old_indices.begin(), old_indices.end(), 0);
-
-    // Sort entries and track the permutation
-    std::sort(old_indices.begin(), old_indices.end(), [&](int a, int b) {
-        return filename_less(entries_[a].filename, entries_[b].filename);
-    });
-
-    // Apply permutation
-    std::vector<ImageEntry> sorted;
-    sorted.reserve(entries_.size());
-    for (int idx : old_indices) {
-        sorted.push_back(std::move(entries_[idx]));
-    }
-
-    // Remap selected_ indices
-    std::vector<int> remap(entries_.size());
-    for (int i = 0; i < static_cast<int>(old_indices.size()); i++) {
-        remap[old_indices[i]] = i;
-    }
-    std::set<int> new_selected;
-    for (int s : selected_) {
-        if (s >= 0 && s < static_cast<int>(remap.size())) {
-            new_selected.insert(remap[s]);
-        }
-    }
-    selected_ = std::move(new_selected);
-    entries_ = std::move(sorted);
+    auto remap = library_->sort_with(&filename_less);
+    apply_remap_to_selection(remap);
 }
 
 void App::move_entry(int from, int to) {
     if (from == to) return;
-    if (from < 0 || from >= static_cast<int>(entries_.size())) return;
-    if (to < 0 || to >= static_cast<int>(entries_.size())) return;
+    if (from < 0 || from >= static_cast<int>(entries_view().size())) return;
+    if (to < 0 || to >= static_cast<int>(entries_view().size())) return;
 
-    // Build old-to-new index mapping
-    std::vector<int> remap(entries_.size());
-    std::iota(remap.begin(), remap.end(), 0);
-
-    // Move the entry
-    ImageEntry tmp = std::move(entries_[from]);
-    if (from < to) {
-        for (int i = from; i < to; i++) {
-            entries_[i] = std::move(entries_[i + 1]);
-            remap[i + 1] = i;
-        }
-    } else {
-        for (int i = from; i > to; i--) {
-            entries_[i] = std::move(entries_[i - 1]);
-            remap[i - 1] = i;
-        }
-    }
-    entries_[to] = std::move(tmp);
-    remap[from] = to;
-
-    // Remap selected_ indices
-    std::set<int> new_selected;
-    for (int s : selected_) {
-        if (s >= 0 && s < static_cast<int>(remap.size())) {
-            new_selected.insert(remap[s]);
-        }
-    }
-    selected_ = std::move(new_selected);
+    auto remap = library_->move(static_cast<std::size_t>(from),
+                                static_cast<std::size_t>(to));
+    apply_remap_to_selection(remap);
 }
 
 void App::open_file_dialog() {
@@ -1207,10 +1193,7 @@ void App::load_comparison_config_from_path(const std::string& path) {
     // switch.  Per the task brief, we keep at most one group's worth of
     // images resident in memory, so we also release entries from any
     // previously-loaded config.
-    for (auto& entry : entries_) {
-        if (entry.texture) SDL_DestroyTexture(entry.texture);
-    }
-    entries_.clear();
+    library_->clear();
     selected_.clear();
     swap_ab_ = false;
     for (auto& slot : diff_slots_) {
@@ -1302,10 +1285,7 @@ void App::switch_to_comparison_group(int group_idx) {
     // Release the previous group's images first so we never hold two
     // groups' pixels in memory simultaneously.  This is the main memory
     // lever for configs with many large groups.
-    for (auto& entry : entries_) {
-        if (entry.texture) SDL_DestroyTexture(entry.texture);
-    }
-    entries_.clear();
+    library_->clear();
     selected_.clear();
     swap_ab_ = false;
     for (auto& slot : diff_slots_) {
@@ -1384,7 +1364,7 @@ void App::switch_to_comparison_group(int group_idx) {
     // load_images() inferred from the cached paths.  Match entries back to
     // their original config item by local path so the labelling survives
     // sort_entries_by_name() re-ordering.
-    if (!entries_.empty()) {
+    if (!entries_view().empty()) {
         // Build (local cache path -> group item) lookup for this group.
         // We only populate it for items we actually fetched successfully;
         // everything else keeps its auto-derived filename.
@@ -1404,7 +1384,7 @@ void App::switch_to_comparison_group(int group_idx) {
             if (beg >= end) return {};
             return url.substr(beg, end - beg);
         };
-        for (auto& e : entries_) {
+        for (auto& e : entries_view()) {
             auto it = by_path.find(e.path);
             if (it == by_path.end() || !it->second) continue;
             const auto& item = *it->second;
@@ -1445,8 +1425,8 @@ void App::save_viewport_dialog() {
     get_ab_indices(ab_idx[0], ab_idx[1]);
 
     auto entry_display_mat = [&](int idx) -> cv::Mat {
-        if (idx < 0 || idx >= static_cast<int>(entries_.size())) return {};
-        const auto& e = entries_[idx];
+        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return {};
+        const auto& e = entries_view()[idx];
         const Image* img = e.display_image ? e.display_image.get()
                                            : e.image.get();
         if (!img) return {};
@@ -1462,8 +1442,8 @@ void App::save_viewport_dialog() {
         if (m.empty()) return;
         slot_mats.push_back(m);
         slot_labels.push_back(
-            tag ? (std::string("[") + tag + "] " + entries_[idx].display_label)
-                : entries_[idx].display_label);
+            tag ? (std::string("[") + tag + "] " + entries_view()[idx].display_label)
+                : entries_view()[idx].display_label);
     };
     if (ab_idx[0] >= 0) push_slot(ab_idx[0], "A");
     if (ab_idx[1] >= 0) push_slot(ab_idx[1], "B");
@@ -1705,38 +1685,33 @@ void App::save_viewport_dialog() {
 }
 
 void App::remove_entry(int index) {
-    if (index < 0 || index >= static_cast<int>(entries_.size())) return;
+    if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
 
-    if (entries_[index].texture) {
-        SDL_DestroyTexture(entries_[index].texture);
-    }
-    entries_.erase(entries_.begin() + index);
+    // Snapshot the selection so we can detect membership change after the
+    // remap.  The texture for the removed entry is destroyed by the
+    // library via ITextureUploader.
+    const auto previous_selected = selected_;
+    auto remap = library_->remove(static_cast<std::size_t>(index));
+    apply_remap_to_selection(remap);
 
-    std::set<int> new_selected;
-    for (int s : selected_) {
-        if (s == index) continue;
-        if (s > index) new_selected.insert(s - 1);
-        else new_selected.insert(s);
-    }
     // Membership changed -- reset A/B swap so it doesn't apply to a different pair.
-    if (new_selected != selected_) {
+    if (selected_ != previous_selected) {
         swap_ab_ = false;
     }
-    selected_ = std::move(new_selected);
 
     compute_display_labels();
 diff_dirty_ = true;
 }
 
 void App::compute_display_labels() {
-    if (entries_.empty()) return;
+    if (entries_view().empty()) return;
 
     std::unordered_map<std::string, int> name_counts;
-    for (const auto& entry : entries_) {
+    for (const auto& entry : entries_view()) {
         name_counts[entry.filename]++;
     }
 
-    for (auto& entry : entries_) {
+    for (auto& entry : entries_view()) {
         if (name_counts[entry.filename] > 1) {
             auto sep = entry.path.find_last_of("/\\");
             if (sep != std::string::npos) {
@@ -1755,9 +1730,9 @@ void App::compute_display_labels() {
 }
 
 void App::update_display_image(int index) {
-    if (index < 0 || index >= static_cast<int>(entries_.size())) return;
+    if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
 
-    auto& entry = entries_[index];
+    auto& entry = entries_view()[index];
     if (!entry.image) return;
 
     int target_w = entry.image->info().width;
@@ -1765,8 +1740,8 @@ void App::update_display_image(int index) {
 
     for (int s : selected_) {
         if (s == index) continue;
-        if (s < 0 || s >= static_cast<int>(entries_.size())) continue;
-        const auto& other = entries_[s];
+        if (s < 0 || s >= static_cast<int>(entries_view().size())) continue;
+        const auto& other = entries_view()[s];
         if (other.image) {
             target_w = std::max(target_w, other.image->info().width);
             target_h = std::max(target_h, other.image->info().height);
@@ -1885,11 +1860,11 @@ void App::update_diff_texture() {
 
     int idx_a = -1, idx_b_unused = -1;
     get_ab_indices(idx_a, idx_b_unused);
-    if (idx_a < 0 || idx_a >= static_cast<int>(entries_.size())) return;
+    if (idx_a < 0 || idx_a >= static_cast<int>(entries_view().size())) return;
 
-    const auto* img_a = entries_[idx_a].display_image
-                            ? entries_[idx_a].display_image.get()
-                            : entries_[idx_a].image.get();
+    const auto* img_a = entries_view()[idx_a].display_image
+                            ? entries_view()[idx_a].display_image.get()
+                            : entries_view()[idx_a].image.get();
     if (!img_a) return;
 
     // Build the partner order to match render_viewport()'s slot order:
@@ -1899,7 +1874,7 @@ void App::update_diff_texture() {
     // metrics table row order match what the viewport shows.
     std::vector<int> partners;
     partners.reserve(selected_.size());
-    if (idx_b_unused >= 0 && idx_b_unused < static_cast<int>(entries_.size())) {
+    if (idx_b_unused >= 0 && idx_b_unused < static_cast<int>(entries_view().size())) {
         partners.push_back(idx_b_unused);
     }
     for (int s : selected_) {
@@ -1914,10 +1889,10 @@ void App::update_diff_texture() {
     opts.heatmap_color = state_->heatmap_color;
 
     for (int partner : partners) {
-        if (partner < 0 || partner >= static_cast<int>(entries_.size())) continue;
-        const auto* img_p = entries_[partner].display_image
-                                ? entries_[partner].display_image.get()
-                                : entries_[partner].image.get();
+        if (partner < 0 || partner >= static_cast<int>(entries_view().size())) continue;
+        const auto* img_p = entries_view()[partner].display_image
+                                ? entries_view()[partner].display_image.get()
+                                : entries_view()[partner].image.get();
         if (!img_p) continue;
 
         auto diff = comparator.compute_difference(*img_a, *img_p, opts);
@@ -1997,7 +1972,7 @@ void App::render_toolbar() {
             }
             if (ImGui::MenuItem("Save Viewport As...", "Ctrl+S",
                                  false,
-                                 !entries_.empty())) {
+                                 !entries_view().empty())) {
                 save_viewport_dialog();
             }
             ImGui::Separator();
@@ -2091,8 +2066,8 @@ void App::render_toolbar() {
                         state_->viewport->set_channel_view_mode(m);
                         last_channel_view_mode_ = m;
                         for (int s : selected_) {
-                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                                entries_[s].texture_dirty = true;
+                            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                                entries_view()[s].texture_dirty = true;
                             }
                         }
                     }
@@ -2127,8 +2102,8 @@ void App::render_toolbar() {
                     if (ImGui::Selectable(view_background_label(b), is_selected)) {
                         state_->viewport->set_view_background(b);
                         for (int s : selected_) {
-                            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                                entries_[s].texture_dirty = true;
+                            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                                entries_view()[s].texture_dirty = true;
                             }
                         }
                     }
@@ -2212,8 +2187,8 @@ diff_dirty_ = true;
         int ab_idx[2] = {-1, -1};
         get_ab_indices(ab_idx[0], ab_idx[1]);
 
-        for (int i = 0; i < static_cast<int>(entries_.size()); i++) {
-            auto& entry = entries_[i];
+        for (int i = 0; i < static_cast<int>(entries_view().size()); i++) {
+            auto& entry = entries_view()[i];
             ImGui::PushID(i);
 
             bool is_sel = selected_.count(i) > 0;
@@ -2236,8 +2211,8 @@ diff_dirty_ = true;
                 swap_ab_ = false;
                 // Selection change affects upscale targets for all selected images
                 for (int s : selected_) {
-                    if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                        entries_[s].texture_dirty = true;
+                    if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                        entries_view()[s].texture_dirty = true;
                     }
                 }
 diff_dirty_ = true;
@@ -2376,7 +2351,7 @@ diff_dirty_ = true;
                             // auto-selected input+output from a previous
                             // SR run) to spawn duplicate tasks.
                             std::vector<std::filesystem::path> inputs;
-                            inputs.emplace_back(entries_[i].path);
+                            inputs.emplace_back(entries_view()[i].path);
                             if (!sr_dialog_) {
                                 sr_dialog_ = std::make_unique<SRDialogState>();
                             }
@@ -2398,7 +2373,7 @@ diff_dirty_ = true;
     }
     ImGui::EndChild();
 
-    if (entries_.empty()) {
+    if (entries_view().empty()) {
         ImGui::TextDisabled("No images loaded.");
         ImGui::TextDisabled("Ctrl+O or click '+' to add.");
     }
@@ -2422,10 +2397,10 @@ void App::render_viewport() {
 
     // Upload dirty textures for selected images
     for (int s : selected_) {
-        if (s >= 0 && s < static_cast<int>(entries_.size())) {
-            if (entries_[s].texture_dirty) {
+        if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+            if (entries_view()[s].texture_dirty) {
                 update_display_image(s);
-                upload_texture(entries_[s]);
+                upload_texture(entries_view()[s]);
             }
         }
     }
@@ -2451,8 +2426,8 @@ void App::render_viewport() {
     get_ab_indices(ab_idx[0], ab_idx[1]);
 
     auto push_entry = [&](int s, const char* prefix) {
-        if (s < 0 || s >= static_cast<int>(entries_.size())) return;
-        const auto& e = entries_[s];
+        if (s < 0 || s >= static_cast<int>(entries_view().size())) return;
+        const auto& e = entries_view()[s];
         tex_ptrs.push_back(e.texture);
         // Report the source image's native pixel dimensions, not the SDL
         // texture size.  When two selected images differ in resolution,
@@ -2489,13 +2464,13 @@ void App::render_viewport() {
         int max_id = 1;
         for (int slot = 0; slot < static_cast<int>(viewport_slot_to_entry_.size()); slot++) {
             int entry_idx = viewport_slot_to_entry_[slot];
-            if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
-                for (const auto& m : entries_[entry_idx].measurements) {
+            if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_view().size())) {
+                for (const auto& m : entries_view()[entry_idx].measurements) {
                     Measurement copy = m;
                     copy.source_cell_index = slot;
                     vp.add_measurement(copy);
                 }
-                max_id = std::max(max_id, entries_[entry_idx].next_measurement_id);
+                max_id = std::max(max_id, entries_view()[entry_idx].next_measurement_id);
             }
         }
         vp.set_next_measurement_id(max_id);
@@ -2593,10 +2568,10 @@ void App::render_viewport() {
                     int slot = committed->source_cell_index;
                     if (slot >= 0 && slot < static_cast<int>(viewport_slot_to_entry_.size())) {
                         int entry_idx = viewport_slot_to_entry_[slot];
-                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
-                            entries_[entry_idx].measurements.push_back(*committed);
-                            entries_[entry_idx].next_measurement_id =
-                                std::max(entries_[entry_idx].next_measurement_id,
+                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_view().size())) {
+                            entries_view()[entry_idx].measurements.push_back(*committed);
+                            entries_view()[entry_idx].next_measurement_id =
+                                std::max(entries_view()[entry_idx].next_measurement_id,
                                          committed->id + 1);
                         }
                     }
@@ -2776,7 +2751,7 @@ void App::render_viewport() {
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
-        bool can_save = !entries_.empty() &&
+        bool can_save = !entries_view().empty() &&
                         (!selected_.empty() ||
                          (vp.mode() == ComparisonMode::Difference && !diff_slots_.empty()));
         ImGui::BeginDisabled(!can_save);
@@ -2845,8 +2820,8 @@ diff_dirty_ = true;
                 // Also clear from the owning entries so they don't
                 // reappear on the next selection change.
                 for (int entry_idx : viewport_slot_to_entry_) {
-                    if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
-                        entries_[entry_idx].measurements.clear();
+                    if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_view().size())) {
+                        entries_view()[entry_idx].measurements.clear();
                     }
                 }
             }
@@ -2894,8 +2869,8 @@ diff_dirty_ = true;
         int a_lbl_idx = -1, b_unused = -1;
         get_ab_indices(a_lbl_idx, b_unused);
         std::string a_name = (a_lbl_idx >= 0 &&
-                              a_lbl_idx < static_cast<int>(entries_.size()))
-                                  ? entries_[a_lbl_idx].display_label
+                              a_lbl_idx < static_cast<int>(entries_view().size()))
+                                  ? entries_view()[a_lbl_idx].display_label
                                   : std::string("A");
         for (const auto& slot : diff_slots_) {
             diff_tex_ptrs.push_back(slot.texture);
@@ -2903,8 +2878,8 @@ diff_dirty_ = true;
             diff_tex_hs.push_back(slot.tex_h);
             std::string partner_name;
             if (slot.partner_entry_idx >= 0 &&
-                slot.partner_entry_idx < static_cast<int>(entries_.size())) {
-                partner_name = entries_[slot.partner_entry_idx].display_label;
+                slot.partner_entry_idx < static_cast<int>(entries_view().size())) {
+                partner_name = entries_view()[slot.partner_entry_idx].display_label;
             } else {
                 partner_name = "?";
             }
@@ -2923,8 +2898,8 @@ diff_dirty_ = true;
     if (vp.channel_view_mode() != last_channel_view_mode_) {
         last_channel_view_mode_ = vp.channel_view_mode();
         for (int s : selected_) {
-            if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                entries_[s].texture_dirty = true;
+            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                entries_view()[s].texture_dirty = true;
             }
         }
     }
@@ -2936,7 +2911,7 @@ diff_dirty_ = true;
     // processed during draw_measurements) back to the owning entries.
     int deleted_id;
     while ((deleted_id = vp.consume_pending_delete()) >= 0) {
-        for (auto& entry : entries_) {
+        for (auto& entry : entries_view()) {
             auto& ms = entry.measurements;
             ms.erase(std::remove_if(ms.begin(), ms.end(),
                                     [deleted_id](const Measurement& m) {
@@ -2960,8 +2935,8 @@ void App::render_right_sidebar() {
     get_ab_indices(ab_idx[0], ab_idx[1]);
 
     auto get_entry = [&](int idx) -> const ImageEntry* {
-        if (idx < 0 || idx >= static_cast<int>(entries_.size())) return nullptr;
-        return &entries_[idx];
+        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return nullptr;
+        return &entries_view()[idx];
     };
     const ImageEntry* entry_a = get_entry(ab_idx[0]);
     const ImageEntry* entry_b = get_entry(ab_idx[1]);
@@ -2995,8 +2970,8 @@ void App::render_right_sidebar() {
                 std::vector<std::pair<std::string, const Image*>> partners;
                 auto add_partner = [&](int idx) {
                     if (idx < 0 ||
-                        idx >= static_cast<int>(entries_.size())) return;
-                    const auto& e = entries_[idx];
+                        idx >= static_cast<int>(entries_view().size())) return;
+                    const auto& e = entries_view()[idx];
                     const Image* disp = e.display_image
                                             ? e.display_image.get()
                                             : e.image.get();
@@ -3019,8 +2994,8 @@ void App::render_right_sidebar() {
 
                 // A first, then B, then remaining selected (same order as viewport)
                 auto add_entry = [&](int idx, const char* prefix) {
-                    if (idx < 0 || idx >= static_cast<int>(entries_.size())) return;
-                    const auto& e = entries_[idx];
+                    if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return;
+                    const auto& e = entries_view()[idx];
                     const Image* disp = e.display_image ? e.display_image.get()
                                                         : e.image.get();
                     if (!disp) return;
@@ -3053,8 +3028,8 @@ void App::render_right_sidebar() {
                 slot_labels.reserve(viewport_slot_to_entry_.size());
                 for (int entry_idx : viewport_slot_to_entry_) {
                     if (entry_idx >= 0 &&
-                        entry_idx < static_cast<int>(entries_.size())) {
-                        slot_storage.push_back(entries_[entry_idx].display_label);
+                        entry_idx < static_cast<int>(entries_view().size())) {
+                        slot_storage.push_back(entries_view()[entry_idx].display_label);
                     } else {
                         slot_storage.emplace_back("(unknown)");
                     }
@@ -3067,13 +3042,13 @@ void App::render_right_sidebar() {
                 // Sync deletions back to the owning entries.
                 if (clear_all) {
                     for (int entry_idx : viewport_slot_to_entry_) {
-                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_.size())) {
-                            entries_[entry_idx].measurements.clear();
+                        if (entry_idx >= 0 && entry_idx < static_cast<int>(entries_view().size())) {
+                            entries_view()[entry_idx].measurements.clear();
                         }
                     }
                 }
                 for (int del_id : deleted_ids) {
-                    for (auto& entry : entries_) {
+                    for (auto& entry : entries_view()) {
                         auto& ms = entry.measurements;
                         ms.erase(std::remove_if(ms.begin(), ms.end(),
                                                 [del_id](const Measurement& m) {
@@ -3307,8 +3282,8 @@ void App::poll_sr_tasks() {
 
             // Find the newly added entry by path (sort-safe).
             int new_idx = -1;
-            for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-                if (entries_[i].path == output_path_str) {
+            for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+                if (entries_view()[i].path == output_path_str) {
                     new_idx = i;
                     break;
                 }
@@ -3316,18 +3291,18 @@ void App::poll_sr_tasks() {
 
             // Find the original input entry by path (sort-safe).
             int input_idx = -1;
-            for (int i = 0; i < static_cast<int>(entries_.size()); ++i) {
-                if (entries_[i].path == task.input_path) {
+            for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+                if (entries_view()[i].path == task.input_path) {
                     input_idx = i;
                     break;
                 }
             }
 
             if (new_idx >= 0) {
-                auto& new_entry = entries_[new_idx];
+                auto& new_entry = entries_view()[new_idx];
                 std::string input_name;
                 if (input_idx >= 0) {
-                    input_name = entries_[input_idx].filename;
+                    input_name = entries_view()[input_idx].filename;
                 } else {
                     input_name = new_entry.filename;
                 }
@@ -3353,8 +3328,8 @@ void App::poll_sr_tasks() {
 
                 // Mark textures for upload
                 for (int s : selected_) {
-                    if (s >= 0 && s < static_cast<int>(entries_.size())) {
-                        entries_[s].texture_dirty = true;
+                    if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                        entries_view()[s].texture_dirty = true;
                     }
                 }
             }
@@ -3414,7 +3389,7 @@ void App::render_status_bar() {
         if (ImGui::BeginMenuBar()) {
             char buf[1024];
             int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
-                                   entries_.size(), selected_.size());
+                                   entries_view().size(), selected_.size());
             auto append = [&](const char* fmt, ...) {
                 if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) return;
                 va_list ap;
@@ -3426,11 +3401,11 @@ void App::render_status_bar() {
 
             int ab_idx[2] = {-1, -1};
             get_ab_indices(ab_idx[0], ab_idx[1]);
-            if (ab_idx[0] >= 0 && ab_idx[0] < static_cast<int>(entries_.size())) {
-                append(" | A: %s", entries_[ab_idx[0]].display_label.c_str());
+            if (ab_idx[0] >= 0 && ab_idx[0] < static_cast<int>(entries_view().size())) {
+                append(" | A: %s", entries_view()[ab_idx[0]].display_label.c_str());
             }
-            if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries_.size())) {
-                append(" | B: %s", entries_[ab_idx[1]].display_label.c_str());
+            if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries_view().size())) {
+                append(" | B: %s", entries_view()[ab_idx[1]].display_label.c_str());
             }
             int extra = static_cast<int>(selected_.size()) -
                         ((ab_idx[0] >= 0 ? 1 : 0) + (ab_idx[1] >= 0 ? 1 : 0));
@@ -3462,15 +3437,15 @@ void App::render_status_bar() {
                         std::string partner = "?";
                         if (slot.partner_entry_idx >= 0 &&
                             slot.partner_entry_idx <
-                                static_cast<int>(entries_.size())) {
+                                static_cast<int>(entries_view().size())) {
                             partner =
-                                entries_[slot.partner_entry_idx].display_label;
+                                entries_view()[slot.partner_entry_idx].display_label;
                         }
                         int a_idx = -1, b_unused = -1;
                         get_ab_indices(a_idx, b_unused);
                         std::string a_name = (a_idx >= 0 &&
-                                              a_idx < static_cast<int>(entries_.size()))
-                                                  ? entries_[a_idx].display_label
+                                              a_idx < static_cast<int>(entries_view().size()))
+                                                  ? entries_view()[a_idx].display_label
                                                   : std::string("A");
                         diff_label = "Diff: " + a_name + " vs " + partner;
                         src_label = diff_label.c_str();
@@ -3480,8 +3455,8 @@ void App::render_status_bar() {
                 } else if (cell >= 0 &&
                            cell < static_cast<int>(viewport_slot_to_entry_.size())) {
                     int ent = viewport_slot_to_entry_[cell];
-                    if (ent >= 0 && ent < static_cast<int>(entries_.size())) {
-                        const auto& e = entries_[ent];
+                    if (ent >= 0 && ent < static_cast<int>(entries_view().size())) {
+                        const auto& e = entries_view()[ent];
                         // Hover px/py from the viewport are in the source
                         // image's native coordinate system (see push_entry
                         // in render_viewport), so read pixels from the

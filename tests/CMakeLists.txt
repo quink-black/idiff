@@ -11,6 +11,7 @@ add_executable(idiff_tests
     test_channel_view.cpp
     test_logger.cpp
     test_io_interfaces.cpp
+    test_image_library.cpp
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
@@ -30,8 +31,7 @@ target_include_directories(idiff_tests PRIVATE
 )
 
 target_link_libraries(idiff_tests PRIVATE
-    idiff_core
-    idiff_util
+    idiff_domain
     imgui
     SDL2::SDL2
     nfd::nfd

@@ -28,8 +28,7 @@ else()
 endif()
 
 target_link_libraries(idiff PRIVATE
-    idiff_core
-    idiff_util
+    idiff_domain
     imgui
     SDL2::SDL2
     SDL2::SDL2main
