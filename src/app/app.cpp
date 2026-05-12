@@ -3,6 +3,7 @@
 #include "app/status_reporter.h"
 #include "app/ui/dialogs.h"
 #include "app/ui/status_bar.h"
+#include "app/ui/toolbar.h"
 #include "app/ui/yuv_dialog.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
@@ -1252,161 +1253,32 @@ void App::upload_texture(ImageEntry& entry) {
 }
 
 void App::render_toolbar() {
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Images...", "Ctrl+O")) {
-                open_file_dialog();
+    ToolbarInputs in;
+    in.viewport = state_->viewport.get();
+    in.show_image_list = &state_->show_image_list;
+    in.show_inspector = &state_->show_inspector;
+    in.upscale_method = &state_->upscale_method;
+    in.any_entries_loaded = !entries_view().empty();
+    in.get_loader_backend = [this]() { return controller_->loader_backend(); };
+    in.set_loader_backend = [this](LoaderBackend b) {
+        controller_->set_loader_backend(b);
+    };
+    in.on_open_files = [this]() { open_file_dialog(); };
+    in.on_open_comparison_config = [this]() { open_comparison_config_dialog(); };
+    in.on_save_viewport = [this]() { save_viewport_dialog(); };
+    in.on_request_quit = [this]() { request_quit(); };
+    in.on_reload_all_images = [this]() { reload_all_images(); };
+    in.on_view_invalidated = [this]() {
+        // Sync the cached channel-view mode so render_viewport's detection
+        // does not fire a redundant dirty pass on the next frame.
+        last_channel_view_mode_ = state_->viewport->channel_view_mode();
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                entries_view()[s].texture_dirty = true;
             }
-            if (ImGui::MenuItem("Open Comparison Config...")) {
-                open_comparison_config_dialog();
-            }
-            if (ImGui::MenuItem("Save Viewport As...", "Ctrl+S",
-                                 false,
-                                 !entries_view().empty())) {
-                save_viewport_dialog();
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Quit", "Alt+F4")) {
-                request_quit();
-            }
-            ImGui::EndMenu();
         }
-
-        if (ImGui::BeginMenu("View")) {
-            ImGui::MenuItem("Image List", nullptr, &state_->show_image_list);
-            ImGui::MenuItem("Inspector", nullptr, &state_->show_inspector);
-
-            if (ImGui::BeginMenu("Image Loader")) {
-                // Let the user compare decoding output between backends at
-                // runtime.  Switching reloads all currently-open images so
-                // the viewport immediately reflects the new backend.  A
-                // backend entry is disabled (and annotated) when it was
-                // not compiled into this build.
-                auto loader_item = [&](LoaderBackend b) {
-                    const bool available = ImageLoader::has_backend(b);
-                    const bool selected = (controller_->loader_backend() == b);
-                    std::string label = ImageLoader::backend_name(b);
-                    if (!available) label += "  (not compiled in)";
-                    if (ImGui::MenuItem(label.c_str(), nullptr, selected,
-                                        available && !selected)) {
-                        controller_->set_loader_backend(b);
-                        reload_all_images();
-                    }
-                };
-                loader_item(LoaderBackend::ImageMagick);
-                loader_item(LoaderBackend::OpenCV);
-                ImGui::EndMenu();
-            }
-
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Upscale")) {
-            bool is_nearest = state_->upscale_method == UpscaleMethod::Nearest;
-            bool is_bilinear = state_->upscale_method == UpscaleMethod::Bilinear;
-            bool is_bicubic = state_->upscale_method == UpscaleMethod::Bicubic;
-            bool is_lanczos = state_->upscale_method == UpscaleMethod::Lanczos;
-
-            if (ImGui::Checkbox("Nearest", &is_nearest) && is_nearest) {
-                state_->upscale_method = UpscaleMethod::Nearest;
-            }
-            if (ImGui::Checkbox("Bilinear", &is_bilinear) && is_bilinear) {
-                state_->upscale_method = UpscaleMethod::Bilinear;
-            }
-            if (ImGui::Checkbox("Bicubic", &is_bicubic) && is_bicubic) {
-                state_->upscale_method = UpscaleMethod::Bicubic;
-            }
-            if (ImGui::Checkbox("Lanczos", &is_lanczos) && is_lanczos) {
-                state_->upscale_method = UpscaleMethod::Lanczos;
-            }
-
-            ImGui::EndMenu();
-        }
-
-        ImGui::Separator();
-        if (ImGui::SmallButton("+ Open")) {
-            open_file_dialog();
-        }
-
-        // Channel view selector -- always visible in the toolbar so users
-        // can discover it even without images loaded.
-        {
-            ImGui::SameLine();
-            ImGui::Spacing();
-            ImGui::SameLine();
-            ChannelViewMode cv_mode = state_->viewport->channel_view_mode();
-            const char* preview = channel_view_mode_label(cv_mode);
-            ImGui::SetNextItemWidth(120.0f);
-            if (ImGui::BeginCombo("##channel_view", preview)) {
-                static constexpr ChannelViewMode modes[] = {
-                    ChannelViewMode::None,
-                    ChannelViewMode::RGB,
-                    ChannelViewMode::R,
-                    ChannelViewMode::G,
-                    ChannelViewMode::B,
-                    ChannelViewMode::AlphaGray,
-                    ChannelViewMode::AlphaContour,
-                    ChannelViewMode::Y,
-                    ChannelViewMode::U,
-                    ChannelViewMode::V,
-                };
-                for (auto m : modes) {
-                    bool is_selected = (cv_mode == m);
-                    if (ImGui::Selectable(channel_view_mode_label(m), is_selected)) {
-                        state_->viewport->set_channel_view_mode(m);
-                        last_channel_view_mode_ = m;
-                        for (int s : selection_->indices()) {
-                            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                                entries_view()[s].texture_dirty = true;
-                            }
-                        }
-                    }
-                    if (is_selected) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("Channel");
-        }
-
-        // Background selector for RGBA compositing.
-        {
-            ImGui::SameLine();
-            ImGui::Spacing();
-            ImGui::SameLine();
-            ViewBackground cur_bg = state_->viewport->view_background();
-            const char* bg_preview = view_background_label(cur_bg);
-            ImGui::SetNextItemWidth(110.0f);
-            if (ImGui::BeginCombo("##view_bg", bg_preview)) {
-                static constexpr ViewBackground bgs[] = {
-                    ViewBackground::Black,
-                    ViewBackground::White,
-                    ViewBackground::Red,
-                    ViewBackground::Green,
-                    ViewBackground::Blue,
-                    ViewBackground::DarkChecker,
-                    ViewBackground::LightChecker,
-                };
-                for (auto b : bgs) {
-                    bool is_selected = (cur_bg == b);
-                    if (ImGui::Selectable(view_background_label(b), is_selected)) {
-                        state_->viewport->set_view_background(b);
-                        for (int s : selection_->indices()) {
-                            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                                entries_view()[s].texture_dirty = true;
-                            }
-                        }
-                    }
-                    if (is_selected) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("BG");
-        }
-
-        ImGui::EndMainMenuBar();
-    }
+    };
+    idiff::render_toolbar(in);
 }
 
 void App::render_image_list() {

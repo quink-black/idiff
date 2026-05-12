@@ -14,6 +14,7 @@ add_executable(idiff
     io/file_dialog.cpp
     ui/dialogs.cpp
     ui/status_bar.cpp
+    ui/toolbar.cpp
     ui/yuv_dialog.cpp
 )
 
