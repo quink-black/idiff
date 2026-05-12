@@ -2,6 +2,7 @@
 #include "app/controller.h"
 #include "app/status_reporter.h"
 #include "app/ui/dialogs.h"
+#include "app/ui/status_bar.h"
 #include "app/ui/yuv_dialog.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
@@ -757,116 +758,11 @@ void App::sync_entries_to_timeline() {
 }
 
 float App::render_timeline_bar() {
-    const int length = timeline_length();
-    if (length <= 1) return 0.0f;
-
-    // Clamp the shared index once per frame so any external mutation
-    // (e.g. adding / removing entries) can't leave it past the new end.
-    timeline_->clamp_to_length(entries_view());
-
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float row_h = ImGui::GetFrameHeightWithSpacing();
-
-    // Height: one row for the slider + one row per multi-frame entry
-    // (capped to 4 so a large number of streams doesn't consume the
-    // whole window -- the scrollable child handles overflow).
-    int offset_rows = 0;
-    for (const auto& e : entries_view()) {
-        if (e.source && e.source->frame_count() > 1) offset_rows++;
-    }
-    const int visible_offset_rows = std::min(offset_rows, 4);
-    const float bar_h = row_h * (1.0f + visible_offset_rows) + 8.0f;
-
-    // Position directly above the status bar.
-    const float status_bar_h = ImGui::GetFrameHeightWithSpacing();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x,
-                                    vp->WorkPos.y + vp->WorkSize.y
-                                    - status_bar_h - bar_h));
-    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, bar_h));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
-
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-                              ImGuiWindowFlags_NoResize |
-                              ImGuiWindowFlags_NoMove |
-                              ImGuiWindowFlags_NoCollapse |
-                              ImGuiWindowFlags_NoDocking |
-                              ImGuiWindowFlags_NoBringToFrontOnFocus |
-                              ImGuiWindowFlags_NoNavFocus |
-                              ImGuiWindowFlags_NoSavedSettings;
-
-    bool frame_changed = false;
-
-    if (ImGui::Begin("##timeline", nullptr, flags)) {
-        // Prev / Next buttons around the slider for precise single-step
-        // scrubbing.  The slider uses length-1 as the max so the label
-        // reads as a frame index (0..N-1).
-        if (ImGui::SmallButton("<")) {
-            if (timeline_->current_frame() > 0) {
-                timeline_->set_current_frame(timeline_->current_frame() - 1);
-                frame_changed = true;
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton(">")) {
-            if (timeline_->current_frame() < length - 1) {
-                timeline_->set_current_frame(timeline_->current_frame() + 1);
-                frame_changed = true;
-            }
-        }
-        ImGui::SameLine();
-
-        int frame = timeline_->current_frame();
-        ImGui::SetNextItemWidth(-200.0f);  // leave room for the label
-        if (ImGui::SliderInt("##frame", &frame, 0, length - 1,
-                             "Frame %d")) {
-            timeline_->set_current_frame(frame);
-            frame_changed = true;
-        }
-        ImGui::SameLine();
-        ImGui::Text("of %d", length);
-
-        // Per-entry offsets.  Wrap in a scrollable child so many streams
-        // don't blow up the status strip.
-        if (offset_rows > 0) {
-            ImGui::BeginChild("##offsets",
-                              ImVec2(0, row_h * visible_offset_rows),
-                              false);
-            for (std::size_t i = 0; i < entries_view().size(); ++i) {
-                auto& e = entries_view()[i];
-                if (!e.source || e.source->frame_count() <= 1) continue;
-
-                // Effective frame for display feedback.
-                int effective = timeline_->current_frame() + e.frame_offset;
-                if (effective < 0) effective = 0;
-                int cnt = e.source->frame_count();
-                if (effective >= cnt) effective = cnt - 1;
-
-                ImGui::PushID(static_cast<int>(i));
-                ImGui::TextUnformatted(e.filename.c_str());
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(160.0f);
-                int off = e.frame_offset;
-                if (ImGui::InputInt("offset", &off, 1, 10)) {
-                    if (off != e.frame_offset) {
-                        e.frame_offset = off;
-                        frame_changed = true;
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("-> frame %d / %d", effective, cnt - 1);
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-        }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
-
-    if (frame_changed) {
-        sync_entries_to_timeline();
-    }
-
-    return bar_h;
+    TimelineBarInputs in;
+    in.entries = &entries_view();
+    in.timeline = timeline_;
+    in.on_frame_changed = [this]() { sync_entries_to_timeline(); };
+    return idiff::render_timeline_bar(in);
 }
 
 void App::sort_entries_by_name() {
@@ -2590,171 +2486,17 @@ void App::poll_sr_tasks() {
 }
 
 void App::render_status_bar() {
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-
-    // Height must accommodate the menu bar we draw inside.  Using the
-    // current frame height (with spacing) keeps the bar aligned with the
-    // font size / DPI scale, rather than hard-coding a pixel count that is
-    // wrong at non-default scales.  MUST match the reservation made in
-    // frame() so the DockSpace and the status bar tile exactly.
-    float bar_h = ImGui::GetFrameHeightWithSpacing();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x,
-                                    vp->WorkPos.y + vp->WorkSize.y - bar_h));
-    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, bar_h));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
-
-    // Without NoTitleBar the default ImGui title bar consumes the whole
-    // 24-px slot and the MenuBar (where we actually draw the status text)
-    // gets clipped to zero height, making the whole bar invisible.  Also
-    // lock the window in place so users cannot accidentally move/resize it.
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-                              ImGuiWindowFlags_NoResize |
-                              ImGuiWindowFlags_NoMove |
-                              ImGuiWindowFlags_NoCollapse |
-                              ImGuiWindowFlags_NoDocking |
-                              ImGuiWindowFlags_NoBringToFrontOnFocus |
-                              ImGuiWindowFlags_NoNavFocus |
-                              ImGuiWindowFlags_NoScrollbar |
-                              ImGuiWindowFlags_NoSavedSettings |
-                              ImGuiWindowFlags_MenuBar;
-
-    if (ImGui::Begin("##statusbar", nullptr, flags)) {
-        if (ImGui::BeginMenuBar()) {
-            char buf[1024];
-            int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
-                                   entries_view().size(), selection_->size());
-            auto append = [&](const char* fmt, ...) {
-                if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) return;
-                va_list ap;
-                va_start(ap, fmt);
-                int m = std::vsnprintf(buf + n, sizeof(buf) - n, fmt, ap);
-                va_end(ap);
-                if (m > 0) n += m;
-            };
-
-            int ab_idx[2] = {-1, -1};
-            get_ab_indices(ab_idx[0], ab_idx[1]);
-            if (ab_idx[0] >= 0 && ab_idx[0] < static_cast<int>(entries_view().size())) {
-                append(" | A: %s", entries_view()[ab_idx[0]].display_label.c_str());
-            }
-            if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries_view().size())) {
-                append(" | B: %s", entries_view()[ab_idx[1]].display_label.c_str());
-            }
-            int extra = static_cast<int>(selection_->size()) -
-                        ((ab_idx[0] >= 0 ? 1 : 0) + (ab_idx[1] >= 0 ? 1 : 0));
-            if (extra > 0) {
-                append(" (+%d shown, ignored by overlay/diff)", extra);
-            }
-
-            // Hover pixel readout — resolved against the display image that
-            // the viewport actually drew (so coordinates match what's on
-            // screen, even when one image was upscaled to match the other).
-            auto& vport = *state_->viewport;
-            if (vport.hover_valid()) {
-                int cell = vport.hover_cell_index();
-                int px = vport.hover_pixel_x();
-                int py = vport.hover_pixel_y();
-
-                const char* src_label = nullptr;
-                const Image* src_img = nullptr;
-
-                if (vport.mode() == ComparisonMode::Difference) {
-                    // Map the hovered cell back to its diff slot so the
-                    // status bar shows "A vs <partner>" and the pixel
-                    // value comes from the heatmap the user is looking at.
-                    if (cell >= 0 &&
-                        cell < static_cast<int>(diff_service_->size())) {
-                        const auto& slot = diff_service_->slots()[cell];
-                        src_img = slot.image.get();
-                        static thread_local std::string diff_label;
-                        std::string partner = "?";
-                        if (slot.partner_entry_idx >= 0 &&
-                            slot.partner_entry_idx <
-                                static_cast<int>(entries_view().size())) {
-                            partner =
-                                entries_view()[slot.partner_entry_idx].display_label;
-                        }
-                        int a_idx = -1, b_unused = -1;
-                        get_ab_indices(a_idx, b_unused);
-                        std::string a_name = (a_idx >= 0 &&
-                                              a_idx < static_cast<int>(entries_view().size()))
-                                                  ? entries_view()[a_idx].display_label
-                                                  : std::string("A");
-                        diff_label = "Diff: " + a_name + " vs " + partner;
-                        src_label = diff_label.c_str();
-                    } else {
-                        src_label = "Diff";
-                    }
-                } else if (cell >= 0 &&
-                           cell < static_cast<int>(viewport_slot_to_entry_.size())) {
-                    int ent = viewport_slot_to_entry_[cell];
-                    if (ent >= 0 && ent < static_cast<int>(entries_view().size())) {
-                        const auto& e = entries_view()[ent];
-                        // Hover px/py from the viewport are in the source
-                        // image's native coordinate system (see push_entry
-                        // in render_viewport), so read pixels from the
-                        // original image rather than display_image, which
-                        // may be upscaled with interpolated pixels.
-                        src_img = e.image.get();
-                        src_label = e.display_label.c_str();
-                    }
-                }
-
-                append(" | %s @ (%d, %d)", src_label ? src_label : "?", px, py);
-
-                if (src_img) {
-                    const auto& m = src_img->mat();
-                    if (!m.empty() &&
-                        px >= 0 && px < m.cols && py >= 0 && py < m.rows) {
-                        int ch = m.channels();
-                        int depth = m.depth();  // CV_8U = 0, CV_16U = 2
-                        if (depth == 0) {  // 8-bit
-                            const uint8_t* p = m.ptr<uint8_t>(py) + px * ch;
-                            if (ch == 1)      append(" = %u", p[0]);
-                            else if (ch == 3) append(" = (%u, %u, %u)",
-                                                     p[0], p[1], p[2]);
-                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
-                                                     p[0], p[1], p[2], p[3]);
-                        } else if (depth == 2) {  // 16-bit
-                            const uint16_t* p = m.ptr<uint16_t>(py) + px * ch;
-                            if (ch == 1)      append(" = %u", p[0]);
-                            else if (ch == 3) append(" = (%u, %u, %u)",
-                                                     p[0], p[1], p[2]);
-                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
-                                                     p[0], p[1], p[2], p[3]);
-                        }
-                    }
-                }
-            }
-
-            if (!state_->status_text.empty()) {
-                append(" | %s", state_->status_text.c_str());
-            }
-
-            // Show active SR task progress in the status bar
-            if (!sr_service_->empty()) {
-                for (const auto& task : sr_service_->tasks()) {
-                    if (task.engine &&
-                        task.engine->get_status() == SREngineStatus::Running) {
-                        float p = task.engine->get_progress();
-                        if (p >= 0) {
-                            append(" | SR: %d%%", static_cast<int>(p * 100));
-                        } else {
-                            append(" | SR: running...");
-                        }
-                    }
-                }
-            }
-
-            if (!state_->status_msg.empty()) {
-                append(" | %s", state_->status_msg.c_str());
-            }
-            ImGui::TextUnformatted(buf);
-            ImGui::EndMenuBar();
-        }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar();
+    StatusBarInputs in;
+    in.entries = &entries_view();
+    in.selection = selection_;
+    in.viewport = state_->viewport.get();
+    in.diff_service = diff_service_;
+    in.sr_service = sr_service_;
+    in.viewport_slot_to_entry = &viewport_slot_to_entry_;
+    in.status_text = &state_->status_text;
+    in.status_msg = &state_->status_msg;
+    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    idiff::render_status_bar(in);
 }
 
 } // namespace idiff
