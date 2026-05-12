@@ -20,6 +20,7 @@
 // service writes any error messages into a caller-owned string sink.
 
 #include "app/app.h"
+#include "core/channel_view.h"
 #include "core/image_comparator.h"
 
 #include <cstddef>
@@ -41,6 +42,11 @@ public:
         // lookup; matches DifferenceOptions::amplification.  > 0.
         double amplification = 5.0;
         HeatmapColor heatmap_color = HeatmapColor::Inferno;
+        // When set to a single-channel mode (R, G, B, Alpha, Y, U, V),
+        // the diff is computed on that channel only.  ChannelViewMode::None
+        // and ChannelViewMode::RGB mean "diff all RGB channels" (the
+        // previous default behaviour).
+        ChannelViewMode channel_mode = ChannelViewMode::None;
     };
 
     explicit DiffService(ITextureUploader& uploader);

@@ -51,6 +51,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         DiffService::Options opts;
         opts.amplification = *in.diff_amplification;
         opts.heatmap_color = *in.heatmap_color;
+        opts.channel_mode = in.viewport->channel_view_mode();
         diff_service.update(entries, selection, opts, *in.status_text);
     }
 
@@ -549,6 +550,9 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                 entries[s].texture_dirty = true;
             }
         }
+        // The diff must also recompute so the heatmap reflects the
+        // newly-selected channel instead of all-RGB.
+        diff_service.mark_dirty();
     }
 
     ImGui::End();

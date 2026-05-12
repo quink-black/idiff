@@ -1,11 +1,13 @@
 #include "domain/diff_service.h"
 
 #include "app/io/texture_uploader.h"
+#include "core/channel_view.h"
 #include "domain/selection_model.h"
 #include "util/logger.h"
 // Required so unique_ptr<Image> stored on DiffSlot can be destroyed
 // when slots_ is cleared in this TU.
 #include "core/image.h"        // IWYU pragma: keep
+#include "core/image_impl.h"   // Image::Impl (for building single-channel Images)
 #include "core/media_source.h" // IWYU pragma: keep
 
 #include <opencv2/core.hpp>
@@ -15,6 +17,35 @@
 #include <utility>
 
 namespace idiff {
+
+namespace {
+
+// Build a temporary single-channel Image from the source Image by
+// extracting the channel selected by `mode`.  Returns nullptr when the
+// mode is None/RGB (meaning "use all channels") or when the extraction
+// is not applicable to the source format.
+std::unique_ptr<Image> extract_channel_image(const Image& src,
+                                              ChannelViewMode mode) {
+    if (mode == ChannelViewMode::None || mode == ChannelViewMode::RGB)
+        return nullptr;
+
+    // extract_channel_view returns a single-channel (or composited)
+    // cv::Mat.  We use ViewBackground::Black as it is irrelevant for
+    // single-channel extractions.
+    auto mat_opt = extract_channel_view(src.mat(), mode,
+                                        ViewBackground::Black);
+    if (!mat_opt) return nullptr;
+
+    cv::Mat chan = std::move(*mat_opt);
+    auto img = std::make_unique<Image>();
+    img->internal().mat = std::move(chan);
+    img->internal().info = src.info();
+    // Update format metadata to reflect the extracted result.
+    img->internal().info.has_alpha = false;
+    return img;
+}
+
+} // namespace
 
 DiffService::DiffService(ITextureUploader& uploader)
     : uploader_(uploader) {}
@@ -57,6 +88,11 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
                                               : entry_a.image.get();
     if (!img_a) return;
 
+    // When a single-channel view is active, extract that channel from A
+    // once and reuse it for every partner comparison.
+    std::unique_ptr<Image> chan_a = extract_channel_image(*img_a, opts.channel_mode);
+    const Image* eff_a = chan_a ? chan_a.get() : img_a;
+
     // Build the partner order to match the viewport's slot order: B
     // first (the second entry from get_ab_indices), then any other
     // selected entries in their natural selection order.  This keeps
@@ -85,7 +121,12 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
                                                   : entry_p.image.get();
         if (!img_p) continue;
 
-        auto diff = comparator.compute_difference(*img_a, *img_p, diff_opts);
+        // Extract matching channel from the partner when a channel
+        // view is active.
+        std::unique_ptr<Image> chan_p = extract_channel_image(*img_p, opts.channel_mode);
+        const Image* eff_p = chan_p ? chan_p.get() : img_p;
+
+        auto diff = comparator.compute_difference(*eff_a, *eff_p, diff_opts);
         if (!diff) {
             const auto err = "Diff: " + comparator.last_error();
             LOG_WARN("%s", err.c_str());
