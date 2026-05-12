@@ -12,6 +12,7 @@ add_executable(idiff
     sr_dialog.cpp
     io/texture_uploader.cpp
     io/file_dialog.cpp
+    ui/dialogs.cpp
 )
 
 if(APPLE)

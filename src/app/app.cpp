@@ -1,6 +1,7 @@
 #include "app/app.h"
 #include "app/controller.h"
 #include "app/status_reporter.h"
+#include "app/ui/dialogs.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/properties_panel.h"
@@ -62,16 +63,10 @@ class StateStatusReporter : public IStatusReporter {
 public:
     StateStatusReporter(std::string* status_text,
                         std::string* status_msg,
-                        std::string* error_title,
-                        std::string* error_message,
-                        bool* show_error_dialog,
-                        bool* error_dialog_needs_open) noexcept
+                        ErrorDialogState* error_dialog) noexcept
         : status_text_(status_text),
           status_msg_(status_msg),
-          error_title_(error_title),
-          error_message_(error_message),
-          show_error_dialog_(show_error_dialog),
-          error_dialog_needs_open_(error_dialog_needs_open) {}
+          error_dialog_(error_dialog) {}
 
     void set_status(const std::string& text) override {
         *status_text_ = text;
@@ -89,19 +84,16 @@ public:
 
     void show_error(const std::string& title,
                     const std::string& message) override {
-        *error_title_ = title;
-        *error_message_ = message;
-        *show_error_dialog_ = true;
-        *error_dialog_needs_open_ = true;
+        error_dialog_->title = title;
+        error_dialog_->message = message;
+        error_dialog_->visible = true;
+        error_dialog_->needs_open = true;
     }
 
 private:
     std::string* status_text_;
     std::string* status_msg_;
-    std::string* error_title_;
-    std::string* error_message_;
-    bool* show_error_dialog_;
-    bool* error_dialog_needs_open_;
+    ErrorDialogState* error_dialog_;
 };
 
 } // namespace
@@ -118,18 +110,15 @@ struct App::State {
     std::string status_text;
     std::string status_msg;   // Last SR/notification message
 
-    // Error notification popup state.  When show_error_dialog is true,
-    // render_error_dialog() draws a modal with the error details.
-    bool show_error_dialog = false;
-    bool error_dialog_needs_open = false;
-    std::string error_dialog_title;
-    std::string error_dialog_message;
+    // Error notification popup state.  Visible flag, transient open
+    // request, and the title / message strings rendered by the modal.
+    // Mutated by IStatusReporter::show_error and by the dialog's "OK"
+    // button.
+    ErrorDialogState error_dialog;
 
-    // Quit-while-SR-running confirmation dialog state.
-    bool show_quit_confirm_dialog = false;
-    bool quit_confirm_dialog_needs_open = false;
-    // Set to true when the user confirms they want to quit despite running SR.
-    bool quit_confirmed = false;
+    // Quit-while-SR-running confirmation dialog state.  When confirmed
+    // flips to true the next frame() begins the shutdown sequence.
+    QuitConfirmDialogState quit_confirm_dialog;
     bool show_inspector = true;
     bool show_image_list = true;
     int sidebar_tab = 0;
@@ -341,10 +330,7 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->status_reporter = std::make_unique<StateStatusReporter>(
         &state_->status_text,
         &state_->status_msg,
-        &state_->error_dialog_title,
-        &state_->error_dialog_message,
-        &state_->show_error_dialog,
-        &state_->error_dialog_needs_open);
+        &state_->error_dialog);
 
     // Bring up every domain service in one place.  The controller
     // borrows the texture uploader and status reporter by reference,
@@ -2610,38 +2596,7 @@ void App::render_right_sidebar() {
 }
 
 void App::render_error_dialog() {
-    if (!state_->show_error_dialog) return;
-
-    if (state_->error_dialog_needs_open) {
-        ImGui::OpenPopup("Error###error_dialog");
-        state_->error_dialog_needs_open = false;
-    }
-
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
-
-    if (ImGui::BeginPopupModal("Error###error_dialog",
-                               &state_->show_error_dialog,
-                               ImGuiWindowFlags_NoResize)) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                           state_->error_dialog_title.c_str());
-        ImGui::Separator();
-        // Wrap long error messages into a scrollable text region
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440);
-        ImGui::TextUnformatted(state_->error_dialog_message.c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-        ImGui::Separator();
-        float button_width = 120.0f;
-        ImGui::SetCursorPosX(
-            (ImGui::GetWindowWidth() - button_width) * 0.5f);
-        if (ImGui::Button("OK", ImVec2(button_width, 0))) {
-            state_->show_error_dialog = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
+    idiff::render_error_dialog(state_->error_dialog);
 }
 
 bool App::has_running_sr_tasks() const {
@@ -2651,90 +2606,20 @@ bool App::has_running_sr_tasks() const {
 void App::request_quit() {
     if (has_running_sr_tasks()) {
         // Show confirmation dialog instead of quitting immediately.
-        state_->show_quit_confirm_dialog = true;
-        state_->quit_confirm_dialog_needs_open = true;
+        state_->quit_confirm_dialog.visible = true;
+        state_->quit_confirm_dialog.needs_open = true;
     } else {
-        state_->quit_confirmed = true;
+        state_->quit_confirm_dialog.confirmed = true;
     }
 }
 
 bool App::wants_quit() const {
-    return state_->quit_confirmed;
+    return state_->quit_confirm_dialog.confirmed;
 }
 
 void App::render_quit_confirm_dialog() {
-    if (!state_->show_quit_confirm_dialog) return;
-
-    if (state_->quit_confirm_dialog_needs_open) {
-        ImGui::OpenPopup("Quit###quit_confirm_dialog");
-        state_->quit_confirm_dialog_needs_open = false;
-    }
-
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_Appearing);
-
-    if (ImGui::BeginPopupModal("Quit###quit_confirm_dialog",
-                               &state_->show_quit_confirm_dialog,
-                               ImGuiWindowFlags_NoResize)) {
-        // Count running tasks and collect their names for display.
-        int running_count = 0;
-        std::string running_names;
-        for (const auto& task : sr_service_->tasks()) {
-            if (task.engine &&
-                task.engine->get_status() == SREngineStatus::Running) {
-                ++running_count;
-                if (!running_names.empty()) running_names += ", ";
-                // Extract a short name from the status message.
-                running_names += task.status_msg.empty()
-                    ? "unknown"
-                    : task.status_msg;
-            }
-        }
-
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                           "Super resolution in progress");
-        ImGui::Separator();
-        ImGui::Spacing();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 360);
-        if (running_count == 1) {
-            ImGui::TextUnformatted(
-                "A super resolution task is still running. "
-                "Quitting now will cancel it and the output file "
-                "may be incomplete.");
-        } else {
-            char buf[128];
-            std::snprintf(buf, sizeof(buf),
-                          "%d super resolution tasks are still running. "
-                          "Quitting now will cancel them and output files "
-                          "may be incomplete.", running_count);
-            ImGui::TextUnformatted(buf);
-        }
-        ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-        ImGui::Separator();
-
-        float button_width = 140.0f;
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float total_width = button_width * 2 + spacing;
-        ImGui::SetCursorPosX(
-            (ImGui::GetWindowWidth() - total_width) * 0.5f);
-
-        if (ImGui::Button("Quit Anyway", ImVec2(button_width, 0))) {
-            // Cancel all running tasks before quitting.
-            sr_service_->cancel_all();
-            state_->quit_confirmed = true;
-            state_->show_quit_confirm_dialog = false;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Keep Waiting", ImVec2(button_width, 0))) {
-            state_->show_quit_confirm_dialog = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
-    }
+    idiff::render_quit_confirm_dialog(state_->quit_confirm_dialog,
+                                      *sr_service_);
 }
 
 void App::render_sr_dialog() {
@@ -2828,10 +2713,8 @@ void App::poll_sr_tasks() {
         state_->status_msg = fail.status_msg;
         // Persistent error dialog so the user can read the message
         // before the status bar scrolls past.
-        state_->error_dialog_title = "Super Resolution Failed";
-        state_->error_dialog_message = fail.description;
-        state_->show_error_dialog = true;
-        state_->error_dialog_needs_open = true;
+        state_->status_reporter->show_error(
+            "Super Resolution Failed", fail.description);
     }
 }
 
