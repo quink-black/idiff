@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-05-13
+
+### Added
+
+- **Image list context menu**: "Remove Selected" and "Remove All"
+  options alongside the existing per-entry "Remove".
+- **Selection operations in context menu**: Select All, Select Only
+  This, Invert Selection, and Unselect All.
+- **ASAN/UBSAN support**: New `ENABLE_SANITIZERS` CMake option,
+  enabled by default in Debug builds. Force-builds Catch2 from source
+  when active to avoid ABI mismatch.
+
+### Fixed
+
+- Fix missing `<string>` include in timeline_model.h.
+- Fix lambda capture in logger test.
+- Fix file locking in logger test on Windows.
+
 ## [0.1.0] - 2026-05-12
 
 ### Added
