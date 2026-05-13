@@ -12,6 +12,34 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Sanitizers for memory safety debugging
+# By default, sanitizers are ON for Debug builds, OFF for Release builds
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(DEFAULT_SANITIZERS ON)
+else()
+    set(DEFAULT_SANITIZERS OFF)
+endif()
+
+option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" ${DEFAULT_SANITIZERS})
+
+if(ENABLE_SANITIZERS)
+    message(STATUS "Enabling sanitizers: AddressSanitizer and UndefinedBehaviorSanitizer")
+    if(MSVC)
+        add_compile_options(/fsanitize=address)
+        # Emit debug symbols and PDB so ASAN stack traces are readable
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            add_compile_options(/Zi)
+            add_link_options(/DEBUG)
+        endif()
+    else()
+        # GCC/Clang
+        add_compile_options(-fsanitize=address -fsanitize=undefined -g)
+        add_link_options(-fsanitize=address -fsanitize=undefined)
+    endif()
+else()
+    message(STATUS "Sanitizers disabled")
+endif()
+
 # --- Options ---
 
 # ImageMagick is the preferred loader (ICC profiles, wide format coverage,
@@ -80,13 +108,20 @@ find_package(SDL2 REQUIRED CONFIG)
 # --- Dependencies with source-build fallback ---
 
 # Catch2 v3
-find_package(Catch2 3 QUIET)
-if(NOT Catch2_FOUND)
-    message(STATUS "Catch2 not found on system -- will build from source")
+# When sanitizers are enabled, system Catch2 was likely built without ASAN
+# and will cause annotate_vector ABI mismatch on MSVC.  Force source build.
+if(ENABLE_SANITIZERS)
+    message(STATUS "Sanitizers enabled -- building Catch2 from source for ABI compatibility")
     set(IDIFF_BUILD_CATCH2 ON)
 else()
-    message(STATUS "Found system Catch2: ${Catch2_DIR}")
-    set(IDIFF_BUILD_CATCH2 OFF)
+    find_package(Catch2 3 QUIET)
+    if(NOT Catch2_FOUND)
+        message(STATUS "Catch2 not found on system -- will build from source")
+        set(IDIFF_BUILD_CATCH2 ON)
+    else()
+        message(STATUS "Found system Catch2: ${Catch2_DIR}")
+        set(IDIFF_BUILD_CATCH2 OFF)
+    endif()
 endif()
 
 # Native File Dialog Extended
