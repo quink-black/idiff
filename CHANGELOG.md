@@ -14,8 +14,6 @@ All notable changes to this project will be documented in this file.
   right-drag for zoom-to-selection on macOS.
 - **Structured logger**: Console and rotating file sinks with
   configurable log levels, replacing ad-hoc fprintf diagnostics.
-- **Image list context menu**: "Remove Selected" and "Remove All"
-  options alongside the existing per-entry "Remove".
 
 ### Changed
 
