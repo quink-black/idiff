@@ -255,6 +255,26 @@ void render_image_list(const ImageListInputs& in) {
                     }
                     ImGui::Separator();
                 }
+                // Selection operations
+                if (!entries.empty()) {
+                    if (ImGui::MenuItem("Select All")) {
+                        if (in.on_select_all) in.on_select_all();
+                    }
+                }
+                if (ImGui::MenuItem("Select Only This")) {
+                    if (in.on_select_only_this) in.on_select_only_this(i);
+                }
+                if (!entries.empty() && selection.size() < entries.size()) {
+                    if (ImGui::MenuItem("Invert Selection")) {
+                        if (in.on_invert_selection) in.on_invert_selection();
+                    }
+                }
+                if (!selection.empty()) {
+                    if (ImGui::MenuItem("Unselect All")) {
+                        if (in.on_unselect_all) in.on_unselect_all();
+                    }
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Remove")) {
                     if (in.on_remove_entry) in.on_remove_entry(i);
                 }

@@ -1325,6 +1325,40 @@ void App::render_image_list() {
         if (!sr_dialog_) sr_dialog_ = std::make_unique<SRDialogState>();
         sr_dialog_open(*sr_dialog_, inputs, state_->settings);
     };
+    in.on_select_all = [this]() {
+        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+            selection_->insert(i);
+            entries_view()[i].texture_dirty = true;
+        }
+        selection_->set_swap_ab(false);
+        diff_service_->mark_dirty();
+    };
+    in.on_select_only_this = [this](int idx) {
+        selection_->clear();
+        selection_->insert(idx);
+        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+            entries_view()[i].texture_dirty = true;
+        }
+        selection_->set_swap_ab(false);
+        diff_service_->mark_dirty();
+    };
+    in.on_invert_selection = [this]() {
+        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
+            if (selection_->contains(i)) {
+                selection_->erase(i);
+            } else {
+                selection_->insert(i);
+            }
+            entries_view()[i].texture_dirty = true;
+        }
+        selection_->set_swap_ab(false);
+        diff_service_->mark_dirty();
+    };
+    in.on_unselect_all = [this]() {
+        selection_->clear();
+        selection_->set_swap_ab(false);
+        diff_service_->mark_dirty();
+    };
     idiff::render_image_list(in);
 }
 
