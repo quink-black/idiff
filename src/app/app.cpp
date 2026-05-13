@@ -1306,6 +1306,18 @@ void App::render_image_list() {
         [this](int g) { switch_to_comparison_group(g); };
     in.on_move_entry = [this](int from, int to) { move_entry(from, to); };
     in.on_remove_entry = [this](int idx) { remove_entry(idx); };
+    in.on_remove_selected = [this]() {
+        auto sel = selection_->indices();
+        std::vector<int> desc(sel.rbegin(), sel.rend());
+        for (int idx : desc) {
+            remove_entry(idx);
+        }
+    };
+    in.on_remove_all = [this]() {
+        for (int i = static_cast<int>(entries_view().size()) - 1; i >= 0; --i) {
+            remove_entry(i);
+        }
+    };
     in.on_edit_yuv_entry = [this](int idx) { begin_edit_yuv_entry(idx); };
     in.on_open_sr_dialog = [this](int idx) {
         std::vector<std::filesystem::path> inputs;

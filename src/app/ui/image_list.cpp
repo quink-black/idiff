@@ -258,6 +258,19 @@ void render_image_list(const ImageListInputs& in) {
                 if (ImGui::MenuItem("Remove")) {
                     if (in.on_remove_entry) in.on_remove_entry(i);
                 }
+                if (selection.size() >= 2) {
+                    char sel_label[64];
+                    std::snprintf(sel_label, sizeof(sel_label),
+                                  "Remove Selected (%zu)", selection.size());
+                    if (ImGui::MenuItem(sel_label)) {
+                        if (in.on_remove_selected) in.on_remove_selected();
+                    }
+                }
+                if (!entries.empty()) {
+                    if (ImGui::MenuItem("Remove All")) {
+                        if (in.on_remove_all) in.on_remove_all();
+                    }
+                }
                 ImGui::EndPopup();
             }
 

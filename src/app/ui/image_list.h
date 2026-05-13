@@ -54,6 +54,8 @@ struct ImageListInputs {
     std::function<void(int group_idx)> on_switch_comparison_group;
     std::function<void(int from, int to)> on_move_entry;
     std::function<void(int entry_idx)> on_remove_entry;
+    std::function<void()> on_remove_selected;
+    std::function<void()> on_remove_all;
     std::function<void(int entry_idx)> on_edit_yuv_entry;
     std::function<void(int entry_idx)> on_open_sr_dialog;
 };
