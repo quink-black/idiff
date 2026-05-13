@@ -17,6 +17,7 @@
 //
 // Threading: not thread-safe; main thread only.
 
+#include <string>
 #include <vector>
 
 namespace idiff {

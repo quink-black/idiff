@@ -114,7 +114,7 @@ TEST_CASE("logger is safe under concurrent writers", "[logger]") {
     std::vector<std::thread> ts;
     ts.reserve(kThreads);
     for (int t = 0; t < kThreads; ++t) {
-        ts.emplace_back([t]() {
+        ts.emplace_back([t, kPerThread]() {
             for (int i = 0; i < kPerThread; ++i) {
                 LOG_INFO("t%d-i%d", t, i);
             }
