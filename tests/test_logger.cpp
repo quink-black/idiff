@@ -152,10 +152,12 @@ TEST_CASE("rotating file sink writes and rotates", "[logger][file]") {
     REQUIRE(any_backup);
 
     // The most recent file must contain at least one record.
-    std::ifstream in(path);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    REQUIRE_FALSE(ss.str().empty());
+    {
+        std::ifstream in(path);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        REQUIRE_FALSE(ss.str().empty());
+    } // ifstream goes out of scope and closes the file
 
     fs::remove_all(dir);
 }
