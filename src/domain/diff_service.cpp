@@ -160,16 +160,34 @@ void DiffService::upload_slot(DiffSlot& slot) {
     const int w = mat.cols;
     const int h = mat.rows;
     const int channels = mat.channels();
+    const bool is_16bit = (mat.depth() == CV_16U);
 
     // The heatmap arrives in RGB order from image_comparator; SDL
     // texture upload expects RGBA32, so widen to four channels.
+    // 16-bit inputs must be down-converted to 8-bit for SDL upload.
     cv::Mat upload_mat;
     if (channels == 4) {
-        upload_mat = mat;
+        if (is_16bit) {
+            mat.convertTo(upload_mat, CV_8UC4, 1.0 / 257.0);
+        } else {
+            upload_mat = mat;
+        }
     } else if (channels == 3) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
+        if (is_16bit) {
+            cv::Mat rgb8;
+            mat.convertTo(rgb8, CV_8UC3, 1.0 / 257.0);
+            cv::cvtColor(rgb8, upload_mat, cv::COLOR_RGB2RGBA);
+        } else {
+            cv::cvtColor(mat, upload_mat, cv::COLOR_RGB2RGBA);
+        }
     } else if (channels == 1) {
-        cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        if (is_16bit) {
+            cv::Mat gray8;
+            mat.convertTo(gray8, CV_8UC1, 1.0 / 257.0);
+            cv::cvtColor(gray8, upload_mat, cv::COLOR_GRAY2RGBA);
+        } else {
+            cv::cvtColor(mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        }
     } else {
         return;
     }

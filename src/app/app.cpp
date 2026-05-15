@@ -1211,17 +1211,36 @@ void App::upload_texture(ImageEntry& entry) {
     int w = source_mat->cols;
     int h = source_mat->rows;
     int channels = source_mat->channels();
+    const bool is_16bit = (source_mat->depth() == CV_16U);
 
     // Metal backend does not reliably support SDL_PIXELFORMAT_RGB24 (3-byte).
     // Always convert to RGBA32 for upload to avoid rendering artifacts.
+    // 16-bit inputs must be down-converted to 8-bit because SDL texture
+    // upload expects byte-per-channel RGBA.
     cv::Mat upload_mat;
     if (channels == 3) {
-        cv::cvtColor(*source_mat, upload_mat, cv::COLOR_RGB2RGBA);
+        if (is_16bit) {
+            cv::Mat rgb8;
+            source_mat->convertTo(rgb8, CV_8UC3, 1.0 / 257.0);
+            cv::cvtColor(rgb8, upload_mat, cv::COLOR_RGB2RGBA);
+        } else {
+            cv::cvtColor(*source_mat, upload_mat, cv::COLOR_RGB2RGBA);
+        }
         channels = 4;
     } else if (channels == 4) {
-        upload_mat = *source_mat;
+        if (is_16bit) {
+            source_mat->convertTo(upload_mat, CV_8UC4, 1.0 / 257.0);
+        } else {
+            upload_mat = *source_mat;
+        }
     } else if (channels == 1) {
-        cv::cvtColor(*source_mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        if (is_16bit) {
+            cv::Mat gray8;
+            source_mat->convertTo(gray8, CV_8UC1, 1.0 / 257.0);
+            cv::cvtColor(gray8, upload_mat, cv::COLOR_GRAY2RGBA);
+        } else {
+            cv::cvtColor(*source_mat, upload_mat, cv::COLOR_GRAY2RGBA);
+        }
         channels = 4;
     } else {
         return;
