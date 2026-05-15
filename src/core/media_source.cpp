@@ -34,7 +34,9 @@ const char* source_format_name(SourceFormat f) noexcept {
 std::string make_format_desc(const ImageInfo& info) {
     std::string s = source_format_name(info.source_format);
     s += ' ';
-    s += std::to_string(info.bit_depth);
+    int display_depth = (info.source_bit_depth > 0) ? info.source_bit_depth
+                                                     : info.bit_depth;
+    s += std::to_string(display_depth);
     s += "-bit ";
     if (info.has_alpha) {
         s += "RGBA";

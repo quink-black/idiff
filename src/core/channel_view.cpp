@@ -1,4 +1,5 @@
 #include "core/channel_view.h"
+#include "core/depth_utils.h"
 
 #include <algorithm>
 #include <opencv2/imgproc.hpp>
@@ -36,10 +37,6 @@ const char* view_background_label(ViewBackground bg) {
 
 namespace {
 
-bool is_16bit(const cv::Mat& m) {
-    return m.depth() == CV_16U;
-}
-
 cv::Mat extract_single_channel(const cv::Mat& src, int channel_idx) {
     std::vector<cv::Mat> channels;
     cv::split(src, channels);
@@ -47,16 +44,11 @@ cv::Mat extract_single_channel(const cv::Mat& src, int channel_idx) {
 }
 
 // Composite RGBA over a solid color background.
-// Returns RGBA8; 16-bit inputs are downsampled.
+// Returns RGBA8; high-depth inputs are downsampled.
 cv::Mat composite_solid(const cv::Mat& src, uint8_t br, uint8_t bg, uint8_t bb) {
     CV_Assert(src.channels() == 4);
 
-    cv::Mat rgba8;
-    if (src.depth() == CV_16U) {
-        src.convertTo(rgba8, CV_8UC4, 1.0 / 257.0);
-    } else {
-        rgba8 = src;
-    }
+    cv::Mat rgba8 = convert_to_8u(src);
 
     const int h = rgba8.rows;
     const int w = rgba8.cols;
@@ -83,17 +75,12 @@ cv::Mat composite_solid(const cv::Mat& src, uint8_t br, uint8_t bg, uint8_t bb) 
 }
 
 // Composite RGBA over a checkerboard background.
-// Returns RGBA8; 16-bit inputs are downsampled.
+// Returns RGBA8; high-depth inputs are downsampled.
 cv::Mat composite_checkerboard(const cv::Mat& src,
                                 uint8_t light, uint8_t dark, int tile) {
     CV_Assert(src.channels() == 4);
 
-    cv::Mat rgba8;
-    if (src.depth() == CV_16U) {
-        src.convertTo(rgba8, CV_8UC4, 1.0 / 257.0);
-    } else {
-        rgba8 = src;
-    }
+    cv::Mat rgba8 = convert_to_8u(src);
 
     const int h = rgba8.rows;
     const int w = rgba8.cols;
@@ -157,12 +144,7 @@ cv::Mat apply_background(const cv::Mat& src, ViewBackground bg) {
 cv::Mat draw_alpha_contour(const cv::Mat& src) {
     CV_Assert(src.channels() == 4);
 
-    cv::Mat rgba8;
-    if (src.depth() == CV_16U) {
-        src.convertTo(rgba8, CV_8UC4, 1.0 / 257.0);
-    } else {
-        rgba8 = src;
-    }
+    cv::Mat rgba8 = convert_to_8u(src);
 
     const int h = rgba8.rows;
     const int w = rgba8.cols;
@@ -197,8 +179,8 @@ cv::Mat draw_alpha_contour(const cv::Mat& src) {
 }
 
 cv::Mat drop_alpha(const cv::Mat& src) {
-    cv::Mat tmp(src.rows, src.cols,
-                is_16bit(src) ? CV_16UC3 : CV_8UC3);
+    int cv_type = CV_MAKETYPE(src.depth(), 3);
+    cv::Mat tmp(src.rows, src.cols, cv_type);
     int from_to[] = {0, 0, 1, 1, 2, 2};
     cv::mixChannels(&src, 1, &tmp, 1, from_to, 3);
     return tmp;
@@ -273,13 +255,8 @@ std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
             cv::Mat rgb = has_alpha ? drop_alpha(src) : src;
 
             cv::Mat yuv;
-            if (is_16bit(rgb)) {
-                cv::Mat rgb8;
-                rgb.convertTo(rgb8, CV_8UC3, 1.0 / 257.0);
-                cv::cvtColor(rgb8, yuv, cv::COLOR_RGB2YUV);
-            } else {
-                cv::cvtColor(rgb, yuv, cv::COLOR_RGB2YUV);
-            }
+            cv::Mat rgb8 = convert_to_8u(rgb);
+            cv::cvtColor(rgb8, yuv, cv::COLOR_RGB2YUV);
 
             std::vector<cv::Mat> planes;
             cv::split(yuv, planes);

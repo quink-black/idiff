@@ -14,8 +14,8 @@ static std::unique_ptr<Image> make_image(cv::Mat mat, PixelFormat fmt = PixelFor
     img->internal().info.width = mat.cols;
     img->internal().info.height = mat.rows;
     img->internal().info.pixel_format = fmt;
-    img->internal().info.bit_depth = 8;
-    img->internal().info.has_alpha = false;
+    img->internal().info.bit_depth = (fmt == PixelFormat::RGB16 || fmt == PixelFormat::Gray16 || fmt == PixelFormat::RGBA16) ? 16 : 8;
+    img->internal().info.has_alpha = (fmt == PixelFormat::RGBA8 || fmt == PixelFormat::RGBA16);
     img->internal().mat = std::move(mat);
     return img;
 }
@@ -164,4 +164,77 @@ TEST_CASE("MetricsEngine: compute_single on empty image returns nullopt", "[metr
     MetricsEngine engine;
     auto result = engine.compute_single(empty_img);
     REQUIRE_FALSE(result.has_value());
+}
+
+TEST_CASE("MetricsEngine: compute_single on 16-bit image", "[metrics]")
+{
+    // Uniform 16-bit image: mean = pixel value, var = 0
+    cv::Mat data(4, 4, CV_16UC3, cv::Scalar(10000, 30000, 60000));
+    auto img = make_image(data, PixelFormat::RGB16);
+
+    MetricsEngine engine;
+    auto result = engine.compute_single(*img);
+    REQUIRE(result.has_value());
+
+    REQUIRE_THAT(result->mean_r, WithinAbs(60000.0, 1.0));
+    REQUIRE_THAT(result->mean_g, WithinAbs(30000.0, 1.0));
+    REQUIRE_THAT(result->mean_b, WithinAbs(10000.0, 1.0));
+
+    REQUIRE_THAT(result->var_r, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(result->var_g, WithinAbs(0.0, 1e-3));
+    REQUIRE_THAT(result->var_b, WithinAbs(0.0, 1e-3));
+}
+
+TEST_CASE("MetricsEngine: histogram on 16-bit image produces valid output", "[metrics]")
+{
+    // A uniform 16-bit image. After normalization to 8-bit (65535 -> 255),
+    // all pixels should land in bin 255.
+    cv::Mat data(8, 8, CV_16UC3, cv::Scalar(65535, 65535, 65535));
+    auto img = make_image(data, PixelFormat::RGB16);
+
+    MetricsEngine engine;
+    auto hist = engine.compute_histogram(*img);
+    REQUIRE(hist.has_value());
+
+    // All pixels at max -> bin 255 should have all the count
+    REQUIRE(hist->r[255] == 8 * 8);
+    REQUIRE(hist->r[0] == 0);
+}
+
+TEST_CASE("MetricsEngine: histogram on 16-bit zero image", "[metrics]")
+{
+    cv::Mat data(4, 4, CV_16UC3, cv::Scalar(0, 0, 0));
+    auto img = make_image(data, PixelFormat::RGB16);
+
+    MetricsEngine engine;
+    auto hist = engine.compute_histogram(*img);
+    REQUIRE(hist.has_value());
+
+    REQUIRE(hist->r[0] == 4 * 4);
+    REQUIRE(hist->r[255] == 0);
+}
+
+TEST_CASE("MetricsEngine: 16-bit identical images have zero MSE", "[metrics]")
+{
+    cv::Mat data(32, 32, CV_16UC3, cv::Scalar(30000, 40000, 50000));
+    auto a = make_image(data.clone(), PixelFormat::RGB16);
+    auto b = make_image(data.clone(), PixelFormat::RGB16);
+
+    MetricsEngine engine;
+    auto mse = engine.compute_mse(*a, *b);
+    REQUIRE(mse.has_value());
+    REQUIRE_THAT(*mse, WithinAbs(0.0, 1e-6));
+}
+
+TEST_CASE("MetricsEngine: Gray16 compute_single", "[metrics]")
+{
+    cv::Mat data(4, 4, CV_16UC1, cv::Scalar(32768));
+    auto img = make_image(data, PixelFormat::Gray16);
+
+    MetricsEngine engine;
+    auto result = engine.compute_single(*img);
+    REQUIRE(result.has_value());
+    REQUIRE_THAT(result->mean_r, WithinAbs(32768.0, 1.0));
+    REQUIRE_THAT(result->min_r, WithinAbs(32768.0, 1.0));
+    REQUIRE_THAT(result->max_r, WithinAbs(32768.0, 1.0));
 }

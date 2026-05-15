@@ -28,10 +28,14 @@ const char* raw_extensions[] = {
 
 } // namespace
 
-std::unique_ptr<Image> RawLoader::load(const std::string& path) {
+std::unique_ptr<Image> RawLoader::load(const std::string& path, bool keep_16bit) {
     last_error_.clear();
 
     auto raw = std::unique_ptr<LibRaw>(new LibRaw);
+
+    if (keep_16bit) {
+        raw->imgdata.params.output_bps = 16;
+    }
 
     int ret;
 #ifdef _WIN32
@@ -68,10 +72,14 @@ std::unique_ptr<Image> RawLoader::load(const std::string& path) {
     }
 
     cv::Mat mat;
+    const bool is_16 = (processed->bits == 16);
+
     if (processed->colors == 3) {
-        mat = cv::Mat(processed->height, processed->width, CV_8UC3, processed->data);
+        int type = is_16 ? CV_16UC3 : CV_8UC3;
+        mat = cv::Mat(processed->height, processed->width, type, processed->data);
     } else if (processed->colors == 1) {
-        mat = cv::Mat(processed->height, processed->width, CV_8UC1, processed->data);
+        int type = is_16 ? CV_16UC1 : CV_8UC1;
+        mat = cv::Mat(processed->height, processed->width, type, processed->data);
     }
 
     auto image = std::make_unique<Image>();
@@ -79,9 +87,16 @@ std::unique_ptr<Image> RawLoader::load(const std::string& path) {
     image->internal().info.width = processed->width;
     image->internal().info.height = processed->height;
     image->internal().info.source_format = SourceFormat::RAW;
-    image->internal().info.pixel_format = processed->colors == 1
-        ? PixelFormat::Gray8 : PixelFormat::RGB8;
-    image->internal().info.bit_depth = 8;
+
+    if (is_16) {
+        image->internal().info.pixel_format = processed->colors == 1
+            ? PixelFormat::Gray16 : PixelFormat::RGB16;
+        image->internal().info.bit_depth = 16;
+    } else {
+        image->internal().info.pixel_format = processed->colors == 1
+            ? PixelFormat::Gray8 : PixelFormat::RGB8;
+        image->internal().info.bit_depth = 8;
+    }
     image->internal().info.has_alpha = false;
     image->internal().info.color_space = "RAW";
 

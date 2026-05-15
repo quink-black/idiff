@@ -49,6 +49,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "core/channel_view.h"
+#include "core/depth_utils.h"
 #include "core/image_loader.h"
 #include "core/image_processor.h"
 #include "core/image_comparator.h"
@@ -1210,41 +1211,11 @@ void App::upload_texture(ImageEntry& entry) {
 
     int w = source_mat->cols;
     int h = source_mat->rows;
-    int channels = source_mat->channels();
-    const bool is_16bit = (source_mat->depth() == CV_16U);
 
-    // Metal backend does not reliably support SDL_PIXELFORMAT_RGB24 (3-byte).
-    // Always convert to RGBA32 for upload to avoid rendering artifacts.
-    // 16-bit inputs must be down-converted to 8-bit because SDL texture
-    // upload expects byte-per-channel RGBA.
-    cv::Mat upload_mat;
-    if (channels == 3) {
-        if (is_16bit) {
-            cv::Mat rgb8;
-            source_mat->convertTo(rgb8, CV_8UC3, 1.0 / 257.0);
-            cv::cvtColor(rgb8, upload_mat, cv::COLOR_RGB2RGBA);
-        } else {
-            cv::cvtColor(*source_mat, upload_mat, cv::COLOR_RGB2RGBA);
-        }
-        channels = 4;
-    } else if (channels == 4) {
-        if (is_16bit) {
-            source_mat->convertTo(upload_mat, CV_8UC4, 1.0 / 257.0);
-        } else {
-            upload_mat = *source_mat;
-        }
-    } else if (channels == 1) {
-        if (is_16bit) {
-            cv::Mat gray8;
-            source_mat->convertTo(gray8, CV_8UC1, 1.0 / 257.0);
-            cv::cvtColor(gray8, upload_mat, cv::COLOR_GRAY2RGBA);
-        } else {
-            cv::cvtColor(*source_mat, upload_mat, cv::COLOR_GRAY2RGBA);
-        }
-        channels = 4;
-    } else {
-        return;
-    }
+    // Convert to 8-bit RGBA for SDL texture upload. Handles any depth
+    // (CV_8U, CV_16U, CV_32F) and any channel count (1, 3, 4).
+    cv::Mat upload_mat = convert_to_rgba8(*source_mat);
+    if (upload_mat.empty()) return;
 
     Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
     (void)sdl_format;
@@ -1261,7 +1232,7 @@ void App::upload_texture(ImageEntry& entry) {
     req.pixels = upload_mat.ptr<std::uint8_t>();
     req.width = w;
     req.height = h;
-    req.channels = channels;
+    req.channels = 4;
     entry.texture = state_->texture_uploader->upload(req);
     if (!entry.texture) {
         LOG_WARN("texture upload failed for entry %s",

@@ -451,3 +451,72 @@ TEST_CASE("ChannelView: requires_alpha identifies alpha-only modes", "[channel_v
     REQUIRE_FALSE(channel_view_requires_alpha(ChannelViewMode::RGB));
     REQUIRE_FALSE(channel_view_requires_alpha(ChannelViewMode::R));
 }
+
+TEST_CASE("ChannelView: 16-bit RGBA composited on black produces CV_8U", "[channel_view]") {
+    cv::Mat rgba16(4, 4, CV_16UC4, cv::Scalar(65535, 32768, 0, 65535));
+    auto result = extract_channel_view(rgba16, ChannelViewMode::None,
+                                        ViewBackground::Black);
+    REQUIRE(result.has_value());
+    REQUIRE(result->depth() == CV_8U);
+    REQUIRE(result->channels() == 4);
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[0] == 255);
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[3] == 255);
+}
+
+TEST_CASE("ChannelView: 16-bit RGBA composited on white produces CV_8U", "[channel_view]") {
+    cv::Mat rgba16(4, 4, CV_16UC4, cv::Scalar(0, 0, 0, 0));
+    auto result = extract_channel_view(rgba16, ChannelViewMode::None,
+                                        ViewBackground::White);
+    REQUIRE(result.has_value());
+    REQUIRE(result->depth() == CV_8U);
+    // Transparent on white = white
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[0] == 255);
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[1] == 255);
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[2] == 255);
+}
+
+TEST_CASE("ChannelView: 16-bit RGBA composited on checkerboard produces CV_8U", "[channel_view]") {
+    cv::Mat rgba16(16, 16, CV_16UC4, cv::Scalar(0, 0, 0, 0));
+    auto result = extract_channel_view(rgba16, ChannelViewMode::None,
+                                        ViewBackground::DarkChecker);
+    REQUIRE(result.has_value());
+    REQUIRE(result->depth() == CV_8U);
+    REQUIRE(result->channels() == 4);
+    REQUIRE(result->at<cv::Vec4b>(0, 0)[0] > 0);
+}
+
+TEST_CASE("ChannelView: 16-bit AlphaContour produces CV_8U", "[channel_view]") {
+    cv::Mat rgba16(8, 8, CV_16UC4, cv::Scalar(40000, 50000, 60000, 65535));
+    for (int y = 0; y < 8; ++y)
+        for (int x = 4; x < 8; ++x)
+            rgba16.at<cv::Vec4w>(y, x) = cv::Vec4w(40000, 50000, 60000, 0);
+
+    auto result = extract_channel_view(rgba16, ChannelViewMode::AlphaContour,
+                                        ViewBackground::Black);
+    REQUIRE(result.has_value());
+    REQUIRE(result->depth() == CV_8U);
+    REQUIRE(result->channels() == 4);
+}
+
+TEST_CASE("ChannelView: 16-bit None returns clone for non-alpha RGB16", "[channel_view]") {
+    cv::Mat rgb16(4, 4, CV_16UC3, cv::Scalar(10000, 20000, 30000));
+    auto result = extract_channel_view(rgb16, ChannelViewMode::None,
+                                        ViewBackground::Black);
+    REQUIRE(result.has_value());
+    REQUIRE(result->depth() == CV_16U);
+    REQUIRE(result->channels() == 3);
+}
+
+TEST_CASE("ChannelView: 16-bit YUV extraction produces CV_8U", "[channel_view]") {
+    cv::Mat rgb16(4, 4, CV_16UC3, cv::Scalar(65535, 32768, 0));
+    auto y_result = extract_channel_view(rgb16, ChannelViewMode::Y,
+                                          ViewBackground::Black);
+    REQUIRE(y_result.has_value());
+    REQUIRE(y_result->depth() == CV_8U);
+    REQUIRE(y_result->channels() == 1);
+
+    auto u_result = extract_channel_view(rgb16, ChannelViewMode::U,
+                                          ViewBackground::Black);
+    REQUIRE(u_result.has_value());
+    REQUIRE(u_result->depth() == CV_8U);
+}

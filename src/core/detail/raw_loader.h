@@ -12,7 +12,8 @@ namespace idiff {
 class RawLoader {
 public:
     // Decode RAW file to Image with cv::Mat pixels.
-    std::unique_ptr<Image> load(const std::string& path);
+    // When keep_16bit is true, output preserves 16-bit depth from the sensor.
+    std::unique_ptr<Image> load(const std::string& path, bool keep_16bit = false);
 
     // Check if file extension looks like a RAW format.
     static bool is_raw_extension(const std::string& path);

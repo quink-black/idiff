@@ -11,6 +11,7 @@
 #include "domain/timeline_model.h"
 
 #include <imgui.h>
+#include <opencv2/core.hpp>
 
 #include <algorithm>
 #include <cstdarg>
@@ -147,19 +148,26 @@ void render_status_bar(const StatusBarInputs& in) {
                         px >= 0 && px < m.cols && py >= 0 && py < m.rows) {
                         int ch = m.channels();
                         int depth = m.depth();  // CV_8U = 0, CV_16U = 2
-                        if (depth == 0) {
+                        if (depth == CV_8U) {
                             const uint8_t* p = m.ptr<uint8_t>(py) + px * ch;
                             if (ch == 1)      append(" = %u", p[0]);
                             else if (ch == 3) append(" = (%u, %u, %u)",
                                                      p[0], p[1], p[2]);
                             else if (ch == 4) append(" = (%u, %u, %u, %u)",
                                                      p[0], p[1], p[2], p[3]);
-                        } else if (depth == 2) {
+                        } else if (depth == CV_16U) {
                             const uint16_t* p = m.ptr<uint16_t>(py) + px * ch;
                             if (ch == 1)      append(" = %u", p[0]);
                             else if (ch == 3) append(" = (%u, %u, %u)",
                                                      p[0], p[1], p[2]);
                             else if (ch == 4) append(" = (%u, %u, %u, %u)",
+                                                     p[0], p[1], p[2], p[3]);
+                        } else if (depth == CV_32F) {
+                            const float* p = m.ptr<float>(py) + px * ch;
+                            if (ch == 1)      append(" = %.4f", p[0]);
+                            else if (ch == 3) append(" = (%.4f, %.4f, %.4f)",
+                                                     p[0], p[1], p[2]);
+                            else if (ch == 4) append(" = (%.4f, %.4f, %.4f, %.4f)",
                                                      p[0], p[1], p[2], p[3]);
                         }
                     }

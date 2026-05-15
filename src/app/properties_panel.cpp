@@ -82,7 +82,11 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextUnformatted("Bit depth");
-            ImGui::TableNextColumn(); ImGui::Text("%d", info.bit_depth);
+            ImGui::TableNextColumn();
+            if (info.source_bit_depth > 0 && info.source_bit_depth != info.bit_depth)
+                ImGui::Text("%d (%d-bit source)", info.bit_depth, info.source_bit_depth);
+            else
+                ImGui::Text("%d", info.bit_depth);
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextUnformatted("Has alpha");

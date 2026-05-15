@@ -153,3 +153,71 @@ TEST_CASE("ImageComparator: grayscale images can be compared", "[image_comparato
     // Output is normalized to RGB8
     REQUIRE(diff->mat().channels() == 3);
 }
+
+TEST_CASE("ImageComparator: 16-bit identical images produce zero diff", "[image_comparator]")
+{
+    cv::Mat data(32, 32, CV_16UC3, cv::Scalar(40000, 50000, 60000));
+    auto a = make_image(data.clone(), PixelFormat::RGB16);
+    auto b = make_image(data.clone(), PixelFormat::RGB16);
+
+    ImageComparator cmp;
+    DifferenceOptions opts;
+    opts.amplification = 1.0;
+
+    auto diff = cmp.compute_difference(*a, *b, opts);
+    REQUIRE(diff != nullptr);
+
+    double max_val;
+    cv::minMaxLoc(diff->mat().reshape(1), nullptr, &max_val);
+    REQUIRE(max_val == 0.0);
+}
+
+TEST_CASE("ImageComparator: 16-bit different images produce nonzero diff", "[image_comparator]")
+{
+    auto a = make_image(cv::Mat(32, 32, CV_16UC3, cv::Scalar(10000, 10000, 10000)), PixelFormat::RGB16);
+    auto b = make_image(cv::Mat(32, 32, CV_16UC3, cv::Scalar(30000, 30000, 30000)), PixelFormat::RGB16);
+
+    ImageComparator cmp;
+    DifferenceOptions opts;
+    opts.amplification = 1.0;
+
+    auto diff = cmp.compute_difference(*a, *b, opts);
+    REQUIRE(diff != nullptr);
+
+    double max_val;
+    cv::minMaxLoc(diff->mat().reshape(1), nullptr, &max_val);
+    REQUIRE(max_val > 0.0);
+    // Output is always 8-bit RGB
+    REQUIRE(diff->mat().depth() == CV_8U);
+    REQUIRE(diff->mat().channels() == 3);
+}
+
+TEST_CASE("ImageComparator: Gray16 images can be compared", "[image_comparator]")
+{
+    auto a = make_image(cv::Mat(16, 16, CV_16UC1, cv::Scalar(20000)), PixelFormat::Gray16);
+    auto b = make_image(cv::Mat(16, 16, CV_16UC1, cv::Scalar(40000)), PixelFormat::Gray16);
+
+    ImageComparator cmp;
+    DifferenceOptions opts;
+    opts.amplification = 1.0;
+
+    auto diff = cmp.compute_difference(*a, *b, opts);
+    REQUIRE(diff != nullptr);
+    REQUIRE(diff->mat().channels() == 3);
+    REQUIRE(diff->mat().depth() == CV_8U);
+
+    double max_val;
+    cv::minMaxLoc(diff->mat().reshape(1), nullptr, &max_val);
+    REQUIRE(max_val > 0.0);
+}
+
+TEST_CASE("ImageComparator: RGBA16 images can be compared", "[image_comparator]")
+{
+    auto a = make_image(cv::Mat(16, 16, CV_16UC4, cv::Scalar(10000, 20000, 30000, 65535)), PixelFormat::RGBA16);
+    auto b = make_image(cv::Mat(16, 16, CV_16UC4, cv::Scalar(30000, 40000, 50000, 65535)), PixelFormat::RGBA16);
+
+    ImageComparator cmp;
+    auto diff = cmp.compute_difference(*a, *b);
+    REQUIRE(diff != nullptr);
+    REQUIRE(diff->info().pixel_format == PixelFormat::RGB8);
+}

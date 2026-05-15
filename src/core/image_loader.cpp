@@ -145,6 +145,7 @@ void populate_image_from_magick(Magick::Image& mi, Image& image) {
     impl.info.height = static_cast<int>(mi.rows());
     impl.info.pixel_format = magick_type_to_pixel_format(mi);
     impl.info.bit_depth = pixel_format_depth(impl.info.pixel_format);
+    impl.info.source_bit_depth = static_cast<int>(mi.depth());
     impl.info.has_alpha = mi.alpha();
 
     try {
@@ -502,7 +503,7 @@ ImageLoader::load_via_magick_memory(const uint8_t* data, size_t size,
 
 std::unique_ptr<Image> ImageLoader::load_via_raw(const std::string& path) {
     RawLoader raw_loader;
-    auto image = raw_loader.load(path);
+    auto image = raw_loader.load(path, has_flag(flags_, LoadFlag::Keep16Bit));
     if (!image) {
         last_error_ = raw_loader.last_error();
     }

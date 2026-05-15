@@ -35,6 +35,7 @@ struct ImageInfo {
     PixelFormat pixel_format = PixelFormat::RGB8;
     SourceFormat source_format = SourceFormat::Unknown;
     int bit_depth = 8;
+    int source_bit_depth = 0;  // original file depth; 0 = same as bit_depth
     std::string icc_profile_name;
     std::string color_space;
     bool has_alpha = false;

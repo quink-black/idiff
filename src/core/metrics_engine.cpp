@@ -1,4 +1,5 @@
 #include "core/metrics_engine.h"
+#include "core/depth_utils.h"
 #include "core/image_impl.h"
 
 #include <cmath>
@@ -263,11 +264,15 @@ std::optional<Histogram> MetricsEngine::compute_histogram(const Image& img) {
     try {
         Histogram hist;
 
+        // Normalize to 8-bit so the 256-bin histogram covers the full
+        // value range regardless of the source depth (CV_16U, CV_32F, etc.).
+        cv::Mat work = convert_to_8u(mat);
+
         std::vector<cv::Mat> channels;
-        if (mat.channels() == 1) {
-            channels.push_back(mat);
+        if (work.channels() == 1) {
+            channels.push_back(work);
         } else {
-            cv::split(mat, channels);
+            cv::split(work, channels);
         }
 
         float range[] = {0, 256};

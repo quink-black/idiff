@@ -1,4 +1,5 @@
 #include "core/image_comparator.h"
+#include "core/depth_utils.h"
 #include "core/image_impl.h"
 
 #include <opencv2/core.hpp>
@@ -28,16 +29,9 @@ cv::Mat apply_colormap(const cv::Mat& gray, HeatmapColor color) {
 }
 
 // Convert a cv::Mat to 8-bit 3-channel (RGB order) for comparison.
-// Handles grayscale, RGBA, and 16-bit inputs.
+// Handles grayscale, RGBA, and high-depth inputs.
 cv::Mat normalize_for_comparison(const cv::Mat& mat) {
-    cv::Mat result;
-
-    // Convert 16-bit to 8-bit
-    if (mat.depth() == CV_16U) {
-        mat.convertTo(result, CV_8U, 1.0 / 257.0);
-    } else {
-        result = mat;
-    }
+    cv::Mat result = convert_to_8u(mat);
 
     // Convert to 3-channel
     if (result.channels() == 1) {
