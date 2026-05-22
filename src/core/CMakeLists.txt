@@ -32,6 +32,20 @@ if(IDIFF_HAVE_IMAGEMAGICK)
     target_link_libraries(idiff_core PUBLIC PkgConfig::MAGICKXX)
 endif()
 
+if(IDIFF_HAVE_FFMPEG)
+    target_sources(idiff_core PRIVATE
+        video_decoder.cpp
+        video_file_source.cpp
+    )
+    target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_FFMPEG)
+    target_link_libraries(idiff_core PUBLIC
+        PkgConfig::FFMPEG_LIBAVFORMAT
+        PkgConfig::FFMPEG_LIBAVCODEC
+        PkgConfig::FFMPEG_LIBAVUTIL
+        PkgConfig::FFMPEG_LIBSWSCALE
+    )
+endif()
+
 # Windows: NOMINMAX prevents <windows.h> from defining min/max macros
 # that conflict with std::numeric_limits<T>::max() etc.  /utf-8 tells
 # MSVC to treat source and execution character sets as UTF-8, which

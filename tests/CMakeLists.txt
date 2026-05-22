@@ -35,6 +35,11 @@ add_executable(idiff_tests
     ${CMAKE_SOURCE_DIR}/src/app/controller.cpp
 )
 
+# Conditionally add video decoder tests when FFmpeg is available
+if(IDIFF_HAVE_FFMPEG)
+    target_sources(idiff_tests PRIVATE test_video_decoder.cpp)
+endif()
+
 # sr_dialog.cpp uses ImGui — provide a stub-free include path.
 # The test only calls sr_default_output_path() which does not
 # touch ImGui, but the translation unit still needs the header.
@@ -58,3 +63,39 @@ endif()
 include(CTest)
 include(Catch)
 catch_discover_tests(idiff_tests)
+
+# --- Test video generation (FFmpeg) ---
+# Generate a short test video (10 frames, 64x64, each frame a different solid
+# color) for the video decoder unit tests.  The video is placed in the build
+# directory and its path is passed as a compile definition.
+if(IDIFF_HAVE_FFMPEG)
+    set(TEST_VIDEO_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_data")
+    set(TEST_VIDEO_PATH "${TEST_VIDEO_DIR}/test_10frames_64x64.mp4")
+
+    find_program(FFMPEG_EXECUTABLE ffmpeg)
+    if(FFMPEG_EXECUTABLE)
+        add_custom_command(
+            OUTPUT "${TEST_VIDEO_PATH}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${TEST_VIDEO_DIR}"
+            COMMAND ${FFMPEG_EXECUTABLE}
+                -y -f lavfi
+                -i "color=c=red:size=64x64:rate=10:duration=1,format=yuv420p"
+                -c:v libx264 -preset ultrafast -qp 0
+                -frames:v 10
+                "${TEST_VIDEO_PATH}"
+            COMMENT "Generating test video: ${TEST_VIDEO_PATH}"
+            VERBATIM
+        )
+        add_custom_target(generate_test_video DEPENDS "${TEST_VIDEO_PATH}")
+        add_dependencies(idiff_tests generate_test_video)
+
+        target_compile_definitions(idiff_tests PRIVATE
+            IDIFF_TEST_VIDEO_PATH="${TEST_VIDEO_PATH}"
+        )
+    else()
+        message(WARNING "ffmpeg CLI not found -- video decoder tests will be skipped at runtime")
+        target_compile_definitions(idiff_tests PRIVATE
+            IDIFF_TEST_VIDEO_PATH=""
+        )
+    endif()
+endif()
