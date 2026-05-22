@@ -62,8 +62,19 @@ endif()
 
 include(CTest)
 include(Catch)
+
+# When sanitizers are enabled, pass an LSan suppression file so that known
+# third-party leaks (e.g. GPU driver singletons from OpenCL) do not cause
+# test failures.
+set(_test_properties SKIP_RETURN_CODE 4)
+if(ENABLE_SANITIZERS)
+    set(_lsan_supp "${CMAKE_CURRENT_SOURCE_DIR}/lsan_suppressions.txt")
+    list(APPEND _test_properties
+        ENVIRONMENT "LSAN_OPTIONS=suppressions=${_lsan_supp}")
+endif()
+
 catch_discover_tests(idiff_tests
-    PROPERTIES SKIP_RETURN_CODE 4
+    PROPERTIES ${_test_properties}
 )
 
 # --- Test video generation (FFmpeg) ---

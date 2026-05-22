@@ -1,0 +1,4 @@
+# LeakSanitizer suppressions for known third-party false positives.
+# OpenCV initializes OpenCL at runtime; the GPU driver allocates global
+# singletons that are never freed.  These are not real leaks.
+leak:libOpenCL.so
