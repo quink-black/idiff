@@ -7,6 +7,9 @@
 #include "core/image.h"
 #include "core/image_loader.h"
 #include "core/media_source.h"
+#ifdef IDIFF_HAVE_FFMPEG
+#include "core/video_file_source.h"
+#endif
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
@@ -229,10 +232,29 @@ AppController::load_images(const std::vector<std::string>& paths) {
     const bool was_empty = library_->all().empty();
 
     for (const auto& path : paths) {
-        // Wrap the file as a single-frame MediaSource.  Decoding
-        // happens inside source->read_frame(0); the loader pipeline
-        // is identical to the previous direct ImageLoader call.
-        auto source = std::make_unique<ImageFileSource>(path, loader_backend_);
+        // Create the appropriate MediaSource based on file type.
+        // Video container files (MP4, MKV, etc.) get a VideoFileSource
+        // that supports multi-frame decoding; everything else gets an
+        // ImageFileSource for single-frame still images.
+        std::unique_ptr<MediaSource> source;
+#ifdef IDIFF_HAVE_FFMPEG
+        if (is_video_file_extension(path)) {
+            auto vsrc = std::make_unique<VideoFileSource>(path);
+            if (!vsrc->is_valid()) {
+                const auto err = vsrc->last_error();
+                status_reporter_->set_status("Failed to load: " + path
+                                             + " (" + err + ")");
+                LOG_WARN("load_images failed: %s (%s)",
+                         path.c_str(), err.c_str());
+                continue;
+            }
+            source = std::move(vsrc);
+        } else
+#endif
+        {
+            source = std::make_unique<ImageFileSource>(path, loader_backend_);
+        }
+
         auto img = source->read_frame(0);
         if (img) {
             ImageEntry entry;
@@ -241,6 +263,11 @@ AppController::load_images(const std::vector<std::string>& paths) {
             entry.filename = (sep != std::string::npos) ? path.substr(sep + 1)
                                                         : path;
             entry.display_label = entry.filename;
+            // Show frame count for multi-frame sources (video files)
+            if (source->frame_count() > 1) {
+                entry.display_label += " (" + std::to_string(source->frame_count())
+                                    + " frames)";
+            }
             entry.source = std::move(source);
             entry.image = std::move(img);
             entry.display_image = nullptr;

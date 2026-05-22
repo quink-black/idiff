@@ -102,6 +102,52 @@ if(NOT IDIFF_HAVE_IMAGEMAGICK)
         "the only image loader backend")
 endif()
 
+# FFmpeg -- optional video decoding backend.  When available, idiff can
+# open container formats (MP4, MKV, MOV, etc.) as multi-frame sources.
+#
+# Values:
+#   AUTO (default): use FFmpeg if pkg-config finds it, otherwise skip.
+#   ON:             require FFmpeg; fail configuration if missing.
+#   OFF:            skip FFmpeg entirely, no video file support.
+set(IDIFF_WITH_FFMPEG "AUTO" CACHE STRING
+    "Enable FFmpeg video decoder backend: AUTO | ON | OFF")
+set_property(CACHE IDIFF_WITH_FFMPEG PROPERTY STRINGS AUTO ON OFF)
+
+set(IDIFF_HAVE_FFMPEG OFF)
+if(NOT IDIFF_WITH_FFMPEG STREQUAL "OFF")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        if(IDIFF_WITH_FFMPEG STREQUAL "ON")
+            pkg_check_modules(FFMPEG_LIBAVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+            pkg_check_modules(FFMPEG_LIBAVCODEC  REQUIRED IMPORTED_TARGET libavcodec)
+            pkg_check_modules(FFMPEG_LIBAVUTIL   REQUIRED IMPORTED_TARGET libavutil)
+            pkg_check_modules(FFMPEG_LIBSWSCALE  REQUIRED IMPORTED_TARGET libswscale)
+        else()
+            pkg_check_modules(FFMPEG_LIBAVFORMAT QUIET IMPORTED_TARGET libavformat)
+            pkg_check_modules(FFMPEG_LIBAVCODEC  QUIET IMPORTED_TARGET libavcodec)
+            pkg_check_modules(FFMPEG_LIBAVUTIL   QUIET IMPORTED_TARGET libavutil)
+            pkg_check_modules(FFMPEG_LIBSWSCALE  QUIET IMPORTED_TARGET libswscale)
+        endif()
+
+        if(FFMPEG_LIBAVFORMAT_FOUND AND FFMPEG_LIBAVCODEC_FOUND AND
+           FFMPEG_LIBAVUTIL_FOUND AND FFMPEG_LIBSWSCALE_FOUND)
+            set(IDIFF_HAVE_FFMPEG ON)
+            message(STATUS "FFmpeg found -- enabling video decoder backend "
+                           "(avformat ${FFMPEG_LIBAVFORMAT_VERSION}, "
+                           "avcodec ${FFMPEG_LIBAVCODEC_VERSION})")
+        endif()
+    elseif(IDIFF_WITH_FFMPEG STREQUAL "ON")
+        message(FATAL_ERROR
+                "IDIFF_WITH_FFMPEG=ON but pkg-config is not available")
+    endif()
+endif()
+
+if(NOT IDIFF_HAVE_FFMPEG)
+    message(STATUS
+        "FFmpeg video decoder backend disabled -- "
+        "video container files (MP4, MKV, etc.) will not be supported")
+endif()
+
 # SDL2
 find_package(SDL2 REQUIRED CONFIG)
 

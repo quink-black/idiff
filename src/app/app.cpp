@@ -784,8 +784,9 @@ void App::open_file_dialog() {
     // is an image or a config, they just want to point at a file and
     // move on.  load_paths() takes care of routing after the fact.
     std::vector<FileDialogFilter> filters = {
-        { "Images, YUV streams, and comparison configs",
-          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json" },
+        { "Images, videos, YUV streams, and comparison configs",
+          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json,"
+          "mp4,mkv,mov,avi,webm,flv,ts,m4v,wmv,mpg,mpeg,3gp" },
     };
     auto result = state_->file_dialog->open_multiple(filters);
     if (!result.error.empty()) {
