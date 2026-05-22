@@ -28,12 +28,13 @@ jobs:
 
       - name: Install dependencies
         # Same set as ci.yml. Homebrew runners already have most of these.
-        run: brew install opencv imagemagick libraw sdl2 create-dmg
+        run: brew install opencv imagemagick libraw sdl2 ffmpeg create-dmg
 
       - name: Configure
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DIDIFF_WITH_FFMPEG=ON \
             -DIDIFF_BUILD_TESTS=OFF
 
       - name: Build
@@ -195,6 +196,7 @@ jobs:
             -DVCPKG_INSTALLED_DIR=C:\vcpkg_installed `
             -DVCPKG_MANIFEST_MODE=OFF `
             -DIDIFF_USE_OPENCV_IMGCODECS=ON `
+            -DIDIFF_WITH_FFMPEG=ON `
             -DIDIFF_BUILD_TESTS=OFF
 
       - name: Build

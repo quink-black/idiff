@@ -62,7 +62,9 @@ endif()
 
 include(CTest)
 include(Catch)
-catch_discover_tests(idiff_tests)
+catch_discover_tests(idiff_tests
+    PROPERTIES SKIP_RETURN_CODE 4
+)
 
 # --- Test video generation (FFmpeg) ---
 # Generate a short test video (10 frames, 64x64, each frame a different solid
