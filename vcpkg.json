@@ -6,6 +6,10 @@
             "name": "opencv4",
             "features": ["quality", "jpeg", "png", "tiff", "webp"]
         },
+        {
+            "name": "ffmpeg",
+            "features": ["avformat", "avcodec", "swscale"]
+        },
         "libraw",
         "sdl2",
         "catch2",
