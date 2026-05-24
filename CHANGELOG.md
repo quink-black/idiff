@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-05-24
+
+### Added
+
+- **Video file decoding**: New `VideoDecoder` and `VideoFileSource` that
+  open container formats (MP4, MKV, MOV, etc.) via FFmpeg, with
+  sequential and seek-based frame access. Auto-rotation from the
+  container display matrix is applied by default; a manual rotation
+  override is also exposed. Optional dependency controlled by
+  `IDIFF_WITH_FFMPEG`.
+- **Depth utility module**: Extracted duplicated CV_16U-to-CV_8U
+  conversion from texture upload, comparator, channel view, and diff
+  service into `depth_utils` (`convert_to_8u`, `convert_to_rgba8`).
+  Extended coverage to CV_16S and CV_32F so images in those formats
+  no longer crash or display incorrectly.
+- **RAW 16-bit loading**: Respect the Keep16Bit flag via LibRaw
+  `output_bps=16`, so RAW files can now be loaded at full sensor depth.
+- **Source bit depth in properties**: New `source_bit_depth` field in
+  ImageInfo preserves the original file depth (e.g. 10, 12, 14) as
+  reported by ImageMagick, shown in the properties panel and format
+  description.
+- **CV_32F pixel readout**: Status bar now displays pixel values for
+  CV_32F images alongside the existing CV_8U and CV_16U paths.
+- **FFmpeg in CI/release workflows**: FFmpeg development libraries and
+  CLI are installed on all three platforms; video decoder is built and
+  tested in CI. Added FFmpeg to the vcpkg manifest for Windows.
+- **LeakSanitizer suppression file**: Suppresses false-positive leaks
+  from OpenCL/CUDA driver global singletons so LSan no longer fails
+  tests on hosts with GPU drivers.
+
+### Fixed
+
+- Fix 16-bit image rendering regression: 16-bit per-channel images
+  (Gray16, RGB16, RGBA16) were passed directly to SDL texture upload
+  without downsampling, causing rendering failures.
+- Fix histogram for 16-bit images: normalize to 8-bit before
+  `cv::calcHist` so pixel values outside [0, 256) are no longer
+  silently discarded.
+
 ## [0.1.1] - 2026-05-13
 
 ### Added
