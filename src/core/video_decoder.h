@@ -113,6 +113,13 @@ public:
     //   - Otherwise, seeks to nearest keyframe and decodes forward.
     cv::Mat decode_frame(int index);
 
+    // Fast approximate decode for scrubbing: seeks to the nearest keyframe
+    // at or before the target timestamp and decodes only that keyframe.
+    // The returned frame may not correspond to the exact index -- it is
+    // the closest keyframe for preview purposes.  Does not update
+    // current_frame_index() or the internal decode position.
+    cv::Mat decode_keyframe(int index);
+
     // Current decoded frame index, or -1 if no frame has been decoded yet.
     int current_frame_index() const noexcept;
 

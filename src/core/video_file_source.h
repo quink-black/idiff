@@ -29,6 +29,7 @@ public:
     int height() const noexcept override;
     const std::string& format_description() const noexcept override;
     std::unique_ptr<Image> read_frame(int index) override;
+    std::unique_ptr<Image> read_keyframe(int index) override;
     const std::string& last_error() const noexcept override;
 
     const std::string& path() const noexcept { return path_; }

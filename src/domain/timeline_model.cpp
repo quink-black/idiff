@@ -54,6 +54,30 @@ bool TimelineModel::sync_to(std::vector<ImageEntry>& entries,
     return any_changed;
 }
 
+bool TimelineModel::preview_to(std::vector<ImageEntry>& entries) {
+    bool any_changed = false;
+    for (auto& e : entries) {
+        if (!e.source) continue;
+        const int count = e.source->frame_count();
+        if (count <= 1) continue;
+
+        int target = current_frame_ + e.frame_offset;
+        if (target < 0) target = 0;
+        if (target >= count) target = count - 1;
+
+        // Do not update cached_frame so a subsequent sync_to() will
+        // still perform an exact decode at this position.
+        auto img = e.source->read_keyframe(target);
+        if (!img) continue;
+
+        e.image = std::move(img);
+        e.display_image.reset();
+        e.texture_dirty = true;
+        any_changed = true;
+    }
+    return any_changed;
+}
+
 bool TimelineModel::clamp_to_length(const std::vector<ImageEntry>& entries) noexcept {
     const int len = length(entries);
     int v = current_frame_;

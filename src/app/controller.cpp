@@ -161,6 +161,10 @@ void AppController::sync_entries_to_timeline() {
     }
 }
 
+void AppController::preview_entries_to_timeline() {
+    timeline_->preview_to(library_->all());
+}
+
 void AppController::start_sr_task(const SRTaskParams& params) {
     auto factory = []() -> std::unique_ptr<SRInferEngine> {
         return SRInferEngineFactory::instance().create_engine("seedvr2");

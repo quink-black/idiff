@@ -263,9 +263,11 @@ float render_timeline_bar(const TimelineBarInputs& in) {
         if (ImGui::SliderInt("##frame", &frame, 0, length - 1, "Frame %d")) {
             timeline.set_current_frame(frame);
         }
-        // Deferred seek: fire on drag release only, not every
-        // intermediate position during scrub.  Avoids triggering
-        // expensive re-decodes on each drag step.
+        // During drag: fast keyframe preview for scrub feedback.
+        // On release: exact frame decode via on_frame_changed.
+        if (ImGui::IsItemActive() && in.on_frame_preview) {
+            in.on_frame_preview();
+        }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             frame_changed = true;
         }

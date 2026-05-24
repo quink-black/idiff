@@ -50,6 +50,10 @@ struct TimelineBarInputs {
     // Invoked after a frame index or per-entry offset changed so the
     // host can re-decode every multi-frame source.
     std::function<void()> on_frame_changed;
+
+    // Invoked during slider drag for fast keyframe preview.
+    // on_frame_changed is called on release for the exact decode.
+    std::function<void()> on_frame_preview;
 };
 
 // Render the timeline scrub bar above the status bar.  Returns the

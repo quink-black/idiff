@@ -184,6 +184,10 @@ private:
     // No-op for single-frame entries.  Marks textures and diff dirty on
     // any actual change.
     void sync_entries_to_timeline();
+    // Fast approximate preview for scrubbing: uses keyframe decode
+    // instead of exact frame decode.  Updates viewport without
+    // recomputing diff.
+    void preview_entries_to_timeline();
 
     // Returns the entry indices used as A and B for overlay / diff.
     // Derived from the first two selected items (in selection order),

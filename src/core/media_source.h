@@ -38,6 +38,13 @@ public:
     // nullptr; callers are expected to clamp beforehand.
     virtual std::unique_ptr<Image> read_frame(int index) = 0;
 
+    // Fast approximate read for scrubbing: returns the nearest keyframe
+    // at or before the requested index.  The returned frame may not
+    // correspond to the exact index.  Default falls back to read_frame.
+    virtual std::unique_ptr<Image> read_keyframe(int index) {
+        return read_frame(index);
+    }
+
     // Last error message from the most recent read_frame() failure, if any.
     virtual const std::string& last_error() const noexcept = 0;
 };

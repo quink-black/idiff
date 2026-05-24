@@ -762,11 +762,16 @@ void App::sync_entries_to_timeline() {
     controller_->sync_entries_to_timeline();
 }
 
+void App::preview_entries_to_timeline() {
+    controller_->preview_entries_to_timeline();
+}
+
 float App::render_timeline_bar() {
     TimelineBarInputs in;
     in.entries = &entries_view();
     in.timeline = timeline_;
     in.on_frame_changed = [this]() { sync_entries_to_timeline(); };
+    in.on_frame_preview = [this]() { preview_entries_to_timeline(); };
     return idiff::render_timeline_bar(in);
 }
 

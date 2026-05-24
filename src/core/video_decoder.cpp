@@ -61,6 +61,7 @@ struct VideoDecoder::Impl {
 
     bool decode_next_frame();
     bool seek_to_frame(int target);
+    cv::Mat seek_keyframe(int index);
     cv::Mat frame_to_mat();  // raw decoded frame (no rotation)
     cv::Mat apply_rotation(const cv::Mat& mat, VideoRotation rot);
     VideoRotation current_effective_rotation() const;
@@ -184,6 +185,62 @@ bool VideoDecoder::Impl::seek_to_frame(int target) {
     }
 
     return true;
+}
+
+// Seek to the nearest keyframe at or before the estimated PTS of
+// frame `index`, decode only that keyframe, and return it.
+// Does not update current_frame_idx -- this is a preview-only path.
+cv::Mat VideoDecoder::Impl::seek_keyframe(int index) {
+    if (index < 0 || index >= frame_count || !fmt_ctx || !codec_ctx)
+        return {};
+
+    // Estimate PTS from frame index + fps, then convert to stream
+    // time_base.  This is approximate -- we only need to land on a
+    // nearby keyframe, not hit the exact frame.
+    double pts_sec = (fps > 0.0) ? index / fps : 0.0;
+    int64_t pts = static_cast<int64_t>(pts_sec / av_q2d(time_base));
+
+    int ret = avformat_seek_file(fmt_ctx, video_stream_idx,
+                                 INT64_MIN, pts, pts,
+                                 AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        // Fallback: seek to beginning
+        ret = avformat_seek_file(fmt_ctx, video_stream_idx,
+                                 INT64_MIN, 0, INT64_MAX, 0);
+        if (ret < 0) return {};
+    }
+
+    avcodec_flush_buffers(codec_ctx);
+
+    // Decode packets until we get the first video frame (the keyframe).
+    // Limit attempts to avoid runaway reads on corrupt streams.
+    constexpr int kMaxAttempts = 64;
+    for (int i = 0; i < kMaxAttempts; ++i) {
+        int r = avcodec_receive_frame(codec_ctx, frame);
+        if (r == 0) {
+            return frame_to_mat();
+        }
+        if (r == AVERROR_EOF) break;
+        if (r != AVERROR(EAGAIN)) break;
+
+        while (true) {
+            r = av_read_frame(fmt_ctx, packet);
+            if (r < 0) {
+                avcodec_send_packet(codec_ctx, nullptr);
+                r = avcodec_receive_frame(codec_ctx, frame);
+                if (r == 0) return frame_to_mat();
+                return {};
+            }
+            if (packet->stream_index == video_stream_idx) {
+                r = avcodec_send_packet(codec_ctx, packet);
+                av_packet_unref(packet);
+                if (r < 0) return {};
+                break;
+            }
+            av_packet_unref(packet);
+        }
+    }
+    return {};
 }
 
 // Convert the current AVFrame to an RGB cv::Mat (no rotation applied).
@@ -560,6 +617,26 @@ cv::Mat VideoDecoder::decode_frame(int index) {
     impl_->cached_rotation = rot;
     impl_->last_error.clear();
     return impl_->cached_frame.clone();
+}
+
+cv::Mat VideoDecoder::decode_keyframe(int index) {
+    if (!is_open()) {
+        impl_->last_error = "decoder not open";
+        return {};
+    }
+    if (index < 0 || index >= impl_->frame_count) {
+        impl_->last_error = "frame index out of range";
+        return {};
+    }
+
+    const VideoRotation rot = impl_->current_effective_rotation();
+    cv::Mat raw = impl_->seek_keyframe(index);
+    if (raw.empty()) {
+        impl_->last_error = "keyframe seek failed";
+        return {};
+    }
+    impl_->last_error.clear();
+    return impl_->apply_rotation(raw, rot);
 }
 
 } // namespace idiff

@@ -120,6 +120,38 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
     return img;
 }
 
+std::unique_ptr<Image> VideoFileSource::read_keyframe(int index) {
+    if (!is_valid()) {
+        last_error_ = "video source not open";
+        return nullptr;
+    }
+
+    if (index < 0 || index >= decoder_->frame_count()) {
+        last_error_ = "frame index out of range";
+        return nullptr;
+    }
+
+    cv::Mat rgb = decoder_->decode_keyframe(index);
+    if (rgb.empty()) {
+        last_error_ = decoder_->last_error();
+        return nullptr;
+    }
+
+    auto img = std::make_unique<Image>();
+    img->internal().mat = rgb;
+    img->internal().info.width = rgb.cols;
+    img->internal().info.height = rgb.rows;
+    img->internal().info.pixel_format = PixelFormat::RGB8;
+    img->internal().info.source_format = SourceFormat::Unknown;
+    img->internal().info.bit_depth = 8;
+    img->internal().info.source_bit_depth = decoder_->bit_depth();
+    img->internal().info.has_alpha = false;
+    img->internal().info.color_space = "BT.709";
+
+    last_error_.clear();
+    return img;
+}
+
 } // namespace idiff
 
 #endif // IDIFF_HAVE_FFMPEG

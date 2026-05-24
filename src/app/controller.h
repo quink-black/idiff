@@ -95,6 +95,11 @@ public:
     // reported through the injected status reporter.
     void sync_entries_to_timeline();
 
+    // Fast approximate preview for scrubbing: uses read_keyframe()
+    // instead of read_frame().  Updates viewport pixels but does not
+    // mark the diff cache dirty (diff is too expensive for scrub).
+    void preview_entries_to_timeline();
+
     // Spawn an SR engine for `params` and append it to the task queue.
     // The engine is built via the global SRInferEngineFactory; on
     // failure the error is forwarded to the status reporter as a modal

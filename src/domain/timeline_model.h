@@ -54,6 +54,12 @@ public:
     // adjust the shared index itself.
     bool sync_to(std::vector<ImageEntry>& entries, std::string& out_status);
 
+    // Like sync_to but uses read_keyframe() for fast approximate
+    // decoding.  Updates image and texture_dirty but does NOT update
+    // cached_frame, so a subsequent sync_to() will still perform an
+    // exact decode.  Returns true if any entry was updated.
+    bool preview_to(std::vector<ImageEntry>& entries);
+
     // Convenience: clamp current_frame_ into [0, length(entries)-1].
     // Returns true if the value was actually changed.  Negative
     // lengths are coerced to length=1 -> current_frame_=0.
