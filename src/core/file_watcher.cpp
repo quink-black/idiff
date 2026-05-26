@@ -17,6 +17,7 @@
 #include <unistd.h>
 #elif defined(__linux__)
 #define IDIFF_USE_INOTIFY 1
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/inotify.h>
 #include <sys/stat.h>
@@ -243,6 +244,11 @@ struct FileWatcher::Impl {
             inotify_fd_ = -1;
             return;
         }
+        // Non-blocking so the drain loop never stalls and wake()
+        // never blocks if the pipe buffer fills.
+        fcntl(wake_pipe_[0], F_SETFL, O_NONBLOCK);
+        fcntl(wake_pipe_[1], F_SETFL, O_NONBLOCK);
+
         running_.store(true);
         thread_ = std::thread([this] { run(); });
     }
