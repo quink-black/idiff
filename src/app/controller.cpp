@@ -180,6 +180,37 @@ void AppController::set_loader_backend(LoaderBackend backend) noexcept {
     loader_backend_ = backend;
 }
 
+namespace {
+
+// Recreate the MediaSource for an entry from its on-disk path so the
+// decoder re-opens the file (picking up new content after an external
+// mv or overwrite).  Returns the freshly decoded frame 0 on success,
+// or nullptr on failure.  On success the entry's source is replaced;
+// on failure the previous source is left intact.
+std::unique_ptr<idiff::Image>
+reopen_source(idiff::ImageEntry& entry, idiff::LoaderBackend backend) {
+    std::unique_ptr<idiff::MediaSource> new_source;
+#ifdef IDIFF_HAVE_FFMPEG
+    if (idiff::is_video_file_extension(entry.path)) {
+        auto vsrc = std::make_unique<idiff::VideoFileSource>(entry.path);
+        if (!vsrc->is_valid()) return nullptr;
+        new_source = std::move(vsrc);
+    } else
+#endif
+    {
+        new_source = std::make_unique<idiff::ImageFileSource>(
+            entry.path, backend);
+    }
+
+    auto img = new_source->read_frame(0);
+    if (!img) return nullptr;
+
+    entry.source = std::move(new_source);
+    return img;
+}
+
+} // namespace
+
 void AppController::reload_all_images() {
     auto& entries = library_->all();
     if (entries.empty()) return;
@@ -188,14 +219,7 @@ void AppController::reload_all_images() {
     int failed = 0;
     std::string last_fail;
     for (auto& entry : entries) {
-        // Update the backend preference on the source, then ask it to
-        // re-decode the current frame.  For video sources this will
-        // be tracked by the shared frame index once time-axis wiring
-        // lands; for still images the index is always 0.
-        if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
-            ifs->set_preferred_backend(loader_backend_);
-        }
-        auto img = entry.source ? entry.source->read_frame(0) : nullptr;
+        auto img = reopen_source(entry, loader_backend_);
         if (img) {
             entry.image = std::move(img);
             entry.display_image.reset();
@@ -227,10 +251,7 @@ void AppController::reload_entry(int index) {
     if (index < 0 || index >= n) return;
 
     auto& entry = library_->all()[index];
-    if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
-        ifs->set_preferred_backend(loader_backend_);
-    }
-    auto img = entry.source ? entry.source->read_frame(0) : nullptr;
+    auto img = reopen_source(entry, loader_backend_);
     if (img) {
         entry.image = std::move(img);
         entry.display_image.reset();
@@ -250,21 +271,15 @@ int AppController::reload_entries_by_path(
     int reloaded = 0;
     for (const auto& path : paths) {
         for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
-            if (entries[i].path == path) {
-                if (auto* ifs = dynamic_cast<ImageFileSource*>(
-                        entries[i].source.get())) {
-                    ifs->set_preferred_backend(loader_backend_);
-                }
-                auto img = entries[i].source
-                    ? entries[i].source->read_frame(0) : nullptr;
-                if (img) {
-                    entries[i].image = std::move(img);
-                    entries[i].display_image.reset();
-                    entries[i].texture_dirty = true;
-                    ++reloaded;
-                }
-                break;
+            if (entries[i].path != path) continue;
+            auto img = reopen_source(entries[i], loader_backend_);
+            if (img) {
+                entries[i].image = std::move(img);
+                entries[i].display_image.reset();
+                entries[i].texture_dirty = true;
+                ++reloaded;
             }
+            break;
         }
     }
     if (reloaded > 0) {
