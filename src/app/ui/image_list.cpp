@@ -275,6 +275,15 @@ void render_image_list(const ImageListInputs& in) {
                     }
                 }
                 ImGui::Separator();
+                if (ImGui::MenuItem("Reload", "F5")) {
+                    if (in.on_reload_entry) in.on_reload_entry(i);
+                }
+                if (entries.size() > 1) {
+                    if (ImGui::MenuItem("Reload All")) {
+                        if (in.on_reload_all) in.on_reload_all();
+                    }
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Remove")) {
                     if (in.on_remove_entry) in.on_remove_entry(i);
                 }

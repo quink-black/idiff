@@ -1335,6 +1335,8 @@ void App::render_image_list() {
     in.on_switch_comparison_group =
         [this](int g) { switch_to_comparison_group(g); };
     in.on_move_entry = [this](int from, int to) { move_entry(from, to); };
+    in.on_reload_entry = [this](int idx) { controller_->reload_entry(idx); };
+    in.on_reload_all = [this]() { reload_all_images(); };
     in.on_remove_entry = [this](int idx) { remove_entry(idx); };
     in.on_remove_selected = [this]() {
         auto sel = selection_->indices();
