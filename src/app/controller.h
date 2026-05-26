@@ -122,6 +122,17 @@ public:
     // pixel data.
     void reload_all_images();
 
+    // Re-decode a single entry by index from its on-disk source.
+    // Marks the entry's texture dirty and the diff cache dirty on
+    // success; leaves the previous pixel data intact on failure.
+    // Out-of-range indices are ignored.
+    void reload_entry(int index);
+
+    // Re-decode the entries whose paths appear in `paths`.  Paths
+    // not currently in the library are silently skipped.  Returns
+    // the number of entries actually reloaded.
+    int reload_entries_by_path(const std::vector<std::string>& paths);
+
     // Outcome of load_images() the caller needs to act on.  The
     // controller does every domain-level side effect (add entries,
     // sort, label, mark diff dirty, run the first-load auto-select),

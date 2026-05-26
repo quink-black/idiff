@@ -19,6 +19,7 @@
 #include "app/sr_dialog.h"
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
+#include "core/file_watcher.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "domain/timeline_model.h"
@@ -145,6 +146,12 @@ struct App::State {
     // When yuv_dialog.editing_entry_idx >= 0 the dialog is in "edit"
     // mode targeting that entry instead of loading a new file.
     YuvDialogState yuv_dialog;
+
+    // File-watcher state.  The watcher runs a background thread that
+    // monitors all loaded file paths; poll_file_watcher() drains events
+    // each frame and arms the reload dialog when changes are detected.
+    std::unique_ptr<FileWatcher> file_watcher;
+    ReloadDialogState reload_dialog;
 
     // Injectable IO collaborators.  Tests substitute fakes; the
     // production wiring in App::init() installs the SDL/NFD-backed
@@ -346,6 +353,8 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     sr_service_ = &controller_->sr_tasks();
     comparison_config_ = &controller_->comparison_config();
 
+    state_->file_watcher = std::make_unique<FileWatcher>();
+
     // Detect whether a super-resolution upscaler is available next to
     // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
     // SeedVR2 engine only when detected so the UI can hide SR controls
@@ -416,6 +425,10 @@ void App::frame() {
             if (!entries_view().empty() &&
                 ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
                 save_viewport_dialog();
+            }
+            if (!entries_view().empty() &&
+                ImGui::IsKeyPressed(ImGuiKey_F5)) {
+                reload_all_images();
             }
 
             // Channel view shortcuts: 1-9 cycle through modes.
@@ -516,8 +529,10 @@ void App::frame() {
     render_yuv_params_dialog();
     render_error_dialog();
     render_quit_confirm_dialog();
+    render_reload_dialog();
     render_sr_dialog();
     poll_sr_tasks();
+    poll_file_watcher();
 
     ImGui::Render();
 
@@ -576,6 +591,12 @@ void App::load_images(const std::vector<std::string>& paths) {
 
     auto result = controller_->load_images(still_paths);
 
+    // Register successfully-loaded paths with the file watcher so we
+    // detect external modifications (e.g. mv new.png old.png).
+    for (const auto& entry : entries_view()) {
+        state_->file_watcher->add_path(entry.path);
+    }
+
     // The viewport's comparison mode is owned by the UI layer; the
     // controller just tells us when its first-load auto-select fired
     // so we can put the new selection on screen immediately.
@@ -632,6 +653,7 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
     entry.texture_dirty = true;
 
     library_->add(std::move(entry));
+    state_->file_watcher->add_path(path);
 
     sort_entries_by_name();
     compute_display_labels();
@@ -817,7 +839,12 @@ void App::open_comparison_config_dialog() {
 }
 
 void App::load_comparison_config_from_path(const std::string& path) {
+    state_->file_watcher->clear();
     auto result = controller_->load_comparison_config(path);
+    // Register the newly loaded paths with the file watcher.
+    for (const auto& entry : entries_view()) {
+        state_->file_watcher->add_path(entry.path);
+    }
     if (result.did_first_load_select && state_->viewport) {
         state_->viewport->set_mode(ComparisonMode::Overlay);
     }
@@ -863,7 +890,11 @@ void App::load_paths(const std::vector<std::string>& paths) {
 }
 
 void App::switch_to_comparison_group(int group_idx) {
+    state_->file_watcher->clear();
     auto result = controller_->switch_to_comparison_group(group_idx);
+    for (const auto& entry : entries_view()) {
+        state_->file_watcher->add_path(entry.path);
+    }
     if (result.did_first_load_select && state_->viewport) {
         state_->viewport->set_mode(ComparisonMode::Overlay);
     }
@@ -1144,6 +1175,9 @@ void App::save_viewport_dialog() {
 }
 
 void App::remove_entry(int index) {
+    if (index >= 0 && index < static_cast<int>(entries_view().size())) {
+        state_->file_watcher->remove_path(entries_view()[index].path);
+    }
     controller_->remove_entry(index);
 }
 
@@ -1416,6 +1450,51 @@ bool App::wants_quit() const {
 void App::render_quit_confirm_dialog() {
     idiff::render_quit_confirm_dialog(state_->quit_confirm_dialog,
                                       *sr_service_);
+}
+
+void App::render_reload_dialog() {
+    auto& rd = state_->reload_dialog;
+    idiff::render_reload_dialog(rd);
+
+    // Act on user confirmation from the previous frame.
+    if (rd.reload_requested) {
+        controller_->reload_entries_by_path(rd.changed_paths);
+        rd.changed_paths.clear();
+        rd.reload_requested = false;
+    }
+}
+
+void App::poll_file_watcher() {
+    auto changed = state_->file_watcher->poll_changed();
+    if (changed.empty()) return;
+
+    // Filter to paths that are still in the library (they might
+    // have been removed between the event and this poll).
+    std::vector<std::string> relevant;
+    for (auto& p : changed) {
+        for (const auto& entry : entries_view()) {
+            if (entry.path == p) {
+                relevant.push_back(std::move(p));
+                break;
+            }
+        }
+    }
+    if (relevant.empty()) return;
+
+    auto& rd = state_->reload_dialog;
+    // Merge into any pending notification (avoid replacing the list
+    // if the dialog is already showing).
+    for (auto& p : relevant) {
+        bool already = false;
+        for (const auto& existing : rd.changed_paths) {
+            if (existing == p) { already = true; break; }
+        }
+        if (!already) rd.changed_paths.push_back(std::move(p));
+    }
+    if (!rd.visible) {
+        rd.visible = true;
+        rd.needs_open = true;
+    }
 }
 
 void App::render_sr_dialog() {

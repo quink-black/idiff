@@ -10,6 +10,7 @@ add_executable(idiff_tests
     test_sr_engine.cpp
     test_channel_view.cpp
     test_depth_utils.cpp
+    test_file_watcher.cpp
     test_logger.cpp
     test_io_interfaces.cpp
     test_image_library.cpp
