@@ -530,3 +530,144 @@ TEST_CASE("AppController::switch_to_comparison_group ignores no-op switch",
     REQUIRE(controller.library().all().empty());
     REQUIRE(reporter.status_calls.empty());
 }
+
+TEST_CASE("AppController::reload_entry refreshes a single entry from disk",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p1 = write_tmp_png("reload_one", "a.png", 50);
+    const auto p2 = write_tmp_png("reload_one", "b.png", 100);
+    controller.load_images({p1, p2});
+
+    // Clear dirty flags so we can detect reload side effects.
+    for (auto& e : controller.library().all()) {
+        e.texture_dirty = false;
+    }
+
+    controller.reload_entry(0);
+
+    // Only the target entry is re-decoded and flagged dirty.
+    REQUIRE(controller.library().all()[0].texture_dirty);
+    REQUIRE_FALSE(controller.library().all()[1].texture_dirty);
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::reload_entry ignores out-of-range index",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p = write_tmp_png("reload_oob", "only.png");
+    controller.load_images({p});
+
+    const auto status_before = reporter.status_calls.size();
+
+    controller.reload_entry(-1);
+    controller.reload_entry(99);
+
+    // No crash, no extra status messages beyond the load.
+    REQUIRE(controller.library().all().size() == 1);
+    REQUIRE(reporter.status_calls.size() == status_before);
+}
+
+TEST_CASE("AppController::reload_entries_by_path batch-reloads matched paths",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p1 = write_tmp_png("reload_batch", "x.png", 10);
+    const auto p2 = write_tmp_png("reload_batch", "y.png", 20);
+    const auto p3 = write_tmp_png("reload_batch", "z.png", 30);
+    controller.load_images({p1, p2, p3});
+
+    for (auto& e : controller.library().all()) {
+        e.texture_dirty = false;
+    }
+
+    // Reload only two of the three.
+    int reloaded = controller.reload_entries_by_path({p1, p3});
+
+    REQUIRE(reloaded == 2);
+    REQUIRE(controller.library().all()[0].texture_dirty);   // x.png
+    REQUIRE_FALSE(controller.library().all()[1].texture_dirty); // y.png
+    REQUIRE(controller.library().all()[2].texture_dirty);   // z.png
+    REQUIRE(controller.diff().is_dirty());
+
+    // Status message reports the reload count.
+    REQUIRE_FALSE(reporter.status_calls.empty());
+    REQUIRE(reporter.status_calls.back().find("2") != std::string::npos);
+}
+
+TEST_CASE("AppController::reload_entries_by_path skips unknown paths",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p = write_tmp_png("reload_skip", "real.png");
+    controller.load_images({p});
+
+    const auto status_before = reporter.status_calls.size();
+    int reloaded = controller.reload_entries_by_path(
+        {"/no/such/file.png", "/another/missing.png"});
+
+    REQUIRE(reloaded == 0);
+    // No extra status when nothing was reloaded.
+    REQUIRE(reporter.status_calls.size() == status_before);
+}
+
+TEST_CASE("AppController::load_images deduplicates existing paths",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p1 = write_tmp_png("dedup", "img.png", 80);
+    controller.load_images({p1});
+
+    REQUIRE(controller.library().all().size() == 1);
+
+    // Load the same path again -- should refresh, not duplicate.
+    auto result = controller.load_images({p1});
+
+    REQUIRE(controller.library().all().size() == 1);
+    REQUIRE(controller.library().all()[0].texture_dirty);
+
+    // The "Refreshed:" status message confirms dedup happened.
+    bool found_refresh = false;
+    for (const auto& s : reporter.status_calls) {
+        if (s.find("Refreshed:") != std::string::npos) {
+            found_refresh = true;
+            break;
+        }
+    }
+    REQUIRE(found_refresh);
+}
+
+TEST_CASE("AppController::load_images dedup mixed with new paths",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    const auto p1 = write_tmp_png("dedup_mix", "first.png", 10);
+    controller.load_images({p1});
+    REQUIRE(controller.library().all().size() == 1);
+
+    // p1 already exists, p2 is new.
+    const auto p2 = write_tmp_png("dedup_mix", "second.png", 20);
+    controller.load_images({p1, p2});
+
+    // Should have exactly 2 entries, not 3.
+    REQUIRE(controller.library().all().size() == 2);
+}

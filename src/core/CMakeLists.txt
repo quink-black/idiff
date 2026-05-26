@@ -9,6 +9,7 @@ add_library(idiff_core
     comparison_config.cpp
     channel_view.cpp
     depth_utils.cpp
+    file_watcher.cpp
     detail/raw_loader.cpp
 )
 

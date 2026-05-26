@@ -1,0 +1,510 @@
+#include "core/file_watcher.h"
+
+#include "util/logger.h"
+
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#define IDIFF_USE_KQUEUE 1
+#include <fcntl.h>
+#include <sys/event.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#elif defined(__linux__)
+#define IDIFF_USE_INOTIFY 1
+#include <poll.h>
+#include <sys/inotify.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#else
+#define IDIFF_USE_POLLING 1
+#include <chrono>
+#include <condition_variable>
+#include <sys/stat.h>
+#endif
+
+namespace idiff {
+
+// --------------------------------------------------------------------------
+// kqueue backend (macOS, FreeBSD)
+// --------------------------------------------------------------------------
+#if defined(IDIFF_USE_KQUEUE)
+
+struct FileWatcher::Impl {
+    std::mutex mutex_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    int kq_ = -1;
+
+    // pipe used to wake the kqueue thread when paths are added/removed
+    int wake_pipe_[2] = {-1, -1};
+
+    // path -> fd being watched
+    std::unordered_map<std::string, int> watched_;
+    // fd -> path (reverse lookup for kevent results)
+    std::unordered_map<int, std::string> fd_to_path_;
+
+    // Changed paths accumulated between polls
+    std::unordered_set<std::string> changed_;
+
+    Impl() {
+        kq_ = kqueue();
+        if (kq_ < 0) {
+            LOG_ERROR("FileWatcher: kqueue() failed");
+            return;
+        }
+        if (pipe(wake_pipe_) != 0) {
+            LOG_ERROR("FileWatcher: pipe() failed");
+            close(kq_);
+            kq_ = -1;
+            return;
+        }
+        // Make both ends non-blocking so drain_wake_pipe() never stalls
+        // and wake() never blocks if the pipe buffer fills.
+        fcntl(wake_pipe_[0], F_SETFL, O_NONBLOCK);
+        fcntl(wake_pipe_[1], F_SETFL, O_NONBLOCK);
+
+        // Register the read end of the pipe with kqueue so we can
+        // interrupt the blocking kevent() call.
+        struct kevent ev;
+        EV_SET(&ev, wake_pipe_[0], EVFILT_READ, EV_ADD, 0, 0, nullptr);
+        kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+
+        running_.store(true);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~Impl() {
+        running_.store(false);
+        wake();
+        if (thread_.joinable()) thread_.join();
+
+        for (auto& [path, fd] : watched_) {
+            close(fd);
+        }
+        if (kq_ >= 0) close(kq_);
+        if (wake_pipe_[0] >= 0) close(wake_pipe_[0]);
+        if (wake_pipe_[1] >= 0) close(wake_pipe_[1]);
+    }
+
+    void wake() {
+        if (wake_pipe_[1] >= 0) {
+            char c = 'w';
+            (void)write(wake_pipe_[1], &c, 1);
+        }
+    }
+
+    void drain_wake_pipe() {
+        char buf[64];
+        while (read(wake_pipe_[0], buf, sizeof(buf)) > 0) {}
+    }
+
+    void add_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (watched_.count(path)) return;
+
+        int fd = open(path.c_str(), O_EVTONLY);
+        if (fd < 0) {
+            LOG_WARN("FileWatcher: cannot open '%s' for watching", path.c_str());
+            return;
+        }
+
+        struct kevent ev;
+        EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+               NOTE_WRITE | NOTE_RENAME | NOTE_DELETE | NOTE_ATTRIB,
+               0, nullptr);
+        if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
+            LOG_WARN("FileWatcher: kevent register failed for '%s'", path.c_str());
+            close(fd);
+            return;
+        }
+
+        watched_[path] = fd;
+        fd_to_path_[fd] = path;
+        wake();
+    }
+
+    void remove_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = watched_.find(path);
+        if (it == watched_.end()) return;
+
+        int fd = it->second;
+        // EV_DELETE is automatic when the fd is closed
+        close(fd);
+        fd_to_path_.erase(fd);
+        watched_.erase(it);
+        changed_.erase(path);
+        wake();
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [path, fd] : watched_) {
+            close(fd);
+        }
+        watched_.clear();
+        fd_to_path_.clear();
+        changed_.clear();
+        wake();
+    }
+
+    std::vector<std::string> poll_changed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result(changed_.begin(), changed_.end());
+        changed_.clear();
+        return result;
+    }
+
+    // Re-open the fd for a path whose inode was deleted or renamed.
+    // Caller must hold mutex_.
+    void rewatch(const std::string& path, int old_fd) {
+        close(old_fd);
+        fd_to_path_.erase(old_fd);
+
+        int new_fd = open(path.c_str(), O_EVTONLY);
+        if (new_fd < 0) {
+            watched_.erase(path);
+            return;
+        }
+        struct kevent ev;
+        EV_SET(&ev, new_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+               NOTE_WRITE | NOTE_RENAME | NOTE_DELETE | NOTE_ATTRIB,
+               0, nullptr);
+        kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+        watched_[path] = new_fd;
+        fd_to_path_[new_fd] = path;
+    }
+
+    void handle_event(const struct kevent& ev) {
+        int fd = static_cast<int>(ev.ident);
+        if (fd == wake_pipe_[0]) {
+            drain_wake_pipe();
+            return;
+        }
+        auto it = fd_to_path_.find(fd);
+        if (it == fd_to_path_.end()) return;
+
+        changed_.insert(it->second);
+
+        if (ev.fflags & (NOTE_DELETE | NOTE_RENAME)) {
+            rewatch(it->second, fd);
+        }
+    }
+
+    void run() {
+        struct kevent events[16];
+        while (running_.load()) {
+            struct timespec timeout = {0, 500000000};
+            int n = kevent(kq_, nullptr, 0, events, 16, &timeout);
+            if (n <= 0) continue;
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (int i = 0; i < n; ++i) {
+                handle_event(events[i]);
+            }
+        }
+    }
+};
+
+// --------------------------------------------------------------------------
+// inotify backend (Linux)
+// --------------------------------------------------------------------------
+#elif defined(IDIFF_USE_INOTIFY)
+
+struct FileWatcher::Impl {
+    std::mutex mutex_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    int inotify_fd_ = -1;
+    int wake_pipe_[2] = {-1, -1};
+
+    // path -> watch descriptor
+    std::unordered_map<std::string, int> watched_;
+    // wd -> path
+    std::unordered_map<int, std::string> wd_to_path_;
+
+    std::unordered_set<std::string> changed_;
+
+    Impl() {
+        inotify_fd_ = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (inotify_fd_ < 0) {
+            LOG_ERROR("FileWatcher: inotify_init1 failed");
+            return;
+        }
+        if (pipe(wake_pipe_) != 0) {
+            LOG_ERROR("FileWatcher: pipe() failed");
+            close(inotify_fd_);
+            inotify_fd_ = -1;
+            return;
+        }
+        running_.store(true);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~Impl() {
+        running_.store(false);
+        wake();
+        if (thread_.joinable()) thread_.join();
+
+        for (auto& [path, wd] : watched_) {
+            inotify_rm_watch(inotify_fd_, wd);
+        }
+        if (inotify_fd_ >= 0) close(inotify_fd_);
+        if (wake_pipe_[0] >= 0) close(wake_pipe_[0]);
+        if (wake_pipe_[1] >= 0) close(wake_pipe_[1]);
+    }
+
+    void wake() {
+        if (wake_pipe_[1] >= 0) {
+            char c = 'w';
+            (void)write(wake_pipe_[1], &c, 1);
+        }
+    }
+
+    void add_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (watched_.count(path)) return;
+
+        // inotify watches directories, not individual files.
+        // We watch the parent directory and filter events by filename.
+        // However, for simplicity with the rename/delete pattern
+        // (mv new old), we watch with IN_CLOSE_WRITE | IN_MOVED_TO
+        // on the parent, keyed by the filename.
+        //
+        // Simpler approach: watch the file directly. inotify supports
+        // this but the watch is removed on delete. We re-add on IN_DELETE_SELF.
+        int wd = inotify_add_watch(inotify_fd_, path.c_str(),
+                                   IN_MODIFY | IN_CLOSE_WRITE |
+                                   IN_DELETE_SELF | IN_MOVE_SELF |
+                                   IN_ATTRIB);
+        if (wd < 0) {
+            LOG_WARN("FileWatcher: inotify_add_watch failed for '%s'",
+                     path.c_str());
+            return;
+        }
+        watched_[path] = wd;
+        wd_to_path_[wd] = path;
+        wake();
+    }
+
+    void remove_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = watched_.find(path);
+        if (it == watched_.end()) return;
+
+        inotify_rm_watch(inotify_fd_, it->second);
+        wd_to_path_.erase(it->second);
+        watched_.erase(it);
+        changed_.erase(path);
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [path, wd] : watched_) {
+            inotify_rm_watch(inotify_fd_, wd);
+        }
+        watched_.clear();
+        wd_to_path_.clear();
+        changed_.clear();
+    }
+
+    std::vector<std::string> poll_changed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result(changed_.begin(), changed_.end());
+        changed_.clear();
+        return result;
+    }
+
+    // Try to re-watch a path after its inode was deleted or moved.
+    // Caller must hold mutex_.
+    void rewatch(const std::string& path, int old_wd) {
+        wd_to_path_.erase(old_wd);
+        watched_.erase(path);
+
+        int new_wd = inotify_add_watch(
+            inotify_fd_, path.c_str(),
+            IN_MODIFY | IN_CLOSE_WRITE |
+            IN_DELETE_SELF | IN_MOVE_SELF | IN_ATTRIB);
+        if (new_wd >= 0) {
+            watched_[path] = new_wd;
+            wd_to_path_[new_wd] = path;
+        }
+    }
+
+    void drain_events(char* buf, ssize_t len) {
+        for (char* ptr = buf; ptr < buf + len; ) {
+            auto* event = reinterpret_cast<struct inotify_event*>(ptr);
+            ptr += sizeof(struct inotify_event) + event->len;
+
+            auto it = wd_to_path_.find(event->wd);
+            if (it == wd_to_path_.end()) continue;
+
+            changed_.insert(it->second);
+
+            if (event->mask & (IN_DELETE_SELF | IN_MOVE_SELF)) {
+                rewatch(it->second, event->wd);
+            }
+        }
+    }
+
+    void run() {
+        struct pollfd fds[2];
+        fds[0].fd = inotify_fd_;
+        fds[0].events = POLLIN;
+        fds[1].fd = wake_pipe_[0];
+        fds[1].events = POLLIN;
+
+        alignas(struct inotify_event) char buf[4096];
+
+        while (running_.load()) {
+            int ret = poll(fds, 2, 500);
+            if (ret <= 0) continue;
+
+            if (fds[1].revents & POLLIN) {
+                char tmp[64];
+                while (read(wake_pipe_[0], tmp, sizeof(tmp)) > 0) {}
+            }
+            if (!(fds[0].revents & POLLIN)) continue;
+
+            ssize_t len = read(inotify_fd_, buf, sizeof(buf));
+            if (len <= 0) continue;
+
+            std::lock_guard<std::mutex> lock(mutex_);
+            drain_events(buf, len);
+        }
+    }
+};
+
+// --------------------------------------------------------------------------
+// Polling fallback (Windows and others)
+// --------------------------------------------------------------------------
+#else
+
+struct FileWatcher::Impl {
+    std::mutex mutex_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    std::condition_variable cv_;
+
+    struct WatchedFile {
+        std::string path;
+        std::time_t last_mtime = 0;
+        off_t last_size = 0;
+    };
+    std::unordered_map<std::string, WatchedFile> watched_;
+    std::unordered_set<std::string> changed_;
+
+    static std::time_t get_mtime(const std::string& path) {
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) return 0;
+        return st.st_mtime;
+    }
+
+    static off_t get_size(const std::string& path) {
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) return -1;
+        return st.st_size;
+    }
+
+    Impl() {
+        running_.store(true);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~Impl() {
+        running_.store(false);
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void add_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (watched_.count(path)) return;
+        WatchedFile wf;
+        wf.path = path;
+        wf.last_mtime = get_mtime(path);
+        wf.last_size = get_size(path);
+        if (wf.last_mtime == 0) {
+            LOG_WARN("FileWatcher: cannot stat '%s' for watching", path.c_str());
+            return;
+        }
+        watched_[path] = wf;
+    }
+
+    void remove_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        watched_.erase(path);
+        changed_.erase(path);
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        watched_.clear();
+        changed_.clear();
+    }
+
+    std::vector<std::string> poll_changed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result(changed_.begin(), changed_.end());
+        changed_.clear();
+        return result;
+    }
+
+    void run() {
+        while (running_.load()) {
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait_for(lock, std::chrono::milliseconds(500),
+                             [this] { return !running_.load(); });
+                if (!running_.load()) break;
+
+                for (auto& [path, wf] : watched_) {
+                    auto mtime = get_mtime(path);
+                    auto size = get_size(path);
+                    if (mtime != wf.last_mtime || size != wf.last_size) {
+                        wf.last_mtime = mtime;
+                        wf.last_size = size;
+                        changed_.insert(path);
+                    }
+                }
+            }
+        }
+    }
+};
+
+#endif
+
+// --------------------------------------------------------------------------
+// FileWatcher public interface (delegates to Impl)
+// --------------------------------------------------------------------------
+
+FileWatcher::FileWatcher() : impl_(std::make_unique<Impl>()) {}
+
+FileWatcher::~FileWatcher() = default;
+
+FileWatcher::FileWatcher(FileWatcher&&) noexcept = default;
+FileWatcher& FileWatcher::operator=(FileWatcher&&) noexcept = default;
+
+void FileWatcher::add_path(const std::string& path) {
+    impl_->add_path(path);
+}
+
+void FileWatcher::remove_path(const std::string& path) {
+    impl_->remove_path(path);
+}
+
+void FileWatcher::clear() {
+    impl_->clear();
+}
+
+std::vector<std::string> FileWatcher::poll_changed() {
+    return impl_->poll_changed();
+}
+
+} // namespace idiff

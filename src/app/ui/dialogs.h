@@ -2,6 +2,7 @@
 #define IDIFF_APP_UI_DIALOGS_H
 
 #include <string>
+#include <vector>
 
 namespace idiff {
 
@@ -40,6 +41,23 @@ struct QuitConfirmDialogState {
 // state.visible is false.
 void render_quit_confirm_dialog(QuitConfirmDialogState& state,
                                 SrTaskService& sr_service);
+
+// State and outputs of the "file changed on disk" reload prompt.
+// The UI shell accumulates changed paths from the file watcher and
+// opens this dialog; the user either reloads or dismisses.
+struct ReloadDialogState {
+    bool visible = false;
+    bool needs_open = false;
+    // Paths that changed since last acknowledged.
+    std::vector<std::string> changed_paths;
+    // Set to true when the user clicks "Reload"; the caller acts on
+    // it next frame and clears it.
+    bool reload_requested = false;
+};
+
+// Render the file-changed-on-disk modal.  No-op when state.visible
+// is false.
+void render_reload_dialog(ReloadDialogState& state);
 
 } // namespace idiff
 
