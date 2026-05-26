@@ -163,8 +163,9 @@ struct FileWatcher::Impl {
     }
 
     // Re-open the fd for a path whose inode was deleted or renamed.
-    // Caller must hold mutex_.
-    void rewatch(const std::string& path, int old_fd) {
+    // Caller must hold mutex_.  Takes path by value because the
+    // caller passes a reference into fd_to_path_ which is erased below.
+    void rewatch(std::string path, int old_fd) {
         close(old_fd);
         fd_to_path_.erase(old_fd);
 
@@ -179,7 +180,7 @@ struct FileWatcher::Impl {
                0, nullptr);
         kevent(kq_, &ev, 1, nullptr, 0, nullptr);
         watched_[path] = new_fd;
-        fd_to_path_[new_fd] = path;
+        fd_to_path_[new_fd] = std::move(path);
     }
 
     void handle_event(const struct kevent& ev) {
@@ -328,8 +329,9 @@ struct FileWatcher::Impl {
     }
 
     // Try to re-watch a path after its inode was deleted or moved.
-    // Caller must hold mutex_.
-    void rewatch(const std::string& path, int old_wd) {
+    // Caller must hold mutex_.  Takes path by value because the
+    // caller passes a reference into wd_to_path_ which is erased below.
+    void rewatch(std::string path, int old_wd) {
         wd_to_path_.erase(old_wd);
         watched_.erase(path);
 
@@ -339,7 +341,7 @@ struct FileWatcher::Impl {
             IN_DELETE_SELF | IN_MOVE_SELF | IN_ATTRIB);
         if (new_wd >= 0) {
             watched_[path] = new_wd;
-            wd_to_path_[new_wd] = path;
+            wd_to_path_[new_wd] = std::move(path);
         }
     }
 
