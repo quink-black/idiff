@@ -1176,7 +1176,17 @@ void App::save_viewport_dialog() {
 
 void App::remove_entry(int index) {
     if (index >= 0 && index < static_cast<int>(entries_view().size())) {
-        state_->file_watcher->remove_path(entries_view()[index].path);
+        const auto& path = entries_view()[index].path;
+        state_->file_watcher->remove_path(path);
+
+        // Purge from the reload dialog so a stale notification does not
+        // show a file that is no longer loaded.
+        auto& rd = state_->reload_dialog;
+        auto& cp = rd.changed_paths;
+        cp.erase(std::remove(cp.begin(), cp.end(), path), cp.end());
+        if (cp.empty() && rd.visible) {
+            rd.visible = false;
+        }
     }
     controller_->remove_entry(index);
 }
