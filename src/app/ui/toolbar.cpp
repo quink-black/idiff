@@ -93,6 +93,12 @@ void render_toolbar(const ToolbarInputs& in) {
     if (ImGui::SmallButton("+ Open")) {
         if (in.on_open_files) in.on_open_files();
     }
+    if (in.any_entries_loaded) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reload")) {
+            if (in.on_reload_all_images) in.on_reload_all_images();
+        }
+    }
 
     // Channel view selector.
     {
