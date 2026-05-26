@@ -57,6 +57,8 @@ struct ImageListInputs {
     std::function<void(int entry_idx)> on_select_only_this;
     std::function<void()> on_invert_selection;
     std::function<void()> on_unselect_all;
+    std::function<void(int entry_idx)> on_reload_entry;
+    std::function<void()> on_reload_all;
     std::function<void(int entry_idx)> on_remove_entry;
     std::function<void()> on_remove_selected;
     std::function<void()> on_remove_all;
