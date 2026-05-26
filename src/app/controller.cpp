@@ -222,6 +222,59 @@ void AppController::reload_all_images() {
     status_reporter_->set_status(status);
 }
 
+void AppController::reload_entry(int index) {
+    const int n = static_cast<int>(library_->all().size());
+    if (index < 0 || index >= n) return;
+
+    auto& entry = library_->all()[index];
+    if (auto* ifs = dynamic_cast<ImageFileSource*>(entry.source.get())) {
+        ifs->set_preferred_backend(loader_backend_);
+    }
+    auto img = entry.source ? entry.source->read_frame(0) : nullptr;
+    if (img) {
+        entry.image = std::move(img);
+        entry.display_image.reset();
+        entry.texture_dirty = true;
+        diff_->mark_dirty();
+    } else {
+        std::string err = entry.source ? entry.source->last_error()
+                                       : "no source";
+        status_reporter_->set_status("Reload failed: " + entry.filename
+                                     + " (" + err + ")");
+    }
+}
+
+int AppController::reload_entries_by_path(
+        const std::vector<std::string>& paths) {
+    auto& entries = library_->all();
+    int reloaded = 0;
+    for (const auto& path : paths) {
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+            if (entries[i].path == path) {
+                if (auto* ifs = dynamic_cast<ImageFileSource*>(
+                        entries[i].source.get())) {
+                    ifs->set_preferred_backend(loader_backend_);
+                }
+                auto img = entries[i].source
+                    ? entries[i].source->read_frame(0) : nullptr;
+                if (img) {
+                    entries[i].image = std::move(img);
+                    entries[i].display_image.reset();
+                    entries[i].texture_dirty = true;
+                    ++reloaded;
+                }
+                break;
+            }
+        }
+    }
+    if (reloaded > 0) {
+        diff_->mark_dirty();
+        status_reporter_->set_status(
+            "Reloaded " + std::to_string(reloaded) + " changed file(s)");
+    }
+    return reloaded;
+}
+
 AppController::LoadImagesResult
 AppController::load_images(const std::vector<std::string>& paths) {
     LoadImagesResult result;
@@ -232,6 +285,29 @@ AppController::load_images(const std::vector<std::string>& paths) {
     const bool was_empty = library_->all().empty();
 
     for (const auto& path : paths) {
+        // Deduplicate: if this path is already loaded, refresh the
+        // existing entry instead of appending a duplicate.
+        bool found_existing = false;
+        for (auto& existing : library_->all()) {
+            if (existing.path == path) {
+                if (auto* ifs = dynamic_cast<ImageFileSource*>(
+                        existing.source.get())) {
+                    ifs->set_preferred_backend(loader_backend_);
+                }
+                auto img = existing.source
+                    ? existing.source->read_frame(0) : nullptr;
+                if (img) {
+                    existing.image = std::move(img);
+                    existing.display_image.reset();
+                    existing.texture_dirty = true;
+                    status_reporter_->set_status("Refreshed: " + path);
+                }
+                found_existing = true;
+                break;
+            }
+        }
+        if (found_existing) continue;
+
         // Create the appropriate MediaSource based on file type.
         // Video container files (MP4, MKV, etc.) get a VideoFileSource
         // that supports multi-frame decoding; everything else gets an

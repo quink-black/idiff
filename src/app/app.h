@@ -194,6 +194,10 @@ private:
     void render_error_dialog();
     // Render the quit-while-SR-running confirmation dialog.
     void render_quit_confirm_dialog();
+    // Render the file-changed-on-disk reload prompt.
+    void render_reload_dialog();
+    // Poll the file watcher and trigger the reload dialog if files changed.
+    void poll_file_watcher();
     // Render the super-resolution configuration dialog.
     void render_sr_dialog();
     // Poll all running SR tasks, update status, and add completed
