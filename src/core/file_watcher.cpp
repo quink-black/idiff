@@ -32,6 +32,7 @@
 #endif
 #include <windows.h>
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
 #include <filesystem>
 #include <memory>
@@ -58,7 +59,11 @@ struct FileWatcher::Impl {
     // pipe used to wake the kqueue thread when paths are added/removed
     int wake_pipe_[2] = {-1, -1};
 
-    // path -> fd being watched
+    // path -> fd being watched.  We deliberately do NOT track mtime /
+    // size here: kqueue (with NOTE_ATTRIB filtered out at registration
+    // time) only fires for genuine content/structure changes, and a
+    // stat()-based second pass would race with the writer on small
+    // edits where mtime granularity hides the change.
     std::unordered_map<std::string, int> watched_;
     // fd -> path (reverse lookup for kevent results)
     std::unordered_map<int, std::string> fd_to_path_;
@@ -128,9 +133,14 @@ struct FileWatcher::Impl {
             return;
         }
 
+        // Watch only "real" content/structure changes.  NOTE_ATTRIB is
+        // intentionally omitted because macOS fires it for many things
+        // unrelated to user edits (Spotlight metadata, atime updates,
+        // Finder "last used" timestamps, antivirus stat() probes), and
+        // those would otherwise surface as bogus reload prompts.
         struct kevent ev;
         EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
-               NOTE_WRITE | NOTE_RENAME | NOTE_DELETE | NOTE_ATTRIB,
+               NOTE_WRITE | NOTE_EXTEND | NOTE_RENAME | NOTE_DELETE,
                0, nullptr);
         if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
             LOG_WARN("FileWatcher: kevent register failed for '%s'", path.c_str());
@@ -189,7 +199,7 @@ struct FileWatcher::Impl {
         }
         struct kevent ev;
         EV_SET(&ev, new_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
-               NOTE_WRITE | NOTE_RENAME | NOTE_DELETE | NOTE_ATTRIB,
+               NOTE_WRITE | NOTE_EXTEND | NOTE_RENAME | NOTE_DELETE,
                0, nullptr);
         kevent(kq_, &ev, 1, nullptr, 0, nullptr);
         watched_[path] = new_fd;
@@ -239,7 +249,10 @@ struct FileWatcher::Impl {
     int inotify_fd_ = -1;
     int wake_pipe_[2] = {-1, -1};
 
-    // path -> watch descriptor
+    // path -> watch descriptor.  We rely on inotify's event mask alone
+    // (with IN_ATTRIB filtered out at registration time) to decide
+    // whether to report a change, rather than running a stat() second
+    // pass that would race with small writes.
     std::unordered_map<std::string, int> watched_;
     // wd -> path
     std::unordered_map<int, std::string> wd_to_path_;
@@ -291,18 +304,16 @@ struct FileWatcher::Impl {
         std::lock_guard<std::mutex> lock(mutex_);
         if (watched_.count(path)) return;
 
-        // inotify watches directories, not individual files.
-        // We watch the parent directory and filter events by filename.
-        // However, for simplicity with the rename/delete pattern
-        // (mv new old), we watch with IN_CLOSE_WRITE | IN_MOVED_TO
-        // on the parent, keyed by the filename.
+        // Watch the file directly (inotify supports this; the watch is
+        // removed on delete and we re-add on IN_DELETE_SELF below).
         //
-        // Simpler approach: watch the file directly. inotify supports
-        // this but the watch is removed on delete. We re-add on IN_DELETE_SELF.
+        // IN_ATTRIB is intentionally omitted: it fires on chmod, atime
+        // updates from antivirus / indexing tools and other things
+        // unrelated to user edits, which would translate into a bogus
+        // "file modified, reload?" prompt.
         int wd = inotify_add_watch(inotify_fd_, path.c_str(),
                                    IN_MODIFY | IN_CLOSE_WRITE |
-                                   IN_DELETE_SELF | IN_MOVE_SELF |
-                                   IN_ATTRIB);
+                                   IN_DELETE_SELF | IN_MOVE_SELF);
         if (wd < 0) {
             LOG_WARN("FileWatcher: inotify_add_watch failed for '%s'",
                      path.c_str());
@@ -351,7 +362,7 @@ struct FileWatcher::Impl {
         int new_wd = inotify_add_watch(
             inotify_fd_, path.c_str(),
             IN_MODIFY | IN_CLOSE_WRITE |
-            IN_DELETE_SELF | IN_MOVE_SELF | IN_ATTRIB);
+            IN_DELETE_SELF | IN_MOVE_SELF);
         if (new_wd >= 0) {
             watched_[path] = new_wd;
             wd_to_path_[new_wd] = std::move(path);
@@ -433,10 +444,17 @@ struct FileWatcher::Impl {
         // changes.  64 KiB is the documented maximum for remote shares;
         // we pick 32 KiB which is plenty for local NTFS.
         alignas(DWORD) BYTE buffer[32 * 1024]{};
-        // filename_lower -> original UTF-8 path passed to add_path().
-        // We key by lowercase wide name to match Windows' case-insensitive
-        // semantics, but return the exact string the caller registered.
-        std::unordered_map<std::wstring, std::string> files;
+        // Per-watched-file metadata.  We key by lowercase wide name to
+        // match Windows' case-insensitive semantics; the value carries
+        // the original UTF-8 path the caller registered as well as a
+        // short cooldown timestamp used to coalesce the secondary
+        // metadata-flush event ReadDirectoryChangesW emits a few tens
+        // of milliseconds after a write+close (see decode_notifications).
+        struct FileEntry {
+            std::string original_path;
+            std::chrono::steady_clock::time_point cooldown_until{};
+        };
+        std::unordered_map<std::wstring, FileEntry> files;
         bool pending = false;               // is an async read outstanding?
     };
 
@@ -531,10 +549,14 @@ struct FileWatcher::Impl {
     // ensure no read is currently outstanding.
     bool issue_read(DirWatch* d) {
         ZeroMemory(&d->overlapped, sizeof(OVERLAPPED));
+        // FILE_NOTIFY_CHANGE_ATTRIBUTES is intentionally omitted: it
+        // fires for ACL edits, hidden/system bit toggles, archive bit
+        // resets, and so on, none of which represent user-visible
+        // content changes and would otherwise translate into bogus
+        // reload prompts on Windows.
         DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME
                      | FILE_NOTIFY_CHANGE_LAST_WRITE
                      | FILE_NOTIFY_CHANGE_SIZE
-                     | FILE_NOTIFY_CHANGE_ATTRIBUTES
                      | FILE_NOTIFY_CHANGE_CREATION;
         BOOL ok = ReadDirectoryChangesW(
             d->handle,
@@ -598,7 +620,7 @@ struct FileWatcher::Impl {
                 return;
             }
         }
-        it->second->files[file_key] = path;
+        it->second->files[file_key] = DirWatch::FileEntry{path, {}};
         path_to_dir_[path] = dir_key;
     }
 
@@ -648,18 +670,43 @@ struct FileWatcher::Impl {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<std::string> result(changed_.begin(), changed_.end());
         changed_.clear();
+
+        // Arm a brief cooldown for every path we just reported.  NTFS
+        // emits a secondary metadata-flush notification a few tens of
+        // milliseconds after a write+close, which would otherwise show
+        // up as a spurious second event for the same edit.  150 ms is
+        // long enough to absorb that flush yet far shorter than any
+        // realistic interval between two distinct user edits.
+        const auto cooldown = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(150);
+        for (const auto& p : result) {
+            auto pit = path_to_dir_.find(p);
+            if (pit == path_to_dir_.end()) continue;
+            auto dit = dirs_.find(pit->second);
+            if (dit == dirs_.end()) continue;
+            std::filesystem::path fs_path(p);
+            std::wstring file_key = to_lower_w(fs_path.filename().wstring());
+            auto fit = dit->second->files.find(file_key);
+            if (fit != dit->second->files.end()) {
+                fit->second.cooldown_until = cooldown;
+            }
+        }
         return result;
     }
 
     // Decode one filled buffer of FILE_NOTIFY_INFORMATION records.
     // Caller holds mutex_.
     void decode_notifications(DirWatch* d, DWORD bytes) {
+        const auto now = std::chrono::steady_clock::now();
         if (bytes == 0) {
             // A zero-byte completion means the buffer overflowed.  Mark
             // every watched file in this directory as changed because we
-            // cannot know which entries were affected.
-            for (auto& [_, original] : d->files) {
-                changed_.insert(original);
+            // cannot know which entries were affected -- skipping those
+            // still in their post-poll cooldown so we do not double-
+            // report a write that already completed.
+            for (auto& [_, fe] : d->files) {
+                if (now < fe.cooldown_until) continue;
+                changed_.insert(fe.original_path);
             }
             return;
         }
@@ -673,7 +720,9 @@ struct FileWatcher::Impl {
 
             auto fit = d->files.find(key);
             if (fit != d->files.end()) {
-                changed_.insert(fit->second);
+                if (now >= fit->second.cooldown_until) {
+                    changed_.insert(fit->second.original_path);
+                }
             }
             if (info->NextEntryOffset == 0) break;
             p += info->NextEntryOffset;
