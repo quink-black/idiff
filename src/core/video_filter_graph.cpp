@@ -20,18 +20,18 @@ namespace idiff {
 
 namespace {
 
-// Format an AVRational as "num/den" into a fixed-size buffer.  Returns
-// the number of characters written (excluding NUL).
-int format_rational(char* buf, size_t cap, AVRational r) {
-    if (r.num == 0 || r.den == 0) {
-        return std::snprintf(buf, cap, "1/1");
-    }
-    return std::snprintf(buf, cap, "%d/%d", r.num, r.den);
-}
-
 const char* pix_fmt_name(AVPixelFormat fmt) {
     const char* n = av_get_pix_fmt_name(fmt);
     return n ? n : "?";
+}
+
+// Format an FFmpeg negative return code into the caller's `err`
+// string with a leading prefix.  Centralises the boilerplate so
+// every error path reads the same way.
+void set_av_err(std::string& err, const char* prefix, int ret) {
+    char buf[128];
+    av_strerror(ret, buf, sizeof(buf));
+    err = std::string(prefix) + ": " + buf;
 }
 
 } // namespace
@@ -86,6 +86,15 @@ void VideoFilterGraph::reset() noexcept {
     if (impl_) impl_->close();
 }
 
+std::string VideoFilterGraph::graph_description() const {
+    if (!is_configured() || !impl_->graph) return {};
+    char* dump = avfilter_graph_dump(impl_->graph, nullptr);
+    if (!dump) return {};
+    std::string s(dump);
+    av_free(dump);
+    return s;
+}
+
 bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
                                  const VideoFilterOutputParams& out,
                                  std::string& err) {
@@ -106,57 +115,74 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
         return false;
     }
 
-    // ---- buffer source ----
-    //
-    // The buffer src needs the source frame's geometry, format, SAR
-    // and time_base.  Colour metadata is set on the frames themselves
-    // (and replicated as vf_scale's in_* options below).
-
-    const AVFilter* src_filter = avfilter_get_by_name("buffer");
-    const AVFilter* sink_filter = avfilter_get_by_name("buffersink");
-    if (!src_filter || !sink_filter) {
-        err = "buffer/buffersink filter not registered";
+    const AVFilter* src_filter   = avfilter_get_by_name("buffer");
+    const AVFilter* sink_filter  = avfilter_get_by_name("buffersink");
+    const AVFilter* scale_filter = avfilter_get_by_name("scale");
+    if (!src_filter || !sink_filter || !scale_filter) {
+        err = "buffer/buffersink/scale filter not registered";
         impl_->close();
         return false;
     }
 
-    char src_args[256];
-    char sar_buf[32];
-    char tb_buf[32];
-    format_rational(sar_buf, sizeof(sar_buf), in.sar);
-    format_rational(tb_buf, sizeof(tb_buf), in.time_base);
-    std::snprintf(src_args, sizeof(src_args),
-                  "video_size=%dx%d:pix_fmt=%d:time_base=%s:pixel_aspect=%s",
-                  in.width, in.height,
-                  static_cast<int>(in.pix_fmt),
-                  tb_buf, sar_buf);
+    // ---- buffer source ----------------------------------------------------
+    //
+    // Every option below is init-time on vf_buffer.  Allocate the
+    // context, set options via av_opt_*, then init explicitly.  Using
+    // avfilter_graph_create_filter() would init immediately and any
+    // subsequent option set would fail with "not a runtime option".
 
-    int ret = avfilter_graph_create_filter(&impl_->src_ctx, src_filter,
-                                           "in", src_args, nullptr,
-                                           impl_->graph);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffer src create failed: ") + e;
+    impl_->src_ctx = avfilter_graph_alloc_filter(
+        impl_->graph, src_filter, "in");
+    if (!impl_->src_ctx) {
+        err = "buffer src alloc failed";
         impl_->close();
         return false;
     }
 
-    // ---- buffer sink ----
-    //
-    // `pixel_formats` is an init-time option on buffersink: it must
-    // be set BEFORE the filter is initialised, otherwise libavfilter
-    // rejects it ("not a runtime option").  We therefore use the
-    // two-step avfilter_graph_alloc_filter() + av_opt_set_array() +
-    // avfilter_init_str() pattern, not the convenience
-    // avfilter_graph_create_filter() that initialises immediately.
-    //
-    // The legacy "pix_fmts" binary-blob option still exists but is
-    // marked deprecated on FFmpeg 8; the modern array-typed
-    // "pixel_formats" replaces it.  We require FFmpeg >= 8.1.
+    const AVRational tb =
+        (in.time_base.num && in.time_base.den) ? in.time_base
+                                               : AVRational{1, 1};
+    const AVRational sar =
+        (in.sar.num && in.sar.den) ? in.sar : AVRational{1, 1};
 
-    impl_->sink_ctx = avfilter_graph_alloc_filter(impl_->graph,
-                                                  sink_filter, "out");
+    int rc = 0;
+    rc |= av_opt_set_int(impl_->src_ctx, "width",  in.width,
+                         AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(impl_->src_ctx, "height", in.height,
+                         AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(impl_->src_ctx, "pix_fmt",
+                         static_cast<int>(in.pix_fmt),
+                         AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_q(impl_->src_ctx, "time_base",    tb,
+                       AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_q(impl_->src_ctx, "pixel_aspect", sar,
+                       AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(impl_->src_ctx, "colorspace", in.matrix,
+                         AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(impl_->src_ctx, "range",      in.range,
+                         AV_OPT_SEARCH_CHILDREN);
+    if (rc != 0) {
+        err = "buffer src option set failed";
+        impl_->close();
+        return false;
+    }
+
+    if (int ret = avfilter_init_str(impl_->src_ctx, nullptr); ret < 0) {
+        set_av_err(err, "buffer src init failed", ret);
+        impl_->close();
+        return false;
+    }
+
+    // ---- buffer sink ------------------------------------------------------
+    //
+    // `pixel_formats` is the modern array-typed init-time option that
+    // replaces the deprecated `pix_fmts` blob.  Constraining the sink
+    // to a single format means we never have to insert an explicit
+    // `format` filter ourselves: libavfilter inserts an auto-format
+    // node only if scale's output does not already match.
+
+    impl_->sink_ctx = avfilter_graph_alloc_filter(
+        impl_->graph, sink_filter, "out");
     if (!impl_->sink_ctx) {
         err = "buffer sink alloc failed";
         impl_->close();
@@ -164,47 +190,57 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
     }
 
     const AVPixelFormat sink_pix_fmts[] = {out.pix_fmt};
-    ret = av_opt_set_array(impl_->sink_ctx, "pixel_formats",
-                           AV_OPT_SEARCH_CHILDREN,
-                           0, 1, AV_OPT_TYPE_PIXEL_FMT,
-                           sink_pix_fmts);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffer sink pixel_formats set failed: ") + e;
+    if (int ret = av_opt_set_array(
+            impl_->sink_ctx, "pixel_formats", AV_OPT_SEARCH_CHILDREN,
+            0, 1, AV_OPT_TYPE_PIXEL_FMT, sink_pix_fmts);
+        ret < 0) {
+        set_av_err(err, "buffer sink pixel_formats set failed", ret);
         impl_->close();
         return false;
     }
 
-    ret = avfilter_init_str(impl_->sink_ctx, nullptr);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffer sink init failed: ") + e;
+    if (int ret = avfilter_init_str(impl_->sink_ctx, nullptr); ret < 0) {
+        set_av_err(err, "buffer sink init failed", ret);
         impl_->close();
         return false;
     }
 
-    // ---- scale filter ----
+    // ---- scale filter -----------------------------------------------------
     //
-    // We construct it as a free-standing AVFilterContext (rather than
-    // through avfilter_graph_parse_ptr) so all colour parameters can
-    // be set via the option API -- safer than building a filter
-    // description string and dealing with quoting.
+    // Built free-standing so colour parameters go through the option
+    // API rather than a quoted description string.
     //
-    // Same two-step pattern as the buffer sink above: every option
-    // we set (w / h / flags / in_* / out_*) is init-time, so we must
-    // alloc, set, then explicitly init.  Using the one-shot
-    // avfilter_graph_create_filter() would init immediately and
-    // every subsequent av_opt_set_* would fail with "not a runtime
-    // option".
-
-    const AVFilter* scale_filter = avfilter_get_by_name("scale");
-    if (!scale_filter) {
-        err = "scale filter not registered";
-        impl_->close();
-        return false;
-    }
+    // SDR vs HDR semantic split:
+    //
+    //   * SDR sources -- we set ONLY in_color_matrix + in_range.
+    //     Without primaries / transfer, vf_scale does a pure YUV->RGB
+    //     matrix decode and treats the source RGB primaries as the
+    //     destination's, i.e. no gamut or gamma conversion.  This is
+    //     the "as encoded" semantics every consumer player implements
+    //     for SDR display: if a clip is tagged SMPTE-170M, decoding
+    //     it through the BT.601 matrix should still display pure red
+    //     for an encoded pure red, not (245, 41, 0) -- the latter is
+    //     what a perceptually-correct gamut conversion to BT.709
+    //     produces, and is *not* what users expect from a video
+    //     viewer.
+    //
+    //   * HDR sources (PQ / HLG transfer) -- we set the full four-
+    //     tuple on both ends.  vf_scale then performs gamma-correct
+    //     linear-light conversion plus BT.2020 -> BT.709 gamut remap,
+    //     which is the only correct way to display HDR content on an
+    //     SDR sink.
+    //
+    // This is a real semantic split, not defensive code: the SDR
+    // tests in test_video_filter_graph.cpp lock the behaviour in
+    // place -- if anyone tries to "simplify" by always passing the
+    // full four-tuple, BT.601 red will land at (245, 41, 0) and the
+    // tests will fail immediately.
+    //
+    // Likewise we deliberately do NOT set `flags`.  Forcing
+    // `flags=bilinear` disables libswscale's full-precision colour
+    // pipeline (it picks a fast integer path), which silently breaks
+    // HDR conversions even when the colour options below say
+    // otherwise.
 
     AVFilterContext* scale_ctx = avfilter_graph_alloc_filter(
         impl_->graph, scale_filter, "scale");
@@ -214,83 +250,80 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
         return false;
     }
 
-    // Output dimensions: 0 means "keep source size" -- pass through as
-    // the FFmpeg conventional iw/ih sentinels by using -1 expressions
-    // or simply reusing the source size.
     const int out_w = (out.width  > 0) ? out.width  : in.width;
     const int out_h = (out.height > 0) ? out.height : in.height;
-
-    auto set_int = [&](const char* name, int64_t v) -> int {
-        return av_opt_set_int(scale_ctx, name, v, AV_OPT_SEARCH_CHILDREN);
-    };
-    auto set_str = [&](const char* name, const char* v) -> int {
-        return av_opt_set(scale_ctx, name, v, AV_OPT_SEARCH_CHILDREN);
-    };
-
     char wbuf[16], hbuf[16];
     std::snprintf(wbuf, sizeof(wbuf), "%d", out_w);
     std::snprintf(hbuf, sizeof(hbuf), "%d", out_h);
 
-    int rc = 0;
-    rc |= set_str("w", wbuf);
-    rc |= set_str("h", hbuf);
-    rc |= set_str("flags", "bilinear");
+    const bool src_is_hdr = (in.transfer == AVCOL_TRC_SMPTE2084 ||
+                             in.transfer == AVCOL_TRC_ARIB_STD_B67);
 
-    // Source colour properties.
-    rc |= set_int("in_range",      in.range);
-    rc |= set_int("in_color_matrix",   in.matrix);
-    rc |= set_int("in_primaries",  in.primaries);
-    rc |= set_int("in_transfer",   in.transfer);
+    // For RGB sinks the destination matrix is implicit in the pixel
+    // format -- explicitly setting out_color_matrix=RGB on packed
+    // RGB outputs makes vf_scale apply an unwanted second matrix
+    // step.  For YUV / gray destinations we do need to tell vf_scale
+    // which matrix to encode into.
+    const bool out_is_packed_rgb = (out.pix_fmt == AV_PIX_FMT_RGB24 ||
+                                    out.pix_fmt == AV_PIX_FMT_BGR24);
 
-    // Destination colour properties.
-    rc |= set_int("out_range",     out.range);
-    rc |= set_int("out_color_matrix",  out.matrix);
-    rc |= set_int("out_primaries", out.primaries);
-    rc |= set_int("out_transfer",  out.transfer);
-
+    rc = 0;
+    rc |= av_opt_set    (scale_ctx, "w", wbuf, AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set    (scale_ctx, "h", hbuf, AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(scale_ctx, "in_range",        in.range,
+                         AV_OPT_SEARCH_CHILDREN);
+    rc |= av_opt_set_int(scale_ctx, "in_color_matrix", in.matrix,
+                         AV_OPT_SEARCH_CHILDREN);
+    if (src_is_hdr) {
+        rc |= av_opt_set_int(scale_ctx, "in_primaries", in.primaries,
+                             AV_OPT_SEARCH_CHILDREN);
+        rc |= av_opt_set_int(scale_ctx, "in_transfer",  in.transfer,
+                             AV_OPT_SEARCH_CHILDREN);
+    }
+    rc |= av_opt_set_int(scale_ctx, "out_range", out.range,
+                         AV_OPT_SEARCH_CHILDREN);
+    if (!out_is_packed_rgb) {
+        rc |= av_opt_set_int(scale_ctx, "out_color_matrix", out.matrix,
+                             AV_OPT_SEARCH_CHILDREN);
+    }
+    if (src_is_hdr) {
+        rc |= av_opt_set_int(scale_ctx, "out_primaries", out.primaries,
+                             AV_OPT_SEARCH_CHILDREN);
+        rc |= av_opt_set_int(scale_ctx, "out_transfer",  out.transfer,
+                             AV_OPT_SEARCH_CHILDREN);
+    }
     if (rc != 0) {
-        // FFmpeg >= 8.1 is mandatory; vf_scale must accept every
-        // colour option we set.  A failure here means the build is
-        // mis-linked or someone replaced libswscale -- fail loudly.
         err = "vf_scale rejected one or more colour options";
         impl_->close();
         return false;
     }
 
-    ret = avfilter_init_str(scale_ctx, nullptr);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("scale init failed: ") + e;
+    if (int ret = avfilter_init_str(scale_ctx, nullptr); ret < 0) {
+        set_av_err(err, "scale init failed", ret);
         impl_->close();
         return false;
     }
 
-    // ---- link buffer -> scale -> buffersink ----
+    // ---- link buffer -> scale -> buffersink -------------------------------
 
-    ret = avfilter_link(impl_->src_ctx, 0, scale_ctx, 0);
-    if (ret < 0) {
-        err = "link src->scale failed";
+    if (int ret = avfilter_link(impl_->src_ctx, 0, scale_ctx, 0); ret < 0) {
+        set_av_err(err, "link src->scale failed", ret);
         impl_->close();
         return false;
     }
-    ret = avfilter_link(scale_ctx, 0, impl_->sink_ctx, 0);
-    if (ret < 0) {
-        err = "link scale->sink failed";
-        impl_->close();
-        return false;
-    }
-
-    ret = avfilter_graph_config(impl_->graph, nullptr);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("graph config failed: ") + e;
+    if (int ret = avfilter_link(scale_ctx, 0, impl_->sink_ctx, 0); ret < 0) {
+        set_av_err(err, "link scale->sink failed", ret);
         impl_->close();
         return false;
     }
 
-    impl_->in_params = in;
+    if (int ret = avfilter_graph_config(impl_->graph, nullptr); ret < 0) {
+        set_av_err(err, "graph config failed", ret);
+        impl_->close();
+        return false;
+    }
+
+    impl_->in_params  = in;
     impl_->out_params = out;
     impl_->configured = true;
 
@@ -300,10 +333,10 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
              "out: range=%d matrix=%d prim=%d trc=%d)",
              in.width, in.height, pix_fmt_name(in.pix_fmt),
              out_w, out_h, pix_fmt_name(out.pix_fmt),
-             static_cast<int>(in.range),  static_cast<int>(in.matrix),
+             static_cast<int>(in.range),     static_cast<int>(in.matrix),
              static_cast<int>(in.primaries), static_cast<int>(in.transfer),
-             static_cast<int>(out.range), static_cast<int>(out.matrix),
-             static_cast<int>(out.primaries), static_cast<int>(out.transfer));
+             static_cast<int>(out.range),    static_cast<int>(out.matrix),
+             static_cast<int>(out.primaries),static_cast<int>(out.transfer));
 
     return true;
 }
@@ -313,19 +346,35 @@ bool VideoFilterGraph::needs_reconfigure(const AVFrame* in) const noexcept {
     const VideoFilterInputParams& p = impl_->in_params;
     if (in->width != p.width || in->height != p.height) return true;
     if (static_cast<AVPixelFormat>(in->format) != p.pix_fmt) return true;
+
+    // SAR: treat 0/1 (unset) as compatible -- many decoders never
+    // populate SAR on individual frames.
     if (in->sample_aspect_ratio.num != p.sar.num ||
         in->sample_aspect_ratio.den != p.sar.den) {
-        // Treat 0/1 (unset) as compatible with the configured SAR --
-        // many decoders simply leave SAR unset on individual frames.
         if (!(in->sample_aspect_ratio.num == 0 &&
               in->sample_aspect_ratio.den == 1)) {
             return true;
         }
     }
-    if (in->color_range != p.range) return true;
-    if (in->colorspace  != p.matrix) return true;
-    if (in->color_primaries != p.primaries) return true;
-    if (in->color_trc != p.transfer) return true;
+
+    // Colour metadata: treat the FFmpeg "UNSPECIFIED" sentinel on the
+    // frame as compatible with whatever resolved value was passed to
+    // configure().  Decoders routinely leave colour fields
+    // UNSPECIFIED at the frame level when the bitstream lacks them;
+    // the caller has already applied SD/HD/UHD heuristics, and we
+    // should not force a reconfigure just because the frame still
+    // carries the sentinel.
+    auto compat = [](int frame_val, int cfg_val, int unspec) {
+        return frame_val == cfg_val || frame_val == unspec;
+    };
+    if (!compat(in->color_range,     p.range,     AVCOL_RANGE_UNSPECIFIED))
+        return true;
+    if (!compat(in->colorspace,      p.matrix,    AVCOL_SPC_UNSPECIFIED))
+        return true;
+    if (!compat(in->color_primaries, p.primaries, AVCOL_PRI_UNSPECIFIED))
+        return true;
+    if (!compat(in->color_trc,       p.transfer,  AVCOL_TRC_UNSPECIFIED))
+        return true;
     return false;
 }
 
@@ -339,13 +388,18 @@ AVFrame* VideoFilterGraph::process(const AVFrame* in, std::string& err) {
         return nullptr;
     }
 
-    int ret = av_buffersrc_add_frame_flags(
-        impl_->src_ctx, const_cast<AVFrame*>(in),
-        AV_BUFFERSRC_FLAG_KEEP_REF);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffersrc add_frame failed: ") + e;
+    // Push the caller's frame as-is using KEEP_REF so libavfilter
+    // takes its own reference and we do not mutate the caller's
+    // frame.  Needed because needs_reconfigure() guarantees the
+    // frame's metadata is already compatible with the buffer src,
+    // so there is no need to clone-and-rewrite as earlier
+    // revisions did -- doing so was both wasted work and a way
+    // for genuinely mismatched metadata to silently slip through.
+    if (int ret = av_buffersrc_add_frame_flags(
+            impl_->src_ctx, const_cast<AVFrame*>(in),
+            AV_BUFFERSRC_FLAG_KEEP_REF);
+        ret < 0) {
+        set_av_err(err, "buffersrc add_frame failed", ret);
         return nullptr;
     }
 
@@ -355,11 +409,8 @@ AVFrame* VideoFilterGraph::process(const AVFrame* in, std::string& err) {
         return nullptr;
     }
 
-    ret = av_buffersink_get_frame(impl_->sink_ctx, out);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffersink get_frame failed: ") + e;
+    if (int ret = av_buffersink_get_frame(impl_->sink_ctx, out); ret < 0) {
+        set_av_err(err, "buffersink get_frame failed", ret);
         av_frame_free(&out);
         return nullptr;
     }
