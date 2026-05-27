@@ -105,8 +105,19 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
         return nullptr;
     }
 
+    // Grab a refcounted handle to the source-domain AVFrame for this
+    // same index.  decode_frame() above already populated the
+    // decoder's cached snapshot, so decode_frame_raw(index) here is a
+    // pure refcount bump on the existing buffers -- no second decode,
+    // no pixel copy.  The Image takes ownership and releases the ref
+    // in its destructor.  A nullptr (decode_frame_raw failure) is not
+    // fatal: the Image still carries the rgb mat, the pixel sampler
+    // will simply fall back to 8-bit values for this frame.
+    AVFrame* src_frame = decoder_->decode_frame_raw(index);
+
     auto img = std::make_unique<Image>();
     img->internal().mat = rgb;
+    img->internal().src_av_frame = src_frame;
     img->internal().info.width = rgb.cols;
     img->internal().info.height = rgb.rows;
     img->internal().info.pixel_format = PixelFormat::RGB8;
