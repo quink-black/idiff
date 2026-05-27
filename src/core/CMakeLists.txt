@@ -37,6 +37,7 @@ if(IDIFF_HAVE_FFMPEG)
     target_sources(idiff_core PRIVATE
         video_decoder.cpp
         video_file_source.cpp
+        video_filter_graph.cpp
     )
     target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_FFMPEG)
     target_link_libraries(idiff_core PUBLIC
@@ -44,6 +45,7 @@ if(IDIFF_HAVE_FFMPEG)
         PkgConfig::FFMPEG_LIBAVCODEC
         PkgConfig::FFMPEG_LIBAVUTIL
         PkgConfig::FFMPEG_LIBSWSCALE
+        PkgConfig::FFMPEG_LIBAVFILTER
     )
 endif()
 
