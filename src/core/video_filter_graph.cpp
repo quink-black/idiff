@@ -143,29 +143,44 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
     }
 
     // ---- buffer sink ----
+    //
+    // `pixel_formats` is an init-time option on buffersink: it must
+    // be set BEFORE the filter is initialised, otherwise libavfilter
+    // rejects it ("not a runtime option").  We therefore use the
+    // two-step avfilter_graph_alloc_filter() + av_opt_set_array() +
+    // avfilter_init_str() pattern, not the convenience
+    // avfilter_graph_create_filter() that initialises immediately.
+    //
+    // The legacy "pix_fmts" binary-blob option still exists but is
+    // marked deprecated on FFmpeg 8; the modern array-typed
+    // "pixel_formats" replaces it.  We require FFmpeg >= 8.1.
 
-    ret = avfilter_graph_create_filter(&impl_->sink_ctx, sink_filter,
-                                       "out", nullptr, nullptr,
-                                       impl_->graph);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("buffer sink create failed: ") + e;
+    impl_->sink_ctx = avfilter_graph_alloc_filter(impl_->graph,
+                                                  sink_filter, "out");
+    if (!impl_->sink_ctx) {
+        err = "buffer sink alloc failed";
         impl_->close();
         return false;
     }
 
-    // Constrain the sink to the desired pixel format -- vf_scale will
-    // negotiate to match this.  We use av_opt_set_bin() directly to
-    // avoid the av_opt_set_int_list() macro, which expands into a
-    // deprecated helper on FFmpeg 8 headers.
-    const AVPixelFormat sink_pix_fmts[] = {out.pix_fmt, AV_PIX_FMT_NONE};
-    ret = av_opt_set_bin(impl_->sink_ctx, "pix_fmts",
-                         reinterpret_cast<const uint8_t*>(sink_pix_fmts),
-                         sizeof(AVPixelFormat),
-                         AV_OPT_SEARCH_CHILDREN);
+    const AVPixelFormat sink_pix_fmts[] = {out.pix_fmt};
+    ret = av_opt_set_array(impl_->sink_ctx, "pixel_formats",
+                           AV_OPT_SEARCH_CHILDREN,
+                           0, 1, AV_OPT_TYPE_PIXEL_FMT,
+                           sink_pix_fmts);
     if (ret < 0) {
-        err = "buffer sink pix_fmts set failed";
+        char e[128];
+        av_strerror(ret, e, sizeof(e));
+        err = std::string("buffer sink pixel_formats set failed: ") + e;
+        impl_->close();
+        return false;
+    }
+
+    ret = avfilter_init_str(impl_->sink_ctx, nullptr);
+    if (ret < 0) {
+        char e[128];
+        av_strerror(ret, e, sizeof(e));
+        err = std::string("buffer sink init failed: ") + e;
         impl_->close();
         return false;
     }
@@ -176,6 +191,13 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
     // through avfilter_graph_parse_ptr) so all colour parameters can
     // be set via the option API -- safer than building a filter
     // description string and dealing with quoting.
+    //
+    // Same two-step pattern as the buffer sink above: every option
+    // we set (w / h / flags / in_* / out_*) is init-time, so we must
+    // alloc, set, then explicitly init.  Using the one-shot
+    // avfilter_graph_create_filter() would init immediately and
+    // every subsequent av_opt_set_* would fail with "not a runtime
+    // option".
 
     const AVFilter* scale_filter = avfilter_get_by_name("scale");
     if (!scale_filter) {
@@ -184,14 +206,10 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
         return false;
     }
 
-    AVFilterContext* scale_ctx = nullptr;
-    ret = avfilter_graph_create_filter(&scale_ctx, scale_filter,
-                                       "scale", nullptr, nullptr,
-                                       impl_->graph);
-    if (ret < 0) {
-        char e[128];
-        av_strerror(ret, e, sizeof(e));
-        err = std::string("scale create failed: ") + e;
+    AVFilterContext* scale_ctx = avfilter_graph_alloc_filter(
+        impl_->graph, scale_filter, "scale");
+    if (!scale_ctx) {
+        err = "scale alloc failed";
         impl_->close();
         return false;
     }
@@ -235,6 +253,15 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
         // colour option we set.  A failure here means the build is
         // mis-linked or someone replaced libswscale -- fail loudly.
         err = "vf_scale rejected one or more colour options";
+        impl_->close();
+        return false;
+    }
+
+    ret = avfilter_init_str(scale_ctx, nullptr);
+    if (ret < 0) {
+        char e[128];
+        av_strerror(ret, e, sizeof(e));
+        err = std::string("scale init failed: ") + e;
         impl_->close();
         return false;
     }
