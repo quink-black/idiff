@@ -2,6 +2,13 @@
 
 #include "app/pixel_sampler.h"
 #include "core/image.h"
+#ifdef IDIFF_HAVE_FFMPEG
+#include "core/image_impl.h"
+extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/pixdesc.h>
+}
+#endif
 
 #include <imgui.h>
 #include <opencv2/core.hpp>
@@ -64,6 +71,31 @@ std::string format_row_label(int sample_idx, const std::string& name) {
     if (sample_idx == 0) return std::string("[A] ") + name;
     if (sample_idx == 1) return std::string("[B] ") + name;
     return name;
+}
+
+// True when at least one sample carries a native YUV AVFrame, i.e.
+// when the YUV/RGB toggle would actually change what shows up in the
+// Value column.  Still images and RGB-pix_fmt video paths look the
+// same on either setting, so we hide the toggle in that case to keep
+// the inspector header lean.
+bool any_sample_has_yuv_source(
+    const std::vector<std::pair<std::string, const Image*>>& samples) {
+#ifdef IDIFF_HAVE_FFMPEG
+    for (const auto& kv : samples) {
+        const Image* img = kv.second;
+        if (!img) continue;
+        const AVFrame* f = img->internal().src_av_frame;
+        if (!f || !f->data[0]) continue;
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(
+            static_cast<AVPixelFormat>(f->format));
+        if (!d) continue;
+        if ((d->flags & AV_PIX_FMT_FLAG_RGB) == 0) return true;
+    }
+    return false;
+#else
+    (void)samples;
+    return false;
+#endif
 }
 
 } // namespace
@@ -167,6 +199,35 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
     ImGui::TextDisabled(
         "Tip: hover + P to pin, or Shift+Click on the image.");
 
+    // YUV / RGB toggle: only meaningful when at least one sample is a
+    // YUV-encoded video frame.  For still images and RGB pix_fmts the
+    // two paths produce the same numbers, so the radio would just add
+    // visual noise.
+    if (any_sample_has_yuv_source(samples)) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Pixel:");
+        ImGui::SameLine();
+        // Two RadioButtons in a row keep both states visible at once,
+        // which is friendlier than a hidden combo for a binary choice.
+        if (ImGui::RadioButton("YUV", !prefer_rgb_)) {
+            prefer_rgb_ = false;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Show native Y/Cb/Cr samples from the decoded video\n"
+                "frame (full source bit depth).");
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("RGB", prefer_rgb_)) {
+            prefer_rgb_ = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Show 8-bit sRGB pixels after colour conversion --\n"
+                "the values that drive what's drawn on screen.");
+        }
+    }
+
     if (samples.empty()) {
         ImGui::Spacing();
         ImGui::TextDisabled("No images loaded.");
@@ -209,7 +270,8 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
         PixelSample a_sample{};
         if (!samples.empty() && samples[0].second &&
             !samples[0].second->mat().empty()) {
-            a_sample = sample_image_at(samples[0].second, point.u, point.v);
+            a_sample = sample_image_at(samples[0].second, point.u, point.v,
+                                       prefer_rgb_);
         }
 
         // Pre-compute integer coords using the reference resolution.
@@ -246,7 +308,7 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
 
             // Sample once for both Value and Delta columns.
             PixelSample s = (!mat.empty())
-                ? sample_image_at(img, point.u, point.v)
+                ? sample_image_at(img, point.u, point.v, prefer_rgb_)
                 : PixelSample{};
 
             // Coord (x, y) column.  Editable on the first row of a

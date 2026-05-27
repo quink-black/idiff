@@ -69,6 +69,16 @@ public:
     // tests / debug logging.
     int pin_count() const noexcept { return static_cast<int>(pinned_.size()); }
 
+    // Whether the panel reads pixels via the post-conversion RGB24 mat
+    // even for video sources that have a native YUV AVFrame attached.
+    // Default is false (YUV-aware reads, i.e. native source values).
+    // The render() call exposes this as a user-visible YUV/RGB radio
+    // for any sample where the toggle would actually change the
+    // output; still images are RGB on both paths and the radio is
+    // hidden in that case.
+    bool prefer_rgb() const noexcept { return prefer_rgb_; }
+    void set_prefer_rgb(bool v) noexcept { prefer_rgb_ = v; }
+
     // Render the panel.  Safe to call with an empty `inputs.samples`;
     // the renderer falls back to a placeholder message instead.
     void render(const PixelInspectorInputs& inputs);
@@ -77,6 +87,7 @@ private:
     PixelSamplePoint hover_{};
     bool hover_valid_ = false;
     std::vector<PixelSamplePoint> pinned_;
+    bool prefer_rgb_ = false;
 };
 
 } // namespace idiff
