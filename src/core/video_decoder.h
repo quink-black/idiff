@@ -9,6 +9,16 @@
 
 #include <opencv2/core.hpp>
 
+extern "C" {
+#include <libavutil/pixfmt.h>
+}
+
+// Forward-declare AVFrame in the global namespace so we can return a
+// pointer to it from VideoDecoder::decode_frame_raw() without dragging
+// <libavutil/frame.h> into every translation unit that includes this
+// header.
+struct AVFrame;
+
 namespace idiff {
 
 // Rotation mode for video frames.  Used both for auto-detected rotation
@@ -18,6 +28,32 @@ enum class VideoRotation {
     CW90 = 90,     // 90° clockwise
     CW180 = 180,   // 180°
     CW270 = 270,   // 270° clockwise (= 90° counter-clockwise)
+};
+
+// Color metadata for a video stream, extracted from AVCodecParameters
+// at open() time and held verbatim.  When the container does not signal
+// a particular field, the corresponding member is left as the FFmpeg
+// "UNSPECIFIED" enumerator and the resolved_*() getters apply the
+// well-known SD/HD/UHD-HDR fallback rules.
+//
+// `is_hdr` is true if the stream advertises a PQ (SMPTE2084) or HLG
+// (ARIB STD-B67) transfer characteristic; gamut alone is not enough
+// to call a stream HDR.
+struct VideoColorTags {
+    AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
+    AVColorSpace matrix = AVCOL_SPC_UNSPECIFIED;
+    AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
+    AVColorTransferCharacteristic transfer = AVCOL_TRC_UNSPECIFIED;
+    bool is_hdr = false;
+
+    // Resolved values: identical to the raw fields when present, and
+    // filled in with FFmpeg-style defaults when UNSPECIFIED.  These
+    // are what callers should pass to libswscale / vf_scale.
+    AVColorRange resolved_range() const noexcept;
+    AVColorSpace resolved_matrix(int width, int height) const noexcept;
+    AVColorPrimaries resolved_primaries(int width, int height) const noexcept;
+    AVColorTransferCharacteristic resolved_transfer(int width,
+                                                    int height) const noexcept;
 };
 
 // FFmpeg-based video decoder.  Opens a container file (MP4, MKV, MOV, etc.),
@@ -75,6 +111,12 @@ public:
     // Bits per component of the decoded video (typically 8 or 10)
     int bit_depth() const noexcept;
 
+    // Source-stream color metadata (range, matrix, primaries, transfer)
+    // exactly as advertised by the container, plus an is_hdr flag.  Use
+    // VideoColorTags::resolved_*() for values with the UNSPECIFIED
+    // fallbacks already applied.
+    const VideoColorTags& color_tags() const noexcept;
+
     // --- Rotation ---
 
     // Rotation detected from the container's display matrix metadata.
@@ -112,6 +154,29 @@ public:
     //   - If index == current + 1, decodes next frame sequentially.
     //   - Otherwise, seeks to nearest keyframe and decodes forward.
     cv::Mat decode_frame(int index);
+
+    // Decode the frame at `index` and return a reference-counted handle
+    // to the underlying AVFrame in its native pixel format and bit
+    // depth, *before* any conversion to RGB24.  Internally implemented
+    // with av_frame_clone() (= av_frame_alloc + av_frame_ref): the
+    // returned AVFrame shares its pixel buffers with the decoder's
+    // cached frame; nothing is deep-copied.
+    //
+    // Caller responsibilities:
+    //   - call av_frame_free() on the returned pointer when done; this
+    //     releases just the caller's reference, not the underlying
+    //     buffers.
+    //   - call av_frame_make_writable() before mutating pixel data.
+    //   - rotation is NOT applied here; apply it after pixel-format
+    //     conversion if needed.
+    //
+    // Returns nullptr on failure (index out of range, decoder closed,
+    // or decode error).  Sets last_error() on failure.
+    //
+    // Calling this with the same index that was last decoded by either
+    // decode_frame() or decode_frame_raw() does not trigger a re-decode
+    // -- a fresh reference to the cached frame is returned.
+    struct ::AVFrame* decode_frame_raw(int index);
 
     // Fast approximate decode for scrubbing: seeks to the nearest keyframe
     // at or before the target timestamp and decodes only that keyframe.

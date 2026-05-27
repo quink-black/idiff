@@ -32,6 +32,15 @@ struct VideoDecoder::Impl {
     AVFrame* rgb_frame = nullptr;
     AVPacket* packet = nullptr;
 
+    // Reference-counted snapshot of the most recently decoded frame.
+    // Maintained by snapshot_current_frame(): av_frame_ref() shares
+    // the underlying buffers with `frame`, so as long as we hold this
+    // snapshot the buffers stay alive even after the next
+    // avcodec_receive_frame() reuses `frame`.  cached_av_frame_idx is
+    // the frame number this snapshot represents, or -1 when empty.
+    AVFrame* cached_av_frame = nullptr;
+    int cached_av_frame_idx = -1;
+
     int video_stream_idx = -1;
     int coded_width = 0;
     int coded_height = 0;
@@ -41,6 +50,10 @@ struct VideoDecoder::Impl {
     double duration = 0.0;
     std::string codec_name;
     std::string last_error;
+
+    // Source color metadata, captured from AVCodecParameters at open()
+    // time and never modified during the lifetime of the open file.
+    VideoColorTags color_tags;
 
     // Rotation
     VideoRotation detected_rotation = VideoRotation::None;
@@ -65,6 +78,11 @@ struct VideoDecoder::Impl {
     cv::Mat frame_to_mat();  // raw decoded frame (no rotation)
     cv::Mat apply_rotation(const cv::Mat& mat, VideoRotation rot);
     VideoRotation current_effective_rotation() const;
+
+    // Refresh `cached_av_frame` to reference the data currently in
+    // `frame`.  Cheap: bumps refcounts, no pixel copies.  Idempotent
+    // for the same frame index.
+    void snapshot_current_frame();
 };
 
 // Determine the effective rotation to apply.
@@ -243,6 +261,27 @@ cv::Mat VideoDecoder::Impl::seek_keyframe(int index) {
     return {};
 }
 
+// Take a reference to the current `frame` and stash it as
+// `cached_av_frame`, indexed by the current decode position.  Cheap:
+// av_frame_ref() bumps refcounts on the buffers, no pixel copy.  The
+// stashed reference keeps those buffers alive even after the next
+// avcodec_receive_frame() reuses `frame`.  Idempotent for the same
+// frame index.
+void VideoDecoder::Impl::snapshot_current_frame() {
+    if (!frame || !cached_av_frame) return;
+    if (cached_av_frame_idx == current_frame_idx &&
+        cached_av_frame->buf[0] != nullptr) {
+        return;  // already snapped this index
+    }
+    av_frame_unref(cached_av_frame);
+    if (av_frame_ref(cached_av_frame, frame) < 0) {
+        // ref failure: leave snapshot empty so callers see a miss
+        cached_av_frame_idx = -1;
+        return;
+    }
+    cached_av_frame_idx = current_frame_idx;
+}
+
 // Convert the current AVFrame to an RGB cv::Mat (no rotation applied).
 cv::Mat VideoDecoder::Impl::frame_to_mat() {
     if (!frame || !sws_ctx) return {};
@@ -259,6 +298,68 @@ cv::Mat VideoDecoder::Impl::frame_to_mat() {
                     static_cast<size_t>(coded_width) * 3);
     }
     return mat;
+}
+
+// ============================================================================
+// VideoColorTags resolution
+// ============================================================================
+//
+// FFmpeg's command-line tools and most decoders fall back to the same
+// SD/HD/UHD heuristics when a stream signals UNSPECIFIED.  We mirror
+// those rules here so vf_scale and our pixel inspector see concrete
+// values without each caller reinventing the table.
+//
+// - SD (height <= 576): BT.601 / SMPTE170M everywhere
+// - HD (height in (576, 1080]): BT.709
+// - UHD-or-larger: BT.2020 NCL (gamut + matrix); transfer stays BT.709
+//   unless an explicit PQ/HLG was already set
+// - range: limited (MPEG) unless explicitly full
+
+AVColorRange VideoColorTags::resolved_range() const noexcept {
+    if (range != AVCOL_RANGE_UNSPECIFIED) return range;
+    return AVCOL_RANGE_MPEG;
+}
+
+namespace {
+
+bool is_sd(int height) noexcept { return height > 0 && height <= 576; }
+bool is_hd(int height) noexcept { return height > 576 && height <= 1080; }
+
+} // namespace
+
+AVColorSpace VideoColorTags::resolved_matrix(int /*width*/,
+                                             int height) const noexcept {
+    if (matrix != AVCOL_SPC_UNSPECIFIED) return matrix;
+    if (is_sd(height)) return AVCOL_SPC_SMPTE170M;
+    if (is_hd(height)) return AVCOL_SPC_BT709;
+    // UHD or larger.  If the stream already advertises an HDR transfer,
+    // BT.2020 is the only sensible default; otherwise still BT.709 since
+    // a 4K SDR stream without tags is far more common than a 4K BT.2020
+    // SDR stream in the wild.
+    if (transfer == AVCOL_TRC_SMPTE2084 ||
+        transfer == AVCOL_TRC_ARIB_STD_B67) {
+        return AVCOL_SPC_BT2020_NCL;
+    }
+    return AVCOL_SPC_BT709;
+}
+
+AVColorPrimaries VideoColorTags::resolved_primaries(int /*width*/,
+                                                    int height) const noexcept {
+    if (primaries != AVCOL_PRI_UNSPECIFIED) return primaries;
+    if (is_sd(height)) return AVCOL_PRI_SMPTE170M;
+    if (is_hd(height)) return AVCOL_PRI_BT709;
+    if (transfer == AVCOL_TRC_SMPTE2084 ||
+        transfer == AVCOL_TRC_ARIB_STD_B67) {
+        return AVCOL_PRI_BT2020;
+    }
+    return AVCOL_PRI_BT709;
+}
+
+AVColorTransferCharacteristic
+VideoColorTags::resolved_transfer(int /*width*/, int height) const noexcept {
+    if (transfer != AVCOL_TRC_UNSPECIFIED) return transfer;
+    if (is_sd(height)) return AVCOL_TRC_SMPTE170M;
+    return AVCOL_TRC_BT709;
 }
 
 // ============================================================================
@@ -380,6 +481,45 @@ bool VideoDecoder::open(const std::string& path) {
         impl_->bit_depth = pix_desc->comp[0].depth;
     }
 
+    // Capture source color metadata verbatim.  UNSPECIFIED is preserved
+    // as-is here; resolved_*() applies the SD/HD/UHD-HDR fallbacks at
+    // the point where libswscale needs concrete values.
+    impl_->color_tags.range     = video_stream->codecpar->color_range;
+    impl_->color_tags.matrix    = video_stream->codecpar->color_space;
+    impl_->color_tags.primaries = video_stream->codecpar->color_primaries;
+    impl_->color_tags.transfer  = video_stream->codecpar->color_trc;
+    impl_->color_tags.is_hdr =
+        impl_->color_tags.transfer == AVCOL_TRC_SMPTE2084 ||
+        impl_->color_tags.transfer == AVCOL_TRC_ARIB_STD_B67;
+
+    // Log the resolved values once per file -- this exposes our
+    // UNSPECIFIED fallback decisions, which would otherwise be silent
+    // and hard to debug.
+    {
+        const AVColorSpace m = impl_->color_tags.resolved_matrix(
+            impl_->coded_width, impl_->coded_height);
+        const AVColorPrimaries p = impl_->color_tags.resolved_primaries(
+            impl_->coded_width, impl_->coded_height);
+        const AVColorTransferCharacteristic t =
+            impl_->color_tags.resolved_transfer(
+                impl_->coded_width, impl_->coded_height);
+        const AVColorRange r = impl_->color_tags.resolved_range();
+        const char* mn = av_color_space_name(m);
+        const char* pn = av_color_primaries_name(p);
+        const char* tn = av_color_transfer_name(t);
+        const char* rn = av_color_range_name(r);
+        LOG_INFO("VideoDecoder: color tags resolved to "
+                 "matrix=%s primaries=%s transfer=%s range=%s hdr=%d "
+                 "(raw matrix=%d primaries=%d transfer=%d range=%d)",
+                 mn ? mn : "?", pn ? pn : "?",
+                 tn ? tn : "?", rn ? rn : "?",
+                 impl_->color_tags.is_hdr ? 1 : 0,
+                 static_cast<int>(impl_->color_tags.matrix),
+                 static_cast<int>(impl_->color_tags.primaries),
+                 static_cast<int>(impl_->color_tags.transfer),
+                 static_cast<int>(impl_->color_tags.range));
+    }
+
     // Calculate FPS
     AVRational fr = video_stream->avg_frame_rate;
     if (fr.num > 0 && fr.den > 0) {
@@ -421,9 +561,11 @@ bool VideoDecoder::open(const std::string& path) {
     // Allocate frames
     impl_->frame = av_frame_alloc();
     impl_->rgb_frame = av_frame_alloc();
+    impl_->cached_av_frame = av_frame_alloc();
     impl_->packet = av_packet_alloc();
 
-    if (!impl_->frame || !impl_->rgb_frame || !impl_->packet) {
+    if (!impl_->frame || !impl_->rgb_frame || !impl_->cached_av_frame ||
+        !impl_->packet) {
         impl_->last_error = "cannot allocate AVFrame/AVPacket";
         close();
         return false;
@@ -439,6 +581,7 @@ bool VideoDecoder::open(const std::string& path) {
     );
 
     impl_->current_frame_idx = -1;
+    impl_->cached_av_frame_idx = -1;
     impl_->last_error.clear();
 
     impl_->cached_rotation = VideoRotation::None;
@@ -462,6 +605,9 @@ void VideoDecoder::close() {
     if (impl_->rgb_frame) {
         av_frame_free(&impl_->rgb_frame);
     }
+    if (impl_->cached_av_frame) {
+        av_frame_free(&impl_->cached_av_frame);
+    }
     if (impl_->packet) {
         av_packet_free(&impl_->packet);
     }
@@ -474,6 +620,7 @@ void VideoDecoder::close() {
 
     impl_->video_stream_idx = -1;
     impl_->current_frame_idx = -1;
+    impl_->cached_av_frame_idx = -1;
     impl_->cached_frame = cv::Mat();
     impl_->cached_rotation = VideoRotation::None;
     impl_->rgb_buffer.clear();
@@ -504,6 +651,10 @@ const std::string& VideoDecoder::codec_name() const noexcept { return impl_->cod
 int VideoDecoder::bit_depth() const noexcept { return impl_->bit_depth; }
 int VideoDecoder::current_frame_index() const noexcept { return impl_->current_frame_idx; }
 const std::string& VideoDecoder::last_error() const noexcept { return impl_->last_error; }
+
+const VideoColorTags& VideoDecoder::color_tags() const noexcept {
+    return impl_->color_tags;
+}
 
 VideoRotation VideoDecoder::detected_rotation() const noexcept {
     return impl_->detected_rotation;
@@ -562,7 +713,7 @@ cv::Mat VideoDecoder::decode_frame(int index) {
     if (index == impl_->current_frame_idx && !impl_->cached_frame.empty()
         && impl_->cached_rotation == rot) {
         impl_->last_error.clear();
-        return impl_->cached_frame.clone();
+        return impl_->cached_frame;
     }
 
     // If same frame but rotation changed, just re-apply rotation
@@ -571,17 +722,18 @@ cv::Mat VideoDecoder::decode_frame(int index) {
         impl_->cached_frame = impl_->apply_rotation(raw, rot);
         impl_->cached_rotation = rot;
         impl_->last_error.clear();
-        return impl_->cached_frame.clone();
+        return impl_->cached_frame;
     }
 
     // Sequential read optimization: if requesting the next frame, just decode it
     if (index == impl_->current_frame_idx + 1) {
         if (impl_->decode_next_frame()) {
+            impl_->snapshot_current_frame();
             cv::Mat raw = impl_->frame_to_mat();
             impl_->cached_frame = impl_->apply_rotation(raw, rot);
             impl_->cached_rotation = rot;
             impl_->last_error.clear();
-            return impl_->cached_frame.clone();
+            return impl_->cached_frame;
         }
         impl_->last_error = "failed to decode next frame";
         return {};
@@ -599,11 +751,12 @@ cv::Mat VideoDecoder::decode_frame(int index) {
                 return {};
             }
         }
+        impl_->snapshot_current_frame();
         cv::Mat raw = impl_->frame_to_mat();
         impl_->cached_frame = impl_->apply_rotation(raw, rot);
         impl_->cached_rotation = rot;
         impl_->last_error.clear();
-        return impl_->cached_frame.clone();
+        return impl_->cached_frame;
     }
 
     // Random access: seek and decode forward
@@ -612,11 +765,12 @@ cv::Mat VideoDecoder::decode_frame(int index) {
         return {};
     }
 
+    impl_->snapshot_current_frame();
     cv::Mat raw = impl_->frame_to_mat();
     impl_->cached_frame = impl_->apply_rotation(raw, rot);
     impl_->cached_rotation = rot;
     impl_->last_error.clear();
-    return impl_->cached_frame.clone();
+    return impl_->cached_frame;
 }
 
 cv::Mat VideoDecoder::decode_keyframe(int index) {
@@ -637,6 +791,53 @@ cv::Mat VideoDecoder::decode_keyframe(int index) {
     }
     impl_->last_error.clear();
     return impl_->apply_rotation(raw, rot);
+}
+
+AVFrame* VideoDecoder::decode_frame_raw(int index) {
+    if (!is_open()) {
+        impl_->last_error = "decoder not open";
+        return nullptr;
+    }
+    if (index < 0 || index >= impl_->frame_count) {
+        impl_->last_error = "frame index out of range";
+        return nullptr;
+    }
+
+    // If neither the cached snapshot nor the live decoder position is at
+    // `index`, drive a full decode through decode_frame() so we exercise
+    // the same caching, sequential-read and seek logic in exactly one
+    // place.  decode_frame() takes the snapshot for us at every full
+    // decode point, so on return cached_av_frame_idx == index.
+    const bool snap_hit = (impl_->cached_av_frame_idx == index &&
+                           impl_->cached_av_frame &&
+                           impl_->cached_av_frame->buf[0] != nullptr);
+    if (!snap_hit) {
+        cv::Mat m = decode_frame(index);
+        if (m.empty()) {
+            // last_error already populated by decode_frame()
+            return nullptr;
+        }
+        // decode_frame() at the cache-hit-with-same-rotation path does
+        // not redecode and therefore does not snapshot.  Cover that
+        // case by snapping here -- it's a no-op when the snapshot is
+        // already current.
+        impl_->snapshot_current_frame();
+    }
+
+    if (impl_->cached_av_frame_idx != index ||
+        !impl_->cached_av_frame ||
+        impl_->cached_av_frame->buf[0] == nullptr) {
+        impl_->last_error = "raw frame snapshot unavailable";
+        return nullptr;
+    }
+
+    AVFrame* out = av_frame_clone(impl_->cached_av_frame);
+    if (!out) {
+        impl_->last_error = "av_frame_clone failed";
+        return nullptr;
+    }
+    impl_->last_error.clear();
+    return out;
 }
 
 } // namespace idiff
