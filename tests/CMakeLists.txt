@@ -41,7 +41,10 @@ add_executable(idiff_tests
 
 # Conditionally add video decoder tests when FFmpeg is available
 if(IDIFF_HAVE_FFMPEG)
-    target_sources(idiff_tests PRIVATE test_video_decoder.cpp)
+    target_sources(idiff_tests PRIVATE
+        test_video_decoder.cpp
+        test_video_filter_graph.cpp
+    )
 endif()
 
 # sr_dialog.cpp uses ImGui — provide a stub-free include path.

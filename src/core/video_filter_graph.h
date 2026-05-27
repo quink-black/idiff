@@ -110,6 +110,13 @@ public:
     const VideoFilterInputParams& input_params() const noexcept;
     const VideoFilterOutputParams& output_params() const noexcept;
 
+    // Human-readable dump of the configured graph (delegates to
+    // FFmpeg's avfilter_graph_dump).  Returns an empty string when
+    // the graph is not configured.  Intended for tests and debug
+    // logging -- the format is whatever FFmpeg produces and is not
+    // part of any contract.
+    std::string graph_description() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
