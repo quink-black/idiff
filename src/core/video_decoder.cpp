@@ -51,9 +51,10 @@ struct VideoDecoder::Impl {
     std::string codec_name;
     std::string last_error;
 
-    // Source color metadata, captured from AVCodecParameters at open()
-    // time and never modified during the lifetime of the open file.
-    VideoColorTags color_tags;
+    // Whether the one-shot "first frame color tags" diagnostic has
+    // already been emitted for the currently open file.  Reset by
+    // close().
+    bool color_tags_logged = false;
 
     // Rotation
     VideoRotation detected_rotation = VideoRotation::None;
@@ -280,6 +281,39 @@ void VideoDecoder::Impl::snapshot_current_frame() {
         return;
     }
     cached_av_frame_idx = current_frame_idx;
+
+    // Emit a one-shot diagnostic of the resolved color tags carried by
+    // the very first decoded frame.  We deliberately read AVFrame here
+    // rather than codecpar at open() time, because frames are the
+    // ground truth: a single file may carry frames with different
+    // color descriptions.  Subsequent frames may differ; callers that
+    // care must inspect each frame via VideoDecoder::frame_color_tags().
+    if (!color_tags_logged) {
+        VideoColorTags tags;
+        tags.range     = frame->color_range;
+        tags.matrix    = frame->colorspace;
+        tags.primaries = frame->color_primaries;
+        tags.transfer  = frame->color_trc;
+        const int w = coded_width;
+        const int h = coded_height;
+        const char* mn = av_color_space_name(tags.resolved_matrix(w, h));
+        const char* pn = av_color_primaries_name(
+            tags.resolved_primaries(w, h));
+        const char* tn = av_color_transfer_name(
+            tags.resolved_transfer(w, h));
+        const char* rn = av_color_range_name(tags.resolved_range());
+        LOG_INFO("VideoDecoder: first-frame color tags resolved to "
+                 "matrix=%s primaries=%s transfer=%s range=%s hdr=%d "
+                 "(raw matrix=%d primaries=%d transfer=%d range=%d)",
+                 mn ? mn : "?", pn ? pn : "?",
+                 tn ? tn : "?", rn ? rn : "?",
+                 tags.is_hdr() ? 1 : 0,
+                 static_cast<int>(tags.matrix),
+                 static_cast<int>(tags.primaries),
+                 static_cast<int>(tags.transfer),
+                 static_cast<int>(tags.range));
+        color_tags_logged = true;
+    }
 }
 
 // Convert the current AVFrame to an RGB cv::Mat (no rotation applied).
@@ -315,6 +349,11 @@ cv::Mat VideoDecoder::Impl::frame_to_mat() {
 //   unless an explicit PQ/HLG was already set
 // - range: limited (MPEG) unless explicitly full
 
+bool VideoColorTags::is_hdr() const noexcept {
+    return transfer == AVCOL_TRC_SMPTE2084 ||
+           transfer == AVCOL_TRC_ARIB_STD_B67;
+}
+
 AVColorRange VideoColorTags::resolved_range() const noexcept {
     if (range != AVCOL_RANGE_UNSPECIFIED) return range;
     return AVCOL_RANGE_MPEG;
@@ -336,8 +375,7 @@ AVColorSpace VideoColorTags::resolved_matrix(int /*width*/,
     // BT.2020 is the only sensible default; otherwise still BT.709 since
     // a 4K SDR stream without tags is far more common than a 4K BT.2020
     // SDR stream in the wild.
-    if (transfer == AVCOL_TRC_SMPTE2084 ||
-        transfer == AVCOL_TRC_ARIB_STD_B67) {
+    if (is_hdr()) {
         return AVCOL_SPC_BT2020_NCL;
     }
     return AVCOL_SPC_BT709;
@@ -348,8 +386,7 @@ AVColorPrimaries VideoColorTags::resolved_primaries(int /*width*/,
     if (primaries != AVCOL_PRI_UNSPECIFIED) return primaries;
     if (is_sd(height)) return AVCOL_PRI_SMPTE170M;
     if (is_hd(height)) return AVCOL_PRI_BT709;
-    if (transfer == AVCOL_TRC_SMPTE2084 ||
-        transfer == AVCOL_TRC_ARIB_STD_B67) {
+    if (is_hdr()) {
         return AVCOL_PRI_BT2020;
     }
     return AVCOL_PRI_BT709;
@@ -481,45 +518,6 @@ bool VideoDecoder::open(const std::string& path) {
         impl_->bit_depth = pix_desc->comp[0].depth;
     }
 
-    // Capture source color metadata verbatim.  UNSPECIFIED is preserved
-    // as-is here; resolved_*() applies the SD/HD/UHD-HDR fallbacks at
-    // the point where libswscale needs concrete values.
-    impl_->color_tags.range     = video_stream->codecpar->color_range;
-    impl_->color_tags.matrix    = video_stream->codecpar->color_space;
-    impl_->color_tags.primaries = video_stream->codecpar->color_primaries;
-    impl_->color_tags.transfer  = video_stream->codecpar->color_trc;
-    impl_->color_tags.is_hdr =
-        impl_->color_tags.transfer == AVCOL_TRC_SMPTE2084 ||
-        impl_->color_tags.transfer == AVCOL_TRC_ARIB_STD_B67;
-
-    // Log the resolved values once per file -- this exposes our
-    // UNSPECIFIED fallback decisions, which would otherwise be silent
-    // and hard to debug.
-    {
-        const AVColorSpace m = impl_->color_tags.resolved_matrix(
-            impl_->coded_width, impl_->coded_height);
-        const AVColorPrimaries p = impl_->color_tags.resolved_primaries(
-            impl_->coded_width, impl_->coded_height);
-        const AVColorTransferCharacteristic t =
-            impl_->color_tags.resolved_transfer(
-                impl_->coded_width, impl_->coded_height);
-        const AVColorRange r = impl_->color_tags.resolved_range();
-        const char* mn = av_color_space_name(m);
-        const char* pn = av_color_primaries_name(p);
-        const char* tn = av_color_transfer_name(t);
-        const char* rn = av_color_range_name(r);
-        LOG_INFO("VideoDecoder: color tags resolved to "
-                 "matrix=%s primaries=%s transfer=%s range=%s hdr=%d "
-                 "(raw matrix=%d primaries=%d transfer=%d range=%d)",
-                 mn ? mn : "?", pn ? pn : "?",
-                 tn ? tn : "?", rn ? rn : "?",
-                 impl_->color_tags.is_hdr ? 1 : 0,
-                 static_cast<int>(impl_->color_tags.matrix),
-                 static_cast<int>(impl_->color_tags.primaries),
-                 static_cast<int>(impl_->color_tags.transfer),
-                 static_cast<int>(impl_->color_tags.range));
-    }
-
     // Calculate FPS
     AVRational fr = video_stream->avg_frame_rate;
     if (fr.num > 0 && fr.den > 0) {
@@ -582,6 +580,7 @@ bool VideoDecoder::open(const std::string& path) {
 
     impl_->current_frame_idx = -1;
     impl_->cached_av_frame_idx = -1;
+    impl_->color_tags_logged = false;
     impl_->last_error.clear();
 
     impl_->cached_rotation = VideoRotation::None;
@@ -621,6 +620,7 @@ void VideoDecoder::close() {
     impl_->video_stream_idx = -1;
     impl_->current_frame_idx = -1;
     impl_->cached_av_frame_idx = -1;
+    impl_->color_tags_logged = false;
     impl_->cached_frame = cv::Mat();
     impl_->cached_rotation = VideoRotation::None;
     impl_->rgb_buffer.clear();
@@ -652,8 +652,17 @@ int VideoDecoder::bit_depth() const noexcept { return impl_->bit_depth; }
 int VideoDecoder::current_frame_index() const noexcept { return impl_->current_frame_idx; }
 const std::string& VideoDecoder::last_error() const noexcept { return impl_->last_error; }
 
-const VideoColorTags& VideoDecoder::color_tags() const noexcept {
-    return impl_->color_tags;
+VideoColorTags VideoDecoder::frame_color_tags() const noexcept {
+    VideoColorTags tags;
+    if (impl_->cached_av_frame &&
+        impl_->cached_av_frame->buf[0] != nullptr) {
+        const AVFrame* f = impl_->cached_av_frame;
+        tags.range     = f->color_range;
+        tags.matrix    = f->colorspace;
+        tags.primaries = f->color_primaries;
+        tags.transfer  = f->color_trc;
+    }
+    return tags;
 }
 
 VideoRotation VideoDecoder::detected_rotation() const noexcept {
