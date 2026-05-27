@@ -52,8 +52,8 @@ jobs:
             `CMAKE_TOOLCHAIN_FILE` + `VCPKG_INSTALLED_DIR`.
 
             **Contents:** opencv4 (core, imgproc, imgcodecs, quality, jpeg,
-            png, tiff, webp), ffmpeg (avformat, avcodec, swscale), libraw,
-            sdl2, catch2, nativefiledialog-extended.
+            png, tiff, webp), ffmpeg (avformat, avcodec, swscale, avfilter),
+            libraw, sdl2, catch2, nativefiledialog-extended.
           files: vcpkg-deps-x64-windows.zip
           fail_on_unmatched_files: true
           prerelease: true

@@ -58,6 +58,7 @@ jobs:
             libavcodec-dev \
             libavutil-dev \
             libswscale-dev \
+            libavfilter-dev \
             ffmpeg \
             pkg-config
 
