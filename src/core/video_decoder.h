@@ -30,21 +30,27 @@ enum class VideoRotation {
     CW270 = 270,   // 270° clockwise (= 90° counter-clockwise)
 };
 
-// Color metadata for a video stream, extracted from AVCodecParameters
-// at open() time and held verbatim.  When the container does not signal
-// a particular field, the corresponding member is left as the FFmpeg
-// "UNSPECIFIED" enumerator and the resolved_*() getters apply the
-// well-known SD/HD/UHD-HDR fallback rules.
+// Snapshot of the four color-description fields on a single AVFrame.
+// These are *frame-level* values: in adversarial inputs (mid-stream
+// codec switch, ABR rendition switch, multi-segment muxes) they can
+// change frame to frame, so callers must obtain a fresh snapshot per
+// frame rather than caching a single value across the file.
 //
-// `is_hdr` is true if the stream advertises a PQ (SMPTE2084) or HLG
-// (ARIB STD-B67) transfer characteristic; gamut alone is not enough
-// to call a stream HDR.
+// All four members are stored verbatim from AVFrame, including the
+// FFmpeg "UNSPECIFIED" sentinel.  resolved_*() applies FFmpeg's
+// SD/HD/UHD-HDR fallbacks at the point where libswscale needs a
+// concrete value.
 struct VideoColorTags {
     AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
     AVColorSpace matrix = AVCOL_SPC_UNSPECIFIED;
     AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
     AVColorTransferCharacteristic transfer = AVCOL_TRC_UNSPECIFIED;
-    bool is_hdr = false;
+
+    // True iff the transfer characteristic is PQ (SMPTE2084) or HLG
+    // (ARIB STD-B67).  Gamut alone is not enough to call a frame HDR;
+    // BT.2020 with a BT.709 transfer is still SDR.  Computed from
+    // `transfer` at call time, never stored.
+    bool is_hdr() const noexcept;
 
     // Resolved values: identical to the raw fields when present, and
     // filled in with FFmpeg-style defaults when UNSPECIFIED.  These
@@ -111,11 +117,16 @@ public:
     // Bits per component of the decoded video (typically 8 or 10)
     int bit_depth() const noexcept;
 
-    // Source-stream color metadata (range, matrix, primaries, transfer)
-    // exactly as advertised by the container, plus an is_hdr flag.  Use
-    // VideoColorTags::resolved_*() for values with the UNSPECIFIED
-    // fallbacks already applied.
-    const VideoColorTags& color_tags() const noexcept;
+    // Color tags read from the most recently decoded AVFrame.  Returned
+    // by value because the underlying values are frame-level: a single
+    // file may carry frames with different color descriptions (e.g.
+    // ABR rendition switch, mid-stream codec switch).  Callers that
+    // configure libswscale / vf_scale per frame must call this each
+    // time `current_frame_index()` advances.
+    //
+    // Before any frame has been decoded successfully, all four members
+    // are AVCOL_*_UNSPECIFIED.
+    VideoColorTags frame_color_tags() const noexcept;
 
     // --- Rotation ---
 
