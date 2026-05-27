@@ -23,6 +23,7 @@ extern "C" {
 }
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -590,6 +591,105 @@ TEST_CASE("VideoFilterGraph: graph_description reports a non-empty graph",
     CHECK(desc.find("in")    != std::string::npos);
     CHECK(desc.find("out")   != std::string::npos);
 
+    av_frame_free(&in_frame);
+}
+
+// =============================================================================
+// HLG -> SDR: midtones must not bloom out into near-white.
+// =============================================================================
+//
+// Without the SDR-mastering-display injection, vf_scale on FFmpeg 8.1
+// applies HLG OOTF gamma assuming a ~1000 nit display, and a midtone
+// Y' sample lands at near-saturation R/G/B once mapped to sRGB.  The
+// concrete numbers measured on the supported FFmpeg baseline are:
+//
+//   limited Y'=180, U=V=128, BT.2020 NCL, HLG transfer
+//     no fix:    RGB ~ (253, 253, 253)  -- visibly washed-out white
+//     with fix:  RGB ~ (136, 136, 136)  -- a normal mid-grey
+//
+// The 200 ceiling below sits comfortably between those two regimes:
+// it fails by 50+ codes if the mastering display is not injected,
+// and it passes with margin once it is.  Anchoring on the *absence*
+// of bloom rather than on a target value keeps the test stable
+// against minor tone-mapper tweaks in future FFmpeg releases.
+TEST_CASE("VideoFilterGraph: HLG midtone does not bloom into near-white",
+          "[video][filter_graph][color][hdr]") {
+    AVFrame* in_frame = make_solid_yuv420p_frame(
+        64, 64, /*Y=*/180, /*U=*/128, /*V=*/128,
+        AVCOL_RANGE_MPEG,
+        AVCOL_SPC_BT2020_NCL,
+        AVCOL_PRI_BT2020,
+        AVCOL_TRC_ARIB_STD_B67);  // HLG
+
+    VideoFilterGraph graph;
+    std::string err;
+    REQUIRE(graph.configure(make_in_params(in_frame),
+                            make_srgb_rgb24_out(), err));
+
+    AVFrame* out = graph.process(in_frame, err);
+    REQUIRE(out != nullptr);
+
+    auto px = sample_center(out);
+    INFO("HLG Y'=180 -> RGB (" << px.r << ", " << px.g << ", "
+                               << px.b << ")");
+
+    // Achromatic input must stay achromatic on the output.
+    CHECK(std::abs(px.r - px.g) <= 2);
+    CHECK(std::abs(px.r - px.b) <= 2);
+
+    // The defining symptom of the bug: HLG midtones blowing out into
+    // R >= 250 (washed-out highlights, "too bright / overly white").
+    // After the fix the same input lands well below 200.
+    CHECK(px.r < 200);
+
+    // ...but it should still be a real midtone, not crushed to black.
+    CHECK(px.r > 64);
+
+    // Mastering-display side data attached internally must not leak
+    // out of the graph onto the SDR output frame.
+    CHECK(av_frame_get_side_data(out,
+              AV_FRAME_DATA_MASTERING_DISPLAY_METADATA) == nullptr);
+
+    av_frame_free(&out);
+    av_frame_free(&in_frame);
+}
+
+// =============================================================================
+// SDR sources stay byte-identical regardless of the HLG fix logic.
+// =============================================================================
+//
+// The HLG fix-up is gated on the configured input transfer.  Pin
+// down that an SDR pipeline is unaffected: the same BT.709 limited
+// red as the BT.709 round-trip test must still decode to (255,0,0).
+// If a future change accidentally widens the gate (e.g. injecting
+// the mastering display whenever in.transfer != out.transfer), this
+// test fails because vf_scale would then try to tone-map BT.709 and
+// the red sample would shift.
+TEST_CASE("VideoFilterGraph: SDR pipeline unaffected by HLG fix logic",
+          "[video][filter_graph][color][sdr_semantics]") {
+    AVFrame* in_frame = make_solid_yuv420p_frame(
+        64, 64, 63, 102, 240,
+        AVCOL_RANGE_MPEG,
+        AVCOL_SPC_BT709,
+        AVCOL_PRI_BT709,
+        AVCOL_TRC_BT709);
+
+    VideoFilterGraph graph;
+    std::string err;
+    REQUIRE(graph.configure(make_in_params(in_frame),
+                            make_srgb_rgb24_out(), err));
+
+    AVFrame* out = graph.process(in_frame, err);
+    REQUIRE(out != nullptr);
+
+    auto px = sample_center(out);
+    INFO("BT.709 red -> RGB (" << px.r << ", " << px.g << ", "
+                               << px.b << ")");
+    CHECK(px.r >= 250);
+    CHECK(px.g <= 5);
+    CHECK(px.b <= 5);
+
+    av_frame_free(&out);
     av_frame_free(&in_frame);
 }
 

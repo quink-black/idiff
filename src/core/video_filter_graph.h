@@ -63,6 +63,19 @@ struct VideoFilterOutputParams {
 // FFmpeg baseline (>= 8.1) the same filter also performs HDR tone
 // mapping when the input transfer is PQ or HLG.
 //
+// HLG -> SDR fix-up: when the configured input transfer is HLG
+// (ARIB-STD-B67) and the configured output transfer is a non-HDR
+// transfer, process() injects a mastering-display side data with
+// max_luminance = 203 nits onto the frame handed to vf_scale.  This
+// collapses HLG's OOTF gamma to ~1.0 and effectively disables
+// swscale's tone mapping, mirroring libplacebo's PL_COLOR_SDR_WHITE
+// shortcut.  Without this, HLG midtones come out far too bright on an
+// SDR sink (e.g. Y'=180 limited turns into R~253 instead of the
+// SDR-baseline R~187, producing the washed-out, blown-out highlights
+// users describe as "too bright / overly white").  The injection is
+// done on a clone of the caller's frame; the caller's frame is left
+// untouched.
+//
 // Thread safety: not thread-safe; serialise externally.
 class VideoFilterGraph {
 public:

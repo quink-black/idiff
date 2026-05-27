@@ -9,6 +9,7 @@ extern "C" {
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 #include <libavutil/frame.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 }
@@ -49,6 +50,13 @@ struct VideoFilterGraph::Impl {
     VideoFilterOutputParams out_params;
 
     bool configured = false;
+
+    // True when the configured pipeline is HLG source -> non-HDR sink.
+    // process() then injects a 203-nit mastering display side data
+    // onto a clone of the caller's frame so swscale's HLG OOTF
+    // collapses to ~1.0 and tone mapping is effectively disabled.
+    // See video_filter_graph.h for the full rationale.
+    bool need_hlg_sdr_fix = false;
 
     void close() noexcept {
         if (graph) {
@@ -323,6 +331,18 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
         return false;
     }
 
+    // Decide once at configure time whether process() needs to
+    // inject the SDR mastering display.  Mirrors codec's IsHlgToSdr:
+    // only when src is HLG (ARIB-STD-B67) and dst is an explicitly
+    // non-HDR transfer (i.e. neither HLG nor PQ).  Anything else --
+    // including HLG->HLG passthrough -- leaves swscale to its
+    // default behaviour.
+    impl_->need_hlg_sdr_fix =
+        in.transfer == AVCOL_TRC_ARIB_STD_B67 &&
+        out.transfer != AVCOL_TRC_UNSPECIFIED &&
+        out.transfer != AVCOL_TRC_ARIB_STD_B67 &&
+        out.transfer != AVCOL_TRC_SMPTE2084;
+
     impl_->in_params  = in;
     impl_->out_params = out;
     impl_->configured = true;
@@ -395,13 +415,51 @@ AVFrame* VideoFilterGraph::process(const AVFrame* in, std::string& err) {
     // so there is no need to clone-and-rewrite as earlier
     // revisions did -- doing so was both wasted work and a way
     // for genuinely mismatched metadata to silently slip through.
+    //
+    // Exception: HLG -> SDR needs a 203-nit mastering display side
+    // data attached to the frame vf_scale receives.  Mutating the
+    // caller's frame would be visible from the outside (and the
+    // AVBufferRef of any pre-existing side data may be shared with
+    // the upstream decoder cache).  Clone the frame -- a refcount
+    // bump on the underlying pixel buffers, no copy -- and rewrite
+    // the side data on the clone, then submit the clone (without
+    // KEEP_REF, since we own this ref ourselves and free it right
+    // after).
+    AVFrame* in_clone = nullptr;
+    if (impl_->need_hlg_sdr_fix &&
+        in->color_trc == AVCOL_TRC_ARIB_STD_B67) {
+        in_clone = av_frame_clone(in);
+        if (!in_clone) {
+            err = "av_frame_clone failed";
+            return nullptr;
+        }
+        av_frame_remove_side_data(in_clone,
+            AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+        AVMasteringDisplayMetadata* md =
+            av_mastering_display_metadata_create_side_data(in_clone);
+        if (md) {
+            // 203 nits is the HLG SDR reference white -- the same
+            // value libplacebo uses as PL_COLOR_SDR_WHITE.  With a
+            // mastering display this small the HLG OOTF gamma
+            // exponent collapses to ~1.0, so vf_scale stops trying
+            // to tone map at all and we get back something close to
+            // an SDR-tagged decode of the same Y'CbCr samples.
+            md->max_luminance = av_make_q(203, 1);
+            md->min_luminance = av_make_q(203, 10000);
+            md->has_luminance = 1;
+        }
+    }
+
+    AVFrame* submit = in_clone ? in_clone : const_cast<AVFrame*>(in);
+    int submit_flags = in_clone ? 0 : AV_BUFFERSRC_FLAG_KEEP_REF;
     if (int ret = av_buffersrc_add_frame_flags(
-            impl_->src_ctx, const_cast<AVFrame*>(in),
-            AV_BUFFERSRC_FLAG_KEEP_REF);
+            impl_->src_ctx, submit, submit_flags);
         ret < 0) {
+        if (in_clone) av_frame_free(&in_clone);
         set_av_err(err, "buffersrc add_frame failed", ret);
         return nullptr;
     }
+    if (in_clone) av_frame_free(&in_clone);
 
     AVFrame* out = av_frame_alloc();
     if (!out) {
@@ -413,6 +471,19 @@ AVFrame* VideoFilterGraph::process(const AVFrame* in, std::string& err) {
         set_av_err(err, "buffersink get_frame failed", ret);
         av_frame_free(&out);
         return nullptr;
+    }
+
+    // The output is now SDR; HDR side data on it would mislead any
+    // downstream consumer that inspects per-frame metadata (e.g. an
+    // RGB-uploader trying to second-guess the colour space).  Strip
+    // it.  Only meaningful when the HLG->SDR fix is active; for
+    // SDR->SDR or HDR->HDR pipelines vf_scale never produces these
+    // side data fields anyway, so the calls are no-ops there.
+    if (impl_->need_hlg_sdr_fix) {
+        av_frame_remove_side_data(out,
+            AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+        av_frame_remove_side_data(out,
+            AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
     }
     return out;
 }
