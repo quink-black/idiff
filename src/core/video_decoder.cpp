@@ -1,15 +1,16 @@
 #ifdef IDIFF_HAVE_FFMPEG
 
 #include "core/video_decoder.h"
+#include "core/video_filter_graph.h"
 #include "util/logger.h"
 
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/display.h>
+#include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
 }
 
 #include <opencv2/imgproc.hpp>
@@ -27,10 +28,16 @@ namespace idiff {
 struct VideoDecoder::Impl {
     AVFormatContext* fmt_ctx = nullptr;
     AVCodecContext* codec_ctx = nullptr;
-    SwsContext* sws_ctx = nullptr;
     AVFrame* frame = nullptr;
-    AVFrame* rgb_frame = nullptr;
     AVPacket* packet = nullptr;
+
+    // vf_scale-based display path.  Lazily configured on the first
+    // frame (we need the frame's actual color tags, not codecpar's
+    // possibly-stale prediction) and reconfigured automatically when
+    // any source property changes mid-stream.  Output is sRGB-encoded
+    // RGB24: BT.709 primaries + IEC 61966-2-1 transfer + full range,
+    // matching what SDL textures and OpenCV CV_8UC3 callers expect.
+    VideoFilterGraph display_graph;
 
     // Reference-counted snapshot of the most recently decoded frame.
     // Maintained by snapshot_current_frame(): av_frame_ref() shares
@@ -66,9 +73,6 @@ struct VideoDecoder::Impl {
     int current_frame_idx = -1;  // index of the last successfully decoded frame
     cv::Mat cached_frame;        // cached RGB Mat of current_frame_idx
     VideoRotation cached_rotation = VideoRotation::None;  // rotation applied to cached_frame
-
-    // RGB conversion buffer (allocated once, reused)
-    std::vector<uint8_t> rgb_buffer;
 
     // Stream time_base for PTS/seek calculations
     AVRational time_base{0, 1};
@@ -316,21 +320,78 @@ void VideoDecoder::Impl::snapshot_current_frame() {
     }
 }
 
-// Convert the current AVFrame to an RGB cv::Mat (no rotation applied).
+// Convert the current AVFrame to an sRGB cv::Mat (no rotation applied).
+//
+// Pushes `frame` through `display_graph` (buffer -> scale ->
+// buffersink).  The graph is reconfigured lazily on the first frame
+// and any time the frame's geometry, pixel format, SAR, or color
+// tags change mid-stream.  Output is always RGB24 with BT.709
+// primaries, IEC 61966-2-1 transfer, and full range -- i.e. ready
+// for direct upload as an sRGB SDL/OpenGL texture.  HDR sources
+// (PQ / HLG transfer) are tone-mapped by vf_scale at this step.
 cv::Mat VideoDecoder::Impl::frame_to_mat() {
-    if (!frame || !sws_ctx) return {};
+    if (!frame) return {};
 
-    sws_scale(sws_ctx,
-              frame->data, frame->linesize, 0, coded_height,
-              rgb_frame->data, rgb_frame->linesize);
+    if (display_graph.needs_reconfigure(frame)) {
+        const int w = coded_width;
+        const int h = coded_height;
 
-    // Copy to cv::Mat (RGB, 8-bit, 3 channels)
-    cv::Mat mat(coded_height, coded_width, CV_8UC3);
-    for (int y = 0; y < coded_height; ++y) {
-        std::memcpy(mat.ptr(y),
-                    rgb_frame->data[0] + y * rgb_frame->linesize[0],
-                    static_cast<size_t>(coded_width) * 3);
+        VideoColorTags tags;
+        tags.range     = frame->color_range;
+        tags.matrix    = frame->colorspace;
+        tags.primaries = frame->color_primaries;
+        tags.transfer  = frame->color_trc;
+
+        VideoFilterInputParams in;
+        in.width     = frame->width;
+        in.height    = frame->height;
+        in.pix_fmt   = static_cast<AVPixelFormat>(frame->format);
+        in.sar       = frame->sample_aspect_ratio.num
+                           ? frame->sample_aspect_ratio
+                           : AVRational{1, 1};
+        in.time_base = time_base;
+        in.range     = tags.resolved_range();
+        in.matrix    = tags.resolved_matrix(w, h);
+        in.primaries = tags.resolved_primaries(w, h);
+        in.transfer  = tags.resolved_transfer(w, h);
+
+        VideoFilterOutputParams out;
+        out.width     = 0;  // keep source size
+        out.height    = 0;
+        out.pix_fmt   = AV_PIX_FMT_RGB24;
+        out.range     = AVCOL_RANGE_JPEG;          // full range
+        out.matrix    = AVCOL_SPC_RGB;             // identity (RGB)
+        out.primaries = AVCOL_PRI_BT709;
+        out.transfer  = AVCOL_TRC_IEC61966_2_1;    // sRGB
+
+        std::string err;
+        if (!display_graph.configure(in, out, err)) {
+            last_error = "display graph configure failed: " + err;
+            LOG_ERROR("VideoDecoder: %s", last_error.c_str());
+            return {};
+        }
     }
+
+    std::string err;
+    AVFrame* out_frame = display_graph.process(frame, err);
+    if (!out_frame) {
+        last_error = "display graph process failed: " + err;
+        LOG_ERROR("VideoDecoder: %s", last_error.c_str());
+        return {};
+    }
+
+    // Copy to cv::Mat (RGB, 8-bit, 3 channels).  vf_scale already
+    // produced contiguous RGB24, but linesize may include padding,
+    // so copy row by row.
+    const int out_w = out_frame->width;
+    const int out_h = out_frame->height;
+    cv::Mat mat(out_h, out_w, CV_8UC3);
+    for (int y = 0; y < out_h; ++y) {
+        std::memcpy(mat.ptr(y),
+                    out_frame->data[0] + y * out_frame->linesize[0],
+                    static_cast<size_t>(out_w) * 3);
+    }
+    av_frame_free(&out_frame);
     return mat;
 }
 
@@ -544,39 +605,19 @@ bool VideoDecoder::open(const std::string& path) {
         impl_->frame_count = 1;
     }
 
-    // Setup sws_scale for pixel format conversion to RGB24
-    impl_->sws_ctx = sws_getContext(
-        impl_->coded_width, impl_->coded_height, impl_->codec_ctx->pix_fmt,
-        impl_->coded_width, impl_->coded_height, AV_PIX_FMT_RGB24,
-        SWS_BILINEAR, nullptr, nullptr, nullptr
-    );
-    if (!impl_->sws_ctx) {
-        impl_->last_error = "cannot create sws context";
-        close();
-        return false;
-    }
-
-    // Allocate frames
+    // Allocate frames.  The display path's filter graph is configured
+    // lazily inside frame_to_mat() once we have a real AVFrame in
+    // hand: codecpar's color description is at best a hint, and we
+    // want vf_scale wired to the actual decoded frame's tags.
     impl_->frame = av_frame_alloc();
-    impl_->rgb_frame = av_frame_alloc();
     impl_->cached_av_frame = av_frame_alloc();
     impl_->packet = av_packet_alloc();
 
-    if (!impl_->frame || !impl_->rgb_frame || !impl_->cached_av_frame ||
-        !impl_->packet) {
+    if (!impl_->frame || !impl_->cached_av_frame || !impl_->packet) {
         impl_->last_error = "cannot allocate AVFrame/AVPacket";
         close();
         return false;
     }
-
-    // Setup RGB frame buffer
-    int rgb_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, impl_->coded_width, impl_->coded_height, 1);
-    impl_->rgb_buffer.resize(static_cast<size_t>(rgb_size));
-    av_image_fill_arrays(
-        impl_->rgb_frame->data, impl_->rgb_frame->linesize,
-        impl_->rgb_buffer.data(), AV_PIX_FMT_RGB24,
-        impl_->coded_width, impl_->coded_height, 1
-    );
 
     impl_->current_frame_idx = -1;
     impl_->cached_av_frame_idx = -1;
@@ -594,15 +635,9 @@ bool VideoDecoder::open(const std::string& path) {
 }
 
 void VideoDecoder::close() {
-    if (impl_->sws_ctx) {
-        sws_freeContext(impl_->sws_ctx);
-        impl_->sws_ctx = nullptr;
-    }
+    impl_->display_graph.reset();
     if (impl_->frame) {
         av_frame_free(&impl_->frame);
-    }
-    if (impl_->rgb_frame) {
-        av_frame_free(&impl_->rgb_frame);
     }
     if (impl_->cached_av_frame) {
         av_frame_free(&impl_->cached_av_frame);
@@ -623,7 +658,6 @@ void VideoDecoder::close() {
     impl_->color_tags_logged = false;
     impl_->cached_frame = cv::Mat();
     impl_->cached_rotation = VideoRotation::None;
-    impl_->rgb_buffer.clear();
 }
 
 bool VideoDecoder::is_open() const noexcept {
