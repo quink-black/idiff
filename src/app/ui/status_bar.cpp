@@ -7,6 +7,7 @@
 // here -- they make the status bar unreadable on narrower windows.
 
 #include "app/app.h"            // ImageEntry
+#include "app/pixel_sampler.h"
 #include "app/sr_infer_engine.h" // SREngineStatus
 #include "app/viewport.h"
 #include "core/image.h"
@@ -152,29 +153,20 @@ void render_status_bar(const StatusBarInputs& in) {
                     const auto& m = src_img->mat();
                     if (!m.empty() &&
                         px >= 0 && px < m.cols && py >= 0 && py < m.rows) {
-                        int ch = m.channels();
-                        int depth = m.depth();  // CV_8U = 0, CV_16U = 2
-                        if (depth == CV_8U) {
-                            const uint8_t* p = m.ptr<uint8_t>(py) + px * ch;
-                            if (ch == 1)      append(" = %u", p[0]);
-                            else if (ch == 3) append(" = (%u, %u, %u)",
-                                                     p[0], p[1], p[2]);
-                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
-                                                     p[0], p[1], p[2], p[3]);
-                        } else if (depth == CV_16U) {
-                            const uint16_t* p = m.ptr<uint16_t>(py) + px * ch;
-                            if (ch == 1)      append(" = %u", p[0]);
-                            else if (ch == 3) append(" = (%u, %u, %u)",
-                                                     p[0], p[1], p[2]);
-                            else if (ch == 4) append(" = (%u, %u, %u, %u)",
-                                                     p[0], p[1], p[2], p[3]);
-                        } else if (depth == CV_32F) {
-                            const float* p = m.ptr<float>(py) + px * ch;
-                            if (ch == 1)      append(" = %.4f", p[0]);
-                            else if (ch == 3) append(" = (%.4f, %.4f, %.4f)",
-                                                     p[0], p[1], p[2]);
-                            else if (ch == 4) append(" = (%.4f, %.4f, %.4f, %.4f)",
-                                                     p[0], p[1], p[2], p[3]);
+                        // Status bar always reflects what is on screen:
+                        // the post-conversion 8-bit sRGB pixel.  Force
+                        // the RGB path so the inspector's YUV/RGB
+                        // toggle does not silently shift the meaning
+                        // of these numbers.  format_pixel adds the
+                        // "R G B:" prefix so users no longer have to
+                        // guess what (a, b, c) means.
+                        double u = pixel_to_norm(px, m.cols);
+                        double v = pixel_to_norm(py, m.rows);
+                        PixelSample s = sample_image_at(src_img, u, v,
+                                                        /*prefer_rgb=*/true);
+                        char vbuf[96];
+                        if (s.valid && format_pixel(s, vbuf, sizeof(vbuf))) {
+                            append(" = %s", vbuf);
                         }
                     }
                 }

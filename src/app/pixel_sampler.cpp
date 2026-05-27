@@ -58,6 +58,42 @@ int append_channels(char* buf, std::size_t n, int channels, Fmt fmt) {
     return written;
 }
 
+// Channel-name prefix for a sample, e.g. "R G B: " for an 8U RGB
+// triple or "Y Cb Cr: " for a YUV one.  Returns an empty string for
+// PixelKind::Unknown so older call sites that never set `kind` keep
+// their pre-existing zero-prefix output (and the existing test
+// expectations remain valid).
+const char* kind_prefix(PixelKind kind, int channels) {
+    switch (kind) {
+        case PixelKind::RGB:
+            if (channels == 1) return "R: ";
+            if (channels == 3) return "R G B: ";
+            if (channels == 4) return "R G B A: ";
+            return "";
+        case PixelKind::YUV:
+            if (channels == 1) return "Y: ";
+            if (channels == 3) return "Y Cb Cr: ";
+            return "";
+        case PixelKind::Gray:
+            if (channels == 1) return "Y: ";
+            return "";
+        case PixelKind::Unknown:
+        default:
+            return "";
+    }
+}
+
+// Write `prefix` into buf and return how many bytes it consumed,
+// leaving the rest of buf usable by the channel formatter.  Always
+// null-terminates.  Returns 0 when prefix is empty or there is no
+// room.
+std::size_t write_prefix(char* buf, std::size_t n, const char* prefix) {
+    if (n == 0 || !prefix || !*prefix) return 0;
+    int m = std::snprintf(buf, n, "%s", prefix);
+    if (m <= 0) return 0;
+    return std::min<std::size_t>(static_cast<std::size_t>(m), n - 1);
+}
+
 } // namespace
 
 PixelSample sample_image(const cv::Mat& m, double u, double v) {
@@ -158,12 +194,20 @@ int read_component(const AVFrame* f,
 } // namespace
 #endif // IDIFF_HAVE_FFMPEG
 
-PixelSample sample_image_at(const Image* img, double u, double v) {
+PixelSample sample_image_at(const Image* img, double u, double v,
+                            bool prefer_rgb) {
     if (!img) return {};
     if (!(u >= 0.0) || !(v >= 0.0) || u >= 1.0 || v >= 1.0) return {};
 
 #ifdef IDIFF_HAVE_FFMPEG
-    const AVFrame* f = img->internal().src_av_frame;
+    // The native AVFrame path exposes original Y/Cb/Cr (or native
+    // R/G/B) values at full source bit depth.  When the caller would
+    // rather see the post-conversion 8-bit sRGB pixel that vf_scale
+    // actually produced -- e.g. the inspector's "RGB" toggle for a
+    // video source -- skip the AVFrame entirely and fall through to
+    // the mat sampler below, which is always RGB24 in our pipeline.
+    const AVFrame* f =
+        prefer_rgb ? nullptr : img->internal().src_av_frame;
     if (f && f->width > 0 && f->height > 0 && f->data[0]) {
         const AVPixelFormat pf = static_cast<AVPixelFormat>(f->format);
         const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(pf);
@@ -221,12 +265,15 @@ PixelSample sample_image_at(const Image* img, double u, double v) {
             }
         }
     }
+#else
+    (void)prefer_rgb;
 #endif
 
     // Fall back to the SDL-domain mat: still images, keyframe-scrub
-    // previews, builds without FFmpeg, and any pix_fmt the walker
-    // above declined to handle all land here.  The mat is always
-    // RGB24 in our pipeline, so sample_image already tags it as RGB.
+    // previews, builds without FFmpeg, the prefer_rgb override above,
+    // and any pix_fmt the walker declined to handle all land here.
+    // The mat is always RGB24 in our pipeline, so sample_image already
+    // tags it as RGB.
     return sample_image(img->mat(), u, v);
 }
 
@@ -254,6 +301,10 @@ bool format_pixel(const PixelSample& s, char* buf, std::size_t n) {
         return true;
     }
 
+    const std::size_t off = write_prefix(buf, n, kind_prefix(s.kind, s.channels));
+    char* tail = buf + off;
+    std::size_t tail_n = n - off;
+
     switch (s.depth) {
         case CV_8U:
         case CV_16U: {
@@ -261,7 +312,7 @@ bool format_pixel(const PixelSample& s, char* buf, std::size_t n) {
             // We round-to-nearest in case some upstream feeds us a
             // non-integer double, but in practice sample_image already
             // populated the array from integer pixel data.
-            append_channels(buf, n, s.channels,
+            append_channels(tail, tail_n, s.channels,
                 [&](int i, char* tmp, std::size_t tn) {
                     long long iv = static_cast<long long>(std::lround(s.v[i]));
                     std::snprintf(tmp, tn, "%lld", iv);
@@ -269,7 +320,7 @@ bool format_pixel(const PixelSample& s, char* buf, std::size_t n) {
             return true;
         }
         case CV_32F: {
-            append_channels(buf, n, s.channels,
+            append_channels(tail, tail_n, s.channels,
                 [&](int i, char* tmp, std::size_t tn) {
                     std::snprintf(tmp, tn, "%.4f", s.v[i]);
                 });
@@ -291,10 +342,22 @@ bool format_delta(const PixelSample& cur, const PixelSample& ref,
         return false;
     }
 
+    // Use whichever side carries a known kind; mismatch falls back to
+    // no prefix, which is the only sensible thing for an A-vs-B
+    // comparison across different layouts.
+    PixelKind kind = (cur.kind != PixelKind::Unknown) ? cur.kind : ref.kind;
+    if (cur.kind != PixelKind::Unknown && ref.kind != PixelKind::Unknown &&
+        cur.kind != ref.kind) {
+        kind = PixelKind::Unknown;
+    }
+    const std::size_t off = write_prefix(buf, n, kind_prefix(kind, cur.channels));
+    char* tail = buf + off;
+    std::size_t tail_n = n - off;
+
     switch (cur.depth) {
         case CV_8U:
         case CV_16U: {
-            append_channels(buf, n, cur.channels,
+            append_channels(tail, tail_n, cur.channels,
                 [&](int i, char* tmp, std::size_t tn) {
                     long long d = static_cast<long long>(std::lround(cur.v[i])) -
                                   static_cast<long long>(std::lround(ref.v[i]));
@@ -307,7 +370,7 @@ bool format_delta(const PixelSample& cur, const PixelSample& ref,
             return true;
         }
         case CV_32F: {
-            append_channels(buf, n, cur.channels,
+            append_channels(tail, tail_n, cur.channels,
                 [&](int i, char* tmp, std::size_t tn) {
                     double d = cur.v[i] - ref.v[i];
                     if (d == 0.0) std::snprintf(tmp, tn, "0.0000");

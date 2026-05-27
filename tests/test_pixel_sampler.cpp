@@ -2,6 +2,8 @@
 #include <catch2/catch_approx.hpp>
 
 #include "app/pixel_sampler.h"
+#include "core/image.h"
+#include "core/image_impl.h"
 
 #include <opencv2/core.hpp>
 
@@ -373,4 +375,139 @@ TEST_CASE("format_delta: 32F prints 4 decimals with sign", "[pixel_sampler]") {
     char buf[32] = {};
     REQUIRE(format_delta(a, b, buf, sizeof(buf)));
     REQUIRE(std::string(buf) == "+0.1000");
+}
+
+// -----------------------------------------------------------------------------
+// Channel-kind labelling.
+//
+// The (a, b, c) triple printed in the inspector and status bar is
+// ambiguous on its own -- users could not tell RGB from YUV at a
+// glance.  format_pixel / format_delta therefore prepend a short
+// channel-name prefix when the sample carries a known PixelKind, and
+// leave the output prefix-free when kind is Unknown so all the
+// pre-existing "(10, 20, 30)" expectations above keep passing.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("format_pixel: RGB triple is prefixed with R G B",
+          "[pixel_sampler][kind]") {
+    PixelSample s;
+    s.valid = true; s.channels = 3; s.depth = CV_8U;
+    s.kind = PixelKind::RGB;
+    s.v[0] = 255; s.v[1] = 0; s.v[2] = 0;
+    char buf[64] = {};
+    REQUIRE(format_pixel(s, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "R G B: (255, 0, 0)");
+}
+
+TEST_CASE("format_pixel: YUV triple is prefixed with Y Cb Cr",
+          "[pixel_sampler][kind]") {
+    PixelSample s;
+    s.valid = true; s.channels = 3; s.depth = CV_8U;
+    s.kind = PixelKind::YUV;
+    s.v[0] = 180; s.v[1] = 128; s.v[2] = 128;
+    char buf[64] = {};
+    REQUIRE(format_pixel(s, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "Y Cb Cr: (180, 128, 128)");
+}
+
+TEST_CASE("format_pixel: gray scalar is prefixed with Y",
+          "[pixel_sampler][kind]") {
+    PixelSample s;
+    s.valid = true; s.channels = 1; s.depth = CV_8U;
+    s.kind = PixelKind::Gray;
+    s.v[0] = 42;
+    char buf[32] = {};
+    REQUIRE(format_pixel(s, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "Y: 42");
+}
+
+TEST_CASE("format_pixel: RGBA quadruple is prefixed with R G B A",
+          "[pixel_sampler][kind]") {
+    PixelSample s;
+    s.valid = true; s.channels = 4; s.depth = CV_8U;
+    s.kind = PixelKind::RGB;
+    s.v[0] = 1; s.v[1] = 2; s.v[2] = 3; s.v[3] = 4;
+    char buf[64] = {};
+    REQUIRE(format_pixel(s, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "R G B A: (1, 2, 3, 4)");
+}
+
+TEST_CASE("format_pixel: Unknown kind keeps the legacy no-prefix output",
+          "[pixel_sampler][kind]") {
+    // Pin the back-compat contract that the pre-existing tests above
+    // implicitly rely on: a PixelSample with kind=Unknown must not
+    // gain a prefix, otherwise older inspector / status-bar call sites
+    // built before the labelling work would suddenly start emitting
+    // "R G B:" for samples whose layout we do not actually know.
+    PixelSample s;
+    s.valid = true; s.channels = 3; s.depth = CV_8U;
+    s.kind = PixelKind::Unknown;
+    s.v[0] = 10; s.v[1] = 20; s.v[2] = 30;
+    char buf[64] = {};
+    REQUIRE(format_pixel(s, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "(10, 20, 30)");
+}
+
+TEST_CASE("format_delta: kind label inherits from the operands",
+          "[pixel_sampler][kind]") {
+    PixelSample a; a.valid = true; a.channels = 3; a.depth = CV_8U;
+    a.kind = PixelKind::YUV;
+    a.v[0] = 200; a.v[1] = 130; a.v[2] = 120;
+    PixelSample b; b.valid = true; b.channels = 3; b.depth = CV_8U;
+    b.kind = PixelKind::YUV;
+    b.v[0] = 180; b.v[1] = 128; b.v[2] = 128;
+    char buf[64] = {};
+    REQUIRE(format_delta(a, b, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "Y Cb Cr: (+20, +2, -8)");
+}
+
+TEST_CASE("format_delta: mismatched kinds drop the prefix",
+          "[pixel_sampler][kind]") {
+    // Cross-layout deltas (one side YUV, one side RGB) are numerically
+    // meaningless, but we still emit per-channel deltas so callers can
+    // see something rather than an em-dash.  Drop the prefix in that
+    // case to avoid mislabelling the result as either kind.
+    PixelSample a; a.valid = true; a.channels = 3; a.depth = CV_8U;
+    a.kind = PixelKind::RGB;
+    a.v[0] = 10; a.v[1] = 20; a.v[2] = 30;
+    PixelSample b; b.valid = true; b.channels = 3; b.depth = CV_8U;
+    b.kind = PixelKind::YUV;
+    b.v[0] = 5;  b.v[1] = 18; b.v[2] = 32;
+    char buf[64] = {};
+    REQUIRE(format_delta(a, b, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "(+5, +2, -2)");
+}
+
+// -----------------------------------------------------------------------------
+// sample_image_at: prefer_rgb gate.
+//
+// The PixelInspectorPanel exposes a YUV/RGB radio for video sources;
+// internally that radio toggles the prefer_rgb argument.  We cannot
+// build an AVFrame in a unit test without dragging in the whole video
+// stack, but we can pin down the still-image / mat-fallback behaviour:
+// regardless of prefer_rgb, an Image with no AVFrame attached must
+// produce the exact same RGB-tagged sample.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("sample_image_at: prefer_rgb is a no-op when there is no AVFrame",
+          "[pixel_sampler][kind]") {
+    // Build an Image-shaped object via a small synthetic mat -- no
+    // FFmpeg involved.  The mat-fallback path tags the result as RGB
+    // because that is the only layout the SDL-domain mat ever holds
+    // in this codebase.
+    cv::Mat m(2, 2, CV_8UC3, cv::Scalar(10, 20, 30));
+    Image img;
+    img.internal().mat = m;
+
+    auto a = sample_image_at(&img, 0.5, 0.5, /*prefer_rgb=*/false);
+    auto b = sample_image_at(&img, 0.5, 0.5, /*prefer_rgb=*/true);
+
+    REQUIRE(a.valid);
+    REQUIRE(b.valid);
+    REQUIRE(a.kind == PixelKind::RGB);
+    REQUIRE(b.kind == PixelKind::RGB);
+    REQUIRE(a.channels == b.channels);
+    for (int i = 0; i < a.channels; ++i) {
+        REQUIRE(a.v[i] == b.v[i]);
+    }
 }

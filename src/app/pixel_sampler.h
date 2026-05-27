@@ -55,7 +55,14 @@ PixelSample sample_image(const cv::Mat& m, double u, double v);
 // keyframe scrub, builds without FFmpeg) -- the mat is RGB24 in that
 // case, so the result is tagged PixelKind::RGB.  Returns valid=false
 // when img is null or carries no usable pixel data.
-PixelSample sample_image_at(const Image* img, double u, double v);
+//
+// `prefer_rgb` overrides the source-frame preference for video frames:
+// when true, the function reads from the post-conversion RGB24 mat
+// regardless of any attached AVFrame.  This lets the inspector offer
+// a YUV / RGB toggle for video sources without affecting still images
+// (whose mat path was already RGB).
+PixelSample sample_image_at(const Image* img, double u, double v,
+                            bool prefer_rgb = false);
 
 // Convert a native pixel coordinate to normalized [0, 1] using the
 // pixel-center convention `(x + 0.5) / w`.  Out-of-range inputs are
