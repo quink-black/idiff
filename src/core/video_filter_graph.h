@@ -60,7 +60,7 @@ struct VideoFilterOutputParams {
 // matrix, primaries, transfer) at the option level, which makes it
 // trivial to wire any source colour space to any sink colour space
 // without rebuilding swscale option strings by hand.  On the supported
-// FFmpeg baseline (>= 8.1) the same filter also performs HDR tone
+// FFmpeg baseline (>= 8.0) the same filter also performs HDR tone
 // mapping when the input transfer is PQ or HLG.
 //
 // HLG -> SDR fix-up: when the configured input transfer is HLG

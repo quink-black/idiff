@@ -117,7 +117,7 @@ set(IDIFF_HAVE_FFMPEG OFF)
 if(NOT IDIFF_WITH_FFMPEG STREQUAL "OFF")
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
-        # FFmpeg 8.1 is the minimum supported upstream release.  We pin
+        # FFmpeg 8.0 is the minimum supported upstream release.  We pin
         # every sub-library to the matching minor version so misconfigured
         # systems fail at configure time rather than at runtime with
         # cryptic symbol errors.  libavfilter is treated as a hard
@@ -125,21 +125,21 @@ if(NOT IDIFF_WITH_FFMPEG STREQUAL "OFF")
         # wide-gamut color management, and we deliberately keep no
         # legacy swscale-only fallback.
         #
-        #   ffmpeg 8.1  ->  avformat 62.12 / avcodec 62.28 / avutil 60.26
-        #                   swscale 9.5    / avfilter 11.14
+        #   ffmpeg 8.0  ->  avformat 62.3  / avcodec 62.11 / avutil 60.8
+        #                   swscale 9.1    / avfilter 11.4
 
         if(IDIFF_WITH_FFMPEG STREQUAL "ON")
-            pkg_check_modules(FFMPEG_LIBAVFORMAT  REQUIRED IMPORTED_TARGET libavformat>=62.12)
-            pkg_check_modules(FFMPEG_LIBAVCODEC   REQUIRED IMPORTED_TARGET libavcodec>=62.28)
-            pkg_check_modules(FFMPEG_LIBAVUTIL    REQUIRED IMPORTED_TARGET libavutil>=60.26)
-            pkg_check_modules(FFMPEG_LIBSWSCALE   REQUIRED IMPORTED_TARGET libswscale>=9.5)
-            pkg_check_modules(FFMPEG_LIBAVFILTER  REQUIRED IMPORTED_TARGET libavfilter>=11.14)
+            pkg_check_modules(FFMPEG_LIBAVFORMAT  REQUIRED IMPORTED_TARGET libavformat>=62.3)
+            pkg_check_modules(FFMPEG_LIBAVCODEC   REQUIRED IMPORTED_TARGET libavcodec>=62.11)
+            pkg_check_modules(FFMPEG_LIBAVUTIL    REQUIRED IMPORTED_TARGET libavutil>=60.8)
+            pkg_check_modules(FFMPEG_LIBSWSCALE   REQUIRED IMPORTED_TARGET libswscale>=9.1)
+            pkg_check_modules(FFMPEG_LIBAVFILTER  REQUIRED IMPORTED_TARGET libavfilter>=11.4)
         else()
-            pkg_check_modules(FFMPEG_LIBAVFORMAT  QUIET IMPORTED_TARGET libavformat>=62.12)
-            pkg_check_modules(FFMPEG_LIBAVCODEC   QUIET IMPORTED_TARGET libavcodec>=62.28)
-            pkg_check_modules(FFMPEG_LIBAVUTIL    QUIET IMPORTED_TARGET libavutil>=60.26)
-            pkg_check_modules(FFMPEG_LIBSWSCALE   QUIET IMPORTED_TARGET libswscale>=9.5)
-            pkg_check_modules(FFMPEG_LIBAVFILTER  QUIET IMPORTED_TARGET libavfilter>=11.14)
+            pkg_check_modules(FFMPEG_LIBAVFORMAT  QUIET IMPORTED_TARGET libavformat>=62.3)
+            pkg_check_modules(FFMPEG_LIBAVCODEC   QUIET IMPORTED_TARGET libavcodec>=62.11)
+            pkg_check_modules(FFMPEG_LIBAVUTIL    QUIET IMPORTED_TARGET libavutil>=60.8)
+            pkg_check_modules(FFMPEG_LIBSWSCALE   QUIET IMPORTED_TARGET libswscale>=9.1)
+            pkg_check_modules(FFMPEG_LIBAVFILTER  QUIET IMPORTED_TARGET libavfilter>=11.4)
         endif()
 
         if(FFMPEG_LIBAVFORMAT_FOUND AND FFMPEG_LIBAVCODEC_FOUND AND
