@@ -22,11 +22,24 @@
 #include <sys/inotify.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#define IDIFF_USE_RDCW 1
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <algorithm>
+#include <cwctype>
+#include <filesystem>
+#include <memory>
 #else
 #define IDIFF_USE_POLLING 1
 #include <chrono>
 #include <condition_variable>
-#include <sys/stat.h>
+#include <filesystem>
 #endif
 
 namespace idiff {
@@ -390,7 +403,328 @@ struct FileWatcher::Impl {
 };
 
 // --------------------------------------------------------------------------
-// Polling fallback (Windows and others)
+// ReadDirectoryChangesW + IOCP backend (Windows)
+// --------------------------------------------------------------------------
+#elif defined(IDIFF_USE_RDCW)
+
+namespace {
+
+// Lowercase a UTF-16 string for case-insensitive filename comparison.
+// Windows filesystems are case-preserving but case-insensitive on the
+// default NTFS volumes used by the test suite.
+std::wstring to_lower_w(std::wstring w) {
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(::towlower(c)); });
+    return w;
+}
+
+} // namespace
+
+struct FileWatcher::Impl {
+    // ----- Per-directory watch state ------------------------------------
+    // One DirWatch covers all watched files that live in the same parent
+    // directory.  This minimises the number of HANDLEs and outstanding
+    // ReadDirectoryChangesW calls.
+    struct DirWatch {
+        std::wstring dir_w;                 // canonical wide path
+        HANDLE handle = INVALID_HANDLE_VALUE;
+        OVERLAPPED overlapped{};
+        // Buffer must be DWORD-aligned and large enough for a burst of
+        // changes.  64 KiB is the documented maximum for remote shares;
+        // we pick 32 KiB which is plenty for local NTFS.
+        alignas(DWORD) BYTE buffer[32 * 1024]{};
+        // filename_lower -> original UTF-8 path passed to add_path().
+        // We key by lowercase wide name to match Windows' case-insensitive
+        // semantics, but return the exact string the caller registered.
+        std::unordered_map<std::wstring, std::string> files;
+        bool pending = false;               // is an async read outstanding?
+    };
+
+    std::mutex mutex_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    HANDLE iocp_ = nullptr;
+
+    // Special completion key used by wake() to interrupt the worker.
+    // Real ReadDirectoryChangesW completions carry a DirWatch* as the
+    // key, which is always a valid pointer and never collides with this
+    // sentinel value.
+    static constexpr ULONG_PTR KEY_WAKE = 1;
+
+    // dir_lower_wide -> DirWatch
+    std::unordered_map<std::wstring, std::unique_ptr<DirWatch>> dirs_;
+    // path (as passed by caller) -> dir_lower_wide so remove_path can
+    // find which DirWatch hosts it.
+    std::unordered_map<std::string, std::wstring> path_to_dir_;
+
+    std::unordered_set<std::string> changed_;
+
+    Impl() {
+        iocp_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+        if (!iocp_) {
+            LOG_ERROR("FileWatcher: CreateIoCompletionPort failed (err=%lu)",
+                      GetLastError());
+            return;
+        }
+        running_.store(true);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~Impl() {
+        running_.store(false);
+        wake();
+        if (thread_.joinable()) thread_.join();
+
+        // Cancel and close every directory handle.  This must happen on
+        // the same thread that no longer pumps the IOCP, after the worker
+        // has joined, so leftover completions are simply discarded.
+        for (auto& [_, d] : dirs_) {
+            if (d->handle != INVALID_HANDLE_VALUE) {
+                CancelIoEx(d->handle, &d->overlapped);
+                CloseHandle(d->handle);
+            }
+        }
+        dirs_.clear();
+        if (iocp_) CloseHandle(iocp_);
+    }
+
+    void wake() {
+        if (iocp_) {
+            PostQueuedCompletionStatus(iocp_, 0, KEY_WAKE, nullptr);
+        }
+    }
+
+    // Open a directory handle suitable for ReadDirectoryChangesW and
+    // associate it with the IOCP.  Returns nullptr on failure.
+    std::unique_ptr<DirWatch> open_dir(const std::wstring& dir_w) {
+        HANDLE h = CreateFileW(
+            dir_w.c_str(),
+            FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+            nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            LOG_WARN("FileWatcher: CreateFileW failed for directory (err=%lu)",
+                     GetLastError());
+            return nullptr;
+        }
+        auto d = std::make_unique<DirWatch>();
+        d->dir_w = dir_w;
+        d->handle = h;
+
+        // Associate handle with our IOCP.  Use the DirWatch pointer as the
+        // completion key so the worker can recover it from the completion.
+        if (!CreateIoCompletionPort(h, iocp_,
+                                    reinterpret_cast<ULONG_PTR>(d.get()),
+                                    0)) {
+            LOG_WARN("FileWatcher: associate IOCP failed (err=%lu)",
+                     GetLastError());
+            CloseHandle(h);
+            return nullptr;
+        }
+        return d;
+    }
+
+    // Issue a fresh asynchronous ReadDirectoryChangesW.  Caller must
+    // ensure no read is currently outstanding.
+    bool issue_read(DirWatch* d) {
+        ZeroMemory(&d->overlapped, sizeof(OVERLAPPED));
+        DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME
+                     | FILE_NOTIFY_CHANGE_LAST_WRITE
+                     | FILE_NOTIFY_CHANGE_SIZE
+                     | FILE_NOTIFY_CHANGE_ATTRIBUTES
+                     | FILE_NOTIFY_CHANGE_CREATION;
+        BOOL ok = ReadDirectoryChangesW(
+            d->handle,
+            d->buffer,
+            sizeof(d->buffer),
+            FALSE,                  // bWatchSubtree: we only need this dir
+            filter,
+            nullptr,                // lpBytesReturned (async => unused)
+            &d->overlapped,
+            nullptr);
+        if (!ok) {
+            LOG_WARN("FileWatcher: ReadDirectoryChangesW failed (err=%lu)",
+                     GetLastError());
+            d->pending = false;
+            return false;
+        }
+        d->pending = true;
+        return true;
+    }
+
+    void add_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (path_to_dir_.count(path)) return;       // duplicate
+
+        std::error_code ec;
+        std::filesystem::path fs_path(path);
+        // weakly_canonical resolves "." / ".." and converts to absolute.
+        // If the path does not exist we silently skip, matching the
+        // behaviour of the POSIX backends.
+        auto canonical = std::filesystem::weakly_canonical(fs_path, ec);
+        if (ec) canonical = fs_path;
+        if (!std::filesystem::exists(canonical, ec)) {
+            LOG_WARN("FileWatcher: path '%s' does not exist", path.c_str());
+            return;
+        }
+        auto parent = canonical.parent_path();
+        auto filename = canonical.filename();
+        if (parent.empty() || filename.empty()) {
+            LOG_WARN("FileWatcher: path '%s' has no parent directory",
+                     path.c_str());
+            return;
+        }
+
+        std::wstring dir_w = parent.wstring();
+        std::wstring file_w = filename.wstring();
+        std::wstring dir_key = to_lower_w(dir_w);
+        std::wstring file_key = to_lower_w(file_w);
+
+        auto it = dirs_.find(dir_key);
+        if (it == dirs_.end()) {
+            auto d = open_dir(dir_w);
+            if (!d) return;
+            DirWatch* raw = d.get();
+            dirs_.emplace(dir_key, std::move(d));
+            it = dirs_.find(dir_key);
+            // Issue first read; it will land on the worker thread once a
+            // change occurs or we cancel during shutdown.
+            if (!issue_read(raw)) {
+                CloseHandle(raw->handle);
+                dirs_.erase(it);
+                return;
+            }
+        }
+        it->second->files[file_key] = path;
+        path_to_dir_[path] = dir_key;
+    }
+
+    void remove_path(const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto pit = path_to_dir_.find(path);
+        if (pit == path_to_dir_.end()) return;
+
+        auto dit = dirs_.find(pit->second);
+        if (dit != dirs_.end()) {
+            // Erase by recomputing the lowercase filename key.
+            std::filesystem::path fs_path(path);
+            std::wstring file_key = to_lower_w(fs_path.filename().wstring());
+            dit->second->files.erase(file_key);
+            if (dit->second->files.empty()) {
+                close_dir_locked(dit->second.get());
+                dirs_.erase(dit);
+            }
+        }
+        path_to_dir_.erase(pit);
+        changed_.erase(path);
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [_, d] : dirs_) {
+            close_dir_locked(d.get());
+        }
+        dirs_.clear();
+        path_to_dir_.clear();
+        changed_.clear();
+    }
+
+    // Caller holds mutex_.  CancelIoEx + CloseHandle drains any pending
+    // ReadDirectoryChangesW; the worker will observe the completion with
+    // ERROR_OPERATION_ABORTED and ignore it because pending becomes false.
+    void close_dir_locked(DirWatch* d) {
+        if (d->handle != INVALID_HANDLE_VALUE) {
+            d->pending = false;
+            CancelIoEx(d->handle, &d->overlapped);
+            CloseHandle(d->handle);
+            d->handle = INVALID_HANDLE_VALUE;
+        }
+    }
+
+    std::vector<std::string> poll_changed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result(changed_.begin(), changed_.end());
+        changed_.clear();
+        return result;
+    }
+
+    // Decode one filled buffer of FILE_NOTIFY_INFORMATION records.
+    // Caller holds mutex_.
+    void decode_notifications(DirWatch* d, DWORD bytes) {
+        if (bytes == 0) {
+            // A zero-byte completion means the buffer overflowed.  Mark
+            // every watched file in this directory as changed because we
+            // cannot know which entries were affected.
+            for (auto& [_, original] : d->files) {
+                changed_.insert(original);
+            }
+            return;
+        }
+        BYTE* p = d->buffer;
+        BYTE* end = d->buffer + bytes;
+        while (p + sizeof(FILE_NOTIFY_INFORMATION) <= end) {
+            auto* info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(p);
+            size_t name_len = info->FileNameLength / sizeof(WCHAR);
+            std::wstring name(info->FileName, name_len);
+            std::wstring key = to_lower_w(name);
+
+            auto fit = d->files.find(key);
+            if (fit != d->files.end()) {
+                changed_.insert(fit->second);
+            }
+            if (info->NextEntryOffset == 0) break;
+            p += info->NextEntryOffset;
+        }
+    }
+
+    void run() {
+        while (running_.load()) {
+            DWORD bytes = 0;
+            ULONG_PTR key = 0;
+            OVERLAPPED* ov = nullptr;
+            BOOL ok = GetQueuedCompletionStatus(iocp_, &bytes, &key, &ov,
+                                                INFINITE);
+            if (!running_.load()) break;
+
+            if (key == KEY_WAKE) {
+                continue;                           // just a wake-up
+            }
+            // key == reinterpret_cast<ULONG_PTR>(DirWatch*)
+            DirWatch* d = reinterpret_cast<DirWatch*>(key);
+
+            // Validate that this DirWatch is still alive.  After clear()
+            // or remove_path() the entry may have been freed; in that
+            // case the completion belongs to a CancelIoEx and we drop it.
+            std::lock_guard<std::mutex> lock(mutex_);
+            bool alive = false;
+            for (auto& [_, p] : dirs_) {
+                if (p.get() == d) { alive = true; break; }
+            }
+            if (!alive) continue;
+            if (d->handle == INVALID_HANDLE_VALUE) continue;
+
+            d->pending = false;
+
+            if (!ok) {
+                DWORD err = GetLastError();
+                if (err == ERROR_OPERATION_ABORTED) continue;
+                LOG_WARN("FileWatcher: completion error %lu", err);
+                // Re-arm and hope for the best.
+                issue_read(d);
+                continue;
+            }
+            decode_notifications(d, bytes);
+            // Re-arm immediately so we never miss subsequent changes.
+            issue_read(d);
+        }
+    }
+};
+
+// --------------------------------------------------------------------------
+// Polling fallback (other platforms)
 // --------------------------------------------------------------------------
 #else
 
