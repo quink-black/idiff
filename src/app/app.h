@@ -123,6 +123,12 @@ private:
     void render_viewport();
     void render_right_sidebar();
     void render_status_bar();
+    // Push the viewport's current hover position into the pixel
+    // inspector panel so the Hover row stays in sync.  Resolves the
+    // hovered viewport slot back to the underlying ImageEntry (or, in
+    // Difference mode, the diff slot's image) and converts the native
+    // pixel coordinate to (u, v) using the source image's resolution.
+    void update_pixel_inspector_hover();
 
     void open_file_dialog();
     void save_viewport_dialog();

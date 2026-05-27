@@ -180,16 +180,16 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
     // dragging past the cell edge extrapolates in the source image's
     // coordinate system instead of re-resolving to another cell.
     //
-    // Measure mode is a hold-to-activate toggle driven by the M key (no
-    // checkbox in the toolbar).  Holding M arms the next left-drag as a
-    // measurement; releasing M during a drag does NOT abort, so the user
-    // can let go of the key once the drag has started.  This avoids the
-    // accidental measurement rectangles that a sticky checkbox produced.
-    // WantTextInput (not WantCaptureKeyboard) is the correct guard:
-    // WantCaptureKeyboard is true whenever any ImGui window is focused,
-    // which includes the viewport itself and would block the hotkey
-    // entirely.  WantTextInput is true only while a text field is
-    // actively receiving input, matching the Ctrl+O guard above.
+    // Measure mode is a hold-to-activate hotkey: while M is held,
+    // the next left-drag is captured as a measurement; releasing M
+    // mid-drag does NOT abort, so the user can let go of the key
+    // once dragging starts.  This is intentionally a bare letter --
+    // App::frame() now keeps SDL_StopTextInput() in effect whenever
+    // no ImGui InputText is focused, so the OS IME (Pinyin and the
+    // like) never gets a chance to swallow M into a composition.
+    // WantTextInput, not WantCaptureKeyboard, is the correct guard:
+    // WantCaptureKeyboard is true whenever any ImGui window is
+    // focused (including the viewport itself).
     bool measure_armed = !io.WantTextInput &&
                          ImGui::IsKeyDown(ImGuiKey_M);
     if (measure_armed != vp.measure_mode()) {
@@ -236,6 +236,29 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
     // macOS where right-click drag is not naturally available.
     bool sel_start_right = ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hovered;
     bool sel_start_ctrl  = ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered && io.KeyCtrl;
+    // --- Shift+left-click "quick pin" for the pixel inspector ---
+    // Pure click (no drag) so it does not interfere with pan, measure,
+    // or selection-zoom drags above.  KeyShift is otherwise unused by
+    // the viewport, and we further gate on KeyCtrl / measure / sel-zoom
+    // so a future feature that claims Shift+drag stays compatible.
+    if (hovered && io.KeyShift && !io.KeyCtrl && !vp.measure_mode() &&
+        !vp.measuring() && !vp.selecting() &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (in.on_shift_pin_click) in.on_shift_pin_click();
+    }
+    // P key: pin the pixel under the cursor without leaving the
+    // viewport.  Bare letter for one-handed use, made safe by the
+    // app-wide SDL_StopTextInput discipline: while no InputText is
+    // focused, the IME never sees the keystroke, so this never
+    // pops a candidate window even with Pinyin active.  Guard with
+    // !KeyCtrl/!KeyShift/!KeyAlt so future modifier combinations
+    // (e.g. Shift+P) stay free, and only fire one pin per key-down.
+    if (hovered && !io.WantTextInput && !io.KeyCtrl && !io.KeyShift &&
+        !io.KeyAlt && !vp.measure_mode() && !vp.measuring() &&
+        !vp.selecting() &&
+        ImGui::IsKeyPressed(ImGuiKey_P, /*repeat=*/false)) {
+        if (in.on_shift_pin_click) in.on_shift_pin_click();
+    }
     if (hovered || vp.selecting()) {
         if (!vp.selecting() && (sel_start_right || sel_start_ctrl)) {
             vp.begin_selection(io.MousePos);

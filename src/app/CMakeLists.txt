@@ -4,6 +4,8 @@ add_executable(idiff
     controller.cpp
     viewport.cpp
     metrics_panel.cpp
+    pixel_sampler.cpp
+    pixel_inspector_panel.cpp
     properties_panel.cpp
     settings.cpp
     sr_infer_engine.cpp

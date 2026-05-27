@@ -141,6 +141,8 @@ AppSettings AppSettings::load(const std::string& path) {
             s.sr_model = val;
         } else if (key == "sr.color_correction") {
             s.sr_color_correction = val;
+        } else if (key == "inspector.panel") {
+            s.inspector_panel = std::atoi(val.c_str());
         }
     }
     return s;
@@ -184,6 +186,7 @@ bool AppSettings::save(const std::string& path) const {
     out << "sr.tile_overlap="      << sr_tile_overlap << "\n";
     out << "sr.model="             << sr_model << "\n";
     out << "sr.color_correction="  << sr_color_correction << "\n";
+    out << "inspector.panel="      << inspector_panel << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;

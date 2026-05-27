@@ -60,6 +60,13 @@ struct ViewportPanelInputs {
 
     // Save Viewport... toolbar button.  May be empty.
     std::function<void()> on_save_viewport;
+
+    // Fires once per Shift+left-click over the viewport when there is a
+    // valid hover sample.  Used to forward the cursor position to the
+    // pixel inspector as a "quick pin".  Coexists with pan / measure /
+    // selection-zoom because Shift is otherwise unused by the existing
+    // gestures; nullptr-safe.
+    std::function<void()> on_shift_pin_click;
 };
 
 void render_viewport_panel(const ViewportPanelInputs& in);
