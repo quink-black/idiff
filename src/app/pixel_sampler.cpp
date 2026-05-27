@@ -1,5 +1,14 @@
 #include "app/pixel_sampler.h"
 
+#include "core/image.h"
+#ifdef IDIFF_HAVE_FFMPEG
+#include "core/image_impl.h"
+extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/pixdesc.h>
+}
+#endif
+
 #include <opencv2/core.hpp>
 
 #include <algorithm>
@@ -78,6 +87,10 @@ PixelSample sample_image(const cv::Mat& m, double u, double v) {
     s.valid = true;
     s.channels = channels;
     s.depth = m.depth();
+    // The mats we see from VideoFileSource and ImageLoader are RGB24
+    // or RGBA; gray-scale comes through as a single channel.  Tagging
+    // here gives format_pixel enough context to label the columns.
+    s.kind = (channels == 1) ? PixelKind::Gray : PixelKind::RGB;
 
     switch (s.depth) {
         case CV_8U: {
@@ -104,6 +117,117 @@ PixelSample sample_image(const cv::Mat& m, double u, double v) {
             break;
     }
     return s;
+}
+
+#ifdef IDIFF_HAVE_FFMPEG
+namespace {
+
+// Read one component value from an AVFrame using its
+// AVPixFmtDescriptor entry.  `lx` / `ly` are coordinates in the
+// component's own plane (already chroma-subsampled where appropriate).
+// Container is either 1 byte/component or 2 bytes/component little-
+// endian -- the only two layouts actually used by ffmpeg's planar /
+// semi-planar formats.  Big-endian and 32-bit float component
+// containers exist but never come out of a real-world video decode
+// path; treat them as unsupported by returning -1 (caller falls back
+// to the mat).
+int read_component(const AVFrame* f,
+                   const AVComponentDescriptor& c,
+                   int comp_step_in_bytes,
+                   int lx, int ly) {
+    const uint8_t* plane = f->data[c.plane];
+    if (!plane) return -1;
+    const int linesize = f->linesize[c.plane];
+    const uint8_t* row = plane + ly * linesize;
+    const uint8_t* px = row + lx * comp_step_in_bytes + c.offset;
+
+    int raw;
+    if (c.depth <= 8) {
+        raw = *px;
+    } else if (c.depth <= 16) {
+        // Little-endian 16-bit container; covers yuv420p10le, p010le,
+        // yuv420p12le, and so on.  Big-endian variants are extremely
+        // rare in decoded video; skip them.
+        raw = static_cast<int>(px[0]) | (static_cast<int>(px[1]) << 8);
+    } else {
+        return -1;
+    }
+    return raw >> c.shift;
+}
+
+} // namespace
+#endif // IDIFF_HAVE_FFMPEG
+
+PixelSample sample_image_at(const Image* img, double u, double v) {
+    if (!img) return {};
+    if (!(u >= 0.0) || !(v >= 0.0) || u >= 1.0 || v >= 1.0) return {};
+
+#ifdef IDIFF_HAVE_FFMPEG
+    const AVFrame* f = img->internal().src_av_frame;
+    if (f && f->width > 0 && f->height > 0 && f->data[0]) {
+        const AVPixelFormat pf = static_cast<AVPixelFormat>(f->format);
+        const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(pf);
+        // Bail on layouts we cannot read with a uniform component
+        // walker: hwaccel surfaces, bitstream codecs, paletted formats.
+        // The mat fallback below handles them.
+        if (d && !(d->flags & (AV_PIX_FMT_FLAG_HWACCEL |
+                                AV_PIX_FMT_FLAG_BITSTREAM |
+                                AV_PIX_FMT_FLAG_PAL)) &&
+            d->nb_components >= 1 && d->nb_components <= 4) {
+            // Map normalized (u, v) to luma-plane integer coords,
+            // matching the convention used by sample_image() on mats.
+            const int W = f->width;
+            const int H = f->height;
+            int lx = static_cast<int>(std::floor(u * W));
+            int ly = static_cast<int>(std::floor(v * H));
+            if (lx < 0) lx = 0; else if (lx >= W) lx = W - 1;
+            if (ly < 0) ly = 0; else if (ly >= H) ly = H - 1;
+
+            const bool is_rgb = (d->flags & AV_PIX_FMT_FLAG_RGB) != 0;
+            // We expose Y/Cb/Cr or R/G/B but not alpha -- the inspector
+            // table is already 3-column, and alpha on a video frame is
+            // exotic.  Cap at the first 3 non-alpha components.
+            int show_n = std::min<int>(d->nb_components, 3);
+            // If the descriptor's last component is alpha, drop it.
+            if ((d->flags & AV_PIX_FMT_FLAG_ALPHA) && show_n > 0) {
+                show_n = std::min(show_n, d->nb_components - 1);
+            }
+
+            PixelSample s;
+            int max_depth = 0;
+            bool ok = true;
+            for (int i = 0; i < show_n; ++i) {
+                const AVComponentDescriptor& c = d->comp[i];
+                if (c.depth > max_depth) max_depth = c.depth;
+
+                // Chroma subsampling applies only to YUV components 1
+                // and 2.  RGB and luma have shifts of 0 by definition.
+                int cx = lx, cy = ly;
+                if (!is_rgb && i > 0) {
+                    cx = lx >> d->log2_chroma_w;
+                    cy = ly >> d->log2_chroma_h;
+                }
+
+                int val = read_component(f, c, c.step, cx, cy);
+                if (val < 0) { ok = false; break; }
+                s.v[i] = static_cast<double>(val);
+            }
+            if (ok) {
+                s.valid = true;
+                s.channels = show_n;
+                s.depth = (max_depth <= 8) ? CV_8U : CV_16U;
+                s.kind = is_rgb ? PixelKind::RGB : PixelKind::YUV;
+                return s;
+            }
+        }
+    }
+#endif
+
+    // Fall back to the SDL-domain mat: still images, keyframe-scrub
+    // previews, builds without FFmpeg, and any pix_fmt the walker
+    // above declined to handle all land here.  The mat is always
+    // RGB24 in our pipeline, so sample_image already tags it as RGB.
+    return sample_image(img->mat(), u, v);
 }
 
 double pixel_to_norm(int x, int w) {

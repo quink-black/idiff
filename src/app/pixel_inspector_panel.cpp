@@ -209,7 +209,7 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
         PixelSample a_sample{};
         if (!samples.empty() && samples[0].second &&
             !samples[0].second->mat().empty()) {
-            a_sample = sample_image(samples[0].second->mat(), point.u, point.v);
+            a_sample = sample_image_at(samples[0].second, point.u, point.v);
         }
 
         // Pre-compute integer coords using the reference resolution.
@@ -246,7 +246,7 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
 
             // Sample once for both Value and Delta columns.
             PixelSample s = (!mat.empty())
-                ? sample_image(mat, point.u, point.v)
+                ? sample_image_at(img, point.u, point.v)
                 : PixelSample{};
 
             // Coord (x, y) column.  Editable on the first row of a
