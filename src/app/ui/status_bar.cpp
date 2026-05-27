@@ -1,5 +1,11 @@
 #include "app/ui/status_bar.h"
 
+// The hover-pixel readout in this file intentionally stays single-image
+// (the cell currently under the cursor).  Multi-image / multi-coordinate
+// inspection lives in the Inspector -> Pixel sub-panel
+// (PixelInspectorPanel); please do not stack additional pixel fields
+// here -- they make the status bar unreadable on narrower windows.
+
 #include "app/app.h"            // ImageEntry
 #include "app/sr_infer_engine.h" // SREngineStatus
 #include "app/viewport.h"

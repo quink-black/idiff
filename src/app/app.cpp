@@ -10,6 +10,8 @@
 #include "app/ui/yuv_dialog.h"
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
+#include "app/pixel_inspector_panel.h"
+#include "app/pixel_sampler.h"
 #include "app/properties_panel.h"
 #include "app/settings.h"
 #include "app/sr_infer_engine.h"
@@ -112,6 +114,7 @@ struct App::State {
     std::unique_ptr<Viewport> viewport;
     std::unique_ptr<MetricsPanel> metrics_panel;
     std::unique_ptr<PropertiesPanel> properties_panel;
+    std::unique_ptr<PixelInspectorPanel> pixel_panel;
 
     UpscaleMethod upscale_method = UpscaleMethod::Lanczos;
 
@@ -301,11 +304,22 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
 
+    // SDL2 keeps text input enabled by default after window creation,
+    // which makes the OS IME (e.g. Pinyin on macOS / Windows) eat
+    // every keystroke -- pressing M or P over the viewport pops up a
+    // Chinese candidate window instead of triggering our hotkey.
+    // Recent ImGui SDL2 backends no longer toggle text input
+    // themselves (see imgui_impl_sdl2.cpp 2023-04-06 changelog), so
+    // we manage it ourselves: start with it OFF, and re-enable it on
+    // demand from frame() based on io.WantTextInput.
+    SDL_StopTextInput();
+
     SDL_RenderSetScale(renderer, dpi_scale, dpi_scale);
 
     state_->viewport = std::make_unique<Viewport>();
     state_->metrics_panel = std::make_unique<MetricsPanel>();
     state_->properties_panel = std::make_unique<PropertiesPanel>();
+    state_->pixel_panel = std::make_unique<PixelInspectorPanel>();
 
     // Load persistent settings (last-used YUV params, etc.).  A missing
     // file is fine -- AppSettings::load falls back to defaults.
@@ -523,6 +537,7 @@ void App::frame() {
 
     if (state_->show_image_list) render_image_list();
     render_viewport();
+    update_pixel_inspector_hover();
     if (state_->show_inspector) render_right_sidebar();
     render_timeline_bar();
     render_status_bar();
@@ -535,6 +550,24 @@ void App::frame() {
     poll_file_watcher();
 
     ImGui::Render();
+
+    // Sync SDL's IME / text-input state to whatever ImGui actually
+    // wants this frame.  When no InputText widget is focused
+    // (the common case while the user is just looking at the
+    // viewport), text input stays off and the OS IME does not
+    // intercept M, P, or any other plain-letter hotkey -- no
+    // Chinese / Japanese candidate window pops up, no character is
+    // composed.  We re-enable on demand only while a text widget is
+    // focused, which is exactly when the user wants typing.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        SDL_bool active = SDL_IsTextInputActive();
+        if (io.WantTextInput && !active) {
+            SDL_StartTextInput();
+        } else if (!io.WantTextInput && active) {
+            SDL_StopTextInput();
+        }
+    }
 
     SDL_SetRenderDrawColor(state_->renderer, 18, 18, 26, 255);
     SDL_RenderClear(state_->renderer);
@@ -1421,6 +1454,17 @@ void App::render_viewport() {
     in.on_update_display_image = [this](int s) { update_display_image(s); };
     in.on_upload_texture = [this](int s) { upload_texture(entries_view()[s]); };
     in.on_save_viewport = [this]() { save_viewport_dialog(); };
+    in.on_shift_pin_click = [this]() {
+        // The hover sample for the inspector was just refreshed by
+        // render_viewport_panel via the hit-test pass; pin_current_hover
+        // is a no-op when the cursor is not over an image, so clicks
+        // outside any image safely fall through.  We push the latest
+        // (u, v) before pinning to handle the rare case where the user
+        // shift-clicked on the very first frame the viewport became
+        // visible.
+        update_pixel_inspector_hover();
+        if (state_->pixel_panel) state_->pixel_panel->pin_current_hover();
+    };
     idiff::render_viewport_panel(in);
 }
 
@@ -1433,8 +1477,58 @@ void App::render_right_sidebar() {
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.properties_panel = state_->properties_panel.get();
     in.metrics_panel = state_->metrics_panel.get();
+    in.pixel_panel = state_->pixel_panel.get();
+    in.current_panel = &state_->settings.inspector_panel;
+    in.on_panel_changed = [this]() { state_->settings.save(); };
     in.show_inspector = &state_->show_inspector;
     idiff::render_right_sidebar(in);
+}
+
+// Resolve which native image is under the cursor and forward (u, v) to
+// the pixel inspector.  Mirrors the lookup in render_status_bar:
+// Difference mode reads from the diff slot's image (so the heatmap's
+// own resolution is used), every other mode reads from the underlying
+// ImageEntry referenced by the viewport_slot_to_entry table that
+// render_viewport just populated.
+void App::update_pixel_inspector_hover() {
+    if (!state_->pixel_panel) return;
+    const Viewport* vp = state_->viewport.get();
+    if (!vp || !vp->hover_valid()) {
+        state_->pixel_panel->update_hover(0.0, 0.0, false);
+        return;
+    }
+
+    int cell = vp->hover_cell_index();
+    int px = vp->hover_pixel_x();
+    int py = vp->hover_pixel_y();
+
+    const cv::Mat* mat = nullptr;
+
+    if (vp->mode() == ComparisonMode::Difference) {
+        if (diff_service_ && cell >= 0 &&
+            cell < static_cast<int>(diff_service_->size())) {
+            const auto& slot = diff_service_->slots()[cell];
+            if (slot.image) mat = &slot.image->mat();
+        }
+    } else if (cell >= 0 &&
+               cell < static_cast<int>(viewport_slot_to_entry_.size())) {
+        int ent = viewport_slot_to_entry_[cell];
+        if (ent >= 0 && ent < static_cast<int>(entries_view().size())) {
+            const auto& e = entries_view()[ent];
+            if (e.image) mat = &e.image->mat();
+        }
+    }
+
+    if (!mat || mat->empty() ||
+        px < 0 || py < 0 ||
+        px >= mat->cols || py >= mat->rows) {
+        state_->pixel_panel->update_hover(0.0, 0.0, false);
+        return;
+    }
+
+    double u = pixel_to_norm(px, mat->cols);
+    double v = pixel_to_norm(py, mat->rows);
+    state_->pixel_panel->update_hover(u, v, true);
 }
 
 void App::render_error_dialog() {

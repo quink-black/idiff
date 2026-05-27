@@ -42,6 +42,12 @@ struct AppSettings {
     std::string sr_model = "seedvr2_ema_3b-Q4_K_M.gguf";
     std::string sr_color_correction = "lab";
 
+    // Inspector panel currently shown.
+    // 0 = Properties (default), 1 = Pixel, 2 = Metrics,
+    // 3 = Statistics, 4 = Measurements.  Persisted so the user does
+    // not have to reselect their preferred inspector tab on every launch.
+    int inspector_panel = 0;
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)

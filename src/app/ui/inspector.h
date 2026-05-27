@@ -7,6 +7,7 @@
 namespace idiff {
 
 class MetricsPanel;
+class PixelInspectorPanel;
 class PropertiesPanel;
 class SelectionModel;
 class Viewport;
@@ -35,6 +36,21 @@ struct InspectorInputs {
     // the corresponding tabs.
     PropertiesPanel* properties_panel;
     MetricsPanel* metrics_panel;
+    // Optional pixel-inspector sub-panel.  Owned by the host (App)
+    // because it carries per-session state (pinned samples) that
+    // outlives a single render call.  nullptr-safe.
+    PixelInspectorPanel* pixel_panel = nullptr;
+
+    // Index of the currently-selected sub-panel.  Persisted into
+    // AppSettings so the user does not have to reselect on every
+    // launch.  Values map to: 0=Properties, 1=Pixel, 2=Metrics,
+    // 3=Statistics, 4=Measurements.  Out-of-range values are clamped
+    // back to 0 by the renderer.
+    int* current_panel = nullptr;
+    // Optional callback fired the moment the user picks a different
+    // sub-panel via the Combo.  Used by the host to persist the new
+    // value (e.g. AppSettings::save).  May be empty.
+    std::function<void()> on_panel_changed;
 
     // Panel close button writes through this pointer.
     bool* show_inspector;

@@ -2,6 +2,7 @@
 
 #include "app/app.h"               // ImageEntry, Measurement
 #include "app/metrics_panel.h"
+#include "app/pixel_inspector_panel.h"
 #include "app/properties_panel.h"
 #include "app/viewport.h"
 #include "core/image.h"
@@ -10,6 +11,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,15 +51,68 @@ void render_right_sidebar(const InspectorInputs& in) {
     const char* name_a = entry_a ? entry_a->display_label.c_str() : nullptr;
     const char* name_b = entry_b ? entry_b->display_label.c_str() : nullptr;
 
-    if (ImGui::BeginTabBar("##inspector_tabs")) {
-        if (ImGui::BeginTabItem("Properties")) {
+    // Sub-panel selection.  We keep a local mirror of *in.current_panel
+    // when the host did not supply persistent storage so the user can
+    // still switch tabs within a session, and avoids null deref below.
+    static int s_local_panel = 0;
+    int* current_panel = in.current_panel ? in.current_panel : &s_local_panel;
+    // Out-of-range values (e.g. an old settings file written before a
+    // panel was added or removed) clamp back to Properties so the
+    // dropdown is not blank.
+    if (*current_panel < 0 || *current_panel > 4) *current_panel = 0;
+
+    // Single dropdown replaces the previous BeginTabBar so each
+    // sub-panel gets the full vertical extent of the inspector
+    // window -- crucial for dense tables like Pixel.
+    int prev_panel = *current_panel;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::Combo("##inspector_panel", current_panel,
+                 "Properties\0Pixel\0Metrics\0Statistics\0Measurements\0\0");
+    if (*current_panel != prev_panel && in.on_panel_changed) {
+        in.on_panel_changed();
+    }
+    ImGui::Separator();
+
+    switch (*current_panel) {
+        case 0: { // Properties
             if (in.properties_panel) {
                 in.properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
                                                    name_a, name_b);
+            } else {
+                ImGui::TextDisabled("Properties panel unavailable.");
             }
-            ImGui::EndTabItem();
+            break;
         }
-        if (ImGui::BeginTabItem("Metrics")) {
+        case 1: { // Pixel
+            if (in.pixel_panel) {
+                // Build the (label, image) list in viewport order:
+                // A first, then B, then any extra selection entries.
+                // This matches what the viewport draws and what the
+                // existing Metrics tab uses.
+                std::vector<std::pair<std::string, const Image*>> samples;
+                auto add_entry_native = [&](int idx) {
+                    if (idx < 0 ||
+                        idx >= static_cast<int>(entries.size())) return;
+                    const auto& e = entries[idx];
+                    const Image* native = e.image.get();
+                    if (!native) return;
+                    samples.emplace_back(e.display_label, native);
+                };
+                add_entry_native(ab_idx[0]);
+                add_entry_native(ab_idx[1]);
+                for (int s : selection.indices()) {
+                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    add_entry_native(s);
+                }
+                PixelInspectorInputs pix_in;
+                pix_in.samples = std::move(samples);
+                in.pixel_panel->render(pix_in);
+            } else {
+                ImGui::TextDisabled("Pixel panel unavailable.");
+            }
+            break;
+        }
+        case 2: { // Metrics
             if (in.metrics_panel) {
                 // Multi-image metrics: compare A against every other
                 // selected entry (B, C, D, ...).  Rows follow the same
@@ -81,10 +136,12 @@ void render_right_sidebar(const InspectorInputs& in) {
                     add_partner(s);
                 }
                 in.metrics_panel->render_pair_metrics(disp_a, partners);
+            } else {
+                ImGui::TextDisabled("Metrics panel unavailable.");
             }
-            ImGui::EndTabItem();
+            break;
         }
-        if (ImGui::BeginTabItem("Statistics")) {
+        case 3: { // Statistics
             if (in.metrics_panel) {
                 // Gather all selected images with their names for per-image stats
                 std::vector<std::pair<std::string, const Image*>> stat_images;
@@ -110,10 +167,12 @@ void render_right_sidebar(const InspectorInputs& in) {
                 }
 
                 in.metrics_panel->render_statistics(stat_images);
+            } else {
+                ImGui::TextDisabled("Statistics panel unavailable.");
             }
-            ImGui::EndTabItem();
+            break;
         }
-        if (ImGui::BeginTabItem("Measurements")) {
+        case 4: { // Measurements
             if (in.properties_panel && in.viewport &&
                 in.viewport_slot_to_entry) {
                 // Build slot labels in the same order viewport_slot_to_entry
@@ -157,10 +216,13 @@ void render_right_sidebar(const InspectorInputs& in) {
                                  ms.end());
                     }
                 }
+            } else {
+                ImGui::TextDisabled("Measurements panel unavailable.");
             }
-            ImGui::EndTabItem();
+            break;
         }
-        ImGui::EndTabBar();
+        default:
+            break;
     }
 
     ImGui::End();
