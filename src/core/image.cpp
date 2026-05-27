@@ -1,6 +1,20 @@
 #include "core/image_impl.h"
 
+#ifdef IDIFF_HAVE_FFMPEG
+extern "C" {
+#include <libavutil/frame.h>
+}
+#endif
+
 namespace idiff {
+
+#ifdef IDIFF_HAVE_FFMPEG
+Image::Impl::~Impl() {
+    if (src_av_frame) {
+        av_frame_free(&src_av_frame);
+    }
+}
+#endif
 
 Image::Image() : impl_(std::make_unique<Impl>()) {}
 
