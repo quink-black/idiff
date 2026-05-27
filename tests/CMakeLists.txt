@@ -85,9 +85,17 @@ catch_discover_tests(idiff_tests
 )
 
 # --- Test video generation (FFmpeg) ---
-# Generate a short test video (10 frames, 64x64, each frame a different solid
-# color) for the video decoder unit tests.  The video is placed in the build
-# directory and its path is passed as a compile definition.
+# Generate a short test video for the video decoder unit tests:
+#   - 10 frames at 64x64
+#   - libx264, lossless (qp=0)
+#   - testsrc lavfi source: each frame is visually distinct (a moving
+#     colour bar plus a frame counter), so tests can verify that
+#     read_frame(n) and read_frame(n+1) actually return different
+#     pixel data
+#   - GOP=1 (every frame is a keyframe), which lets read_keyframe()
+#     be exercised at any index
+# The video is placed in the build directory and its path is passed
+# as a compile definition.
 if(IDIFF_HAVE_FFMPEG)
     set(TEST_VIDEO_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_data")
     set(TEST_VIDEO_PATH "${TEST_VIDEO_DIR}/test_10frames_64x64.mp4")
@@ -99,8 +107,9 @@ if(IDIFF_HAVE_FFMPEG)
             COMMAND ${CMAKE_COMMAND} -E make_directory "${TEST_VIDEO_DIR}"
             COMMAND ${FFMPEG_EXECUTABLE}
                 -y -f lavfi
-                -i "color=c=red:size=64x64:rate=10:duration=1,format=yuv420p"
+                -i "testsrc=size=64x64:rate=10:duration=1,format=yuv420p"
                 -c:v libx264 -preset ultrafast -qp 0
+                -g 1 -keyint_min 1
                 -frames:v 10
                 "${TEST_VIDEO_PATH}"
             COMMENT "Generating test video: ${TEST_VIDEO_PATH}"
