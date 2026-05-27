@@ -57,75 +57,60 @@ TEST_CASE("SRInferEngineFactory registration and creation", "[sr]") {
 
 // ─── SeedVR2Engine error handling ─────────────────────────────────────
 
-TEST_CASE("SeedVR2Engine rejects non-existent input file", "[sr]") {
-    // Use a dummy upscaler path — we won't get far enough to need it
-    // because the input file check happens first.
-    // But we need python.exe and upscale.py to exist for the pre-checks.
-    // So use a path that doesn't have them — the engine should fail
-    // at the python_exe check, not the input check.
-    // Actually, the input file check happens before the python check.
-    idiff::SeedVR2Engine engine(fs::temp_directory_path());
+TEST_CASE("SeedVR2Engine surfaces missing-prerequisite errors before launch",
+          "[sr]") {
+    SECTION("non-existent input file") {
+        // Input check happens before any python/script check.
+        idiff::SeedVR2Engine engine(fs::temp_directory_path());
+        bool started = engine.start_inference(
+            "C:/nonexistent/path/to/image.png",
+            "C:/nonexistent/output.png", 2, 256, 64);
+        REQUIRE_FALSE(started);
+        REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
+        auto err = engine.last_error();
+        REQUIRE(err.type == "io");
+        REQUIRE(err.description.find("does not exist") != std::string::npos);
+    }
 
-    bool started = engine.start_inference(
-        "C:/nonexistent/path/to/image.png",
-        "C:/nonexistent/output.png",
-        2, 256, 64);
+    SECTION("missing python interpreter") {
+        auto tmp = fs::temp_directory_path() / "idiff_test_sr_no_python";
+        fs::create_directories(tmp);
+        auto input = tmp / "input.png";
+        { std::ofstream f(input, std::ios::binary); f << "dummy"; }
 
-    REQUIRE_FALSE(started);
-    REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
-    auto err = engine.last_error();
-    REQUIRE(err.type == "io");
-    REQUIRE(err.description.find("does not exist") != std::string::npos);
-}
+        idiff::SeedVR2Engine engine(tmp);
+        bool started =
+            engine.start_inference(input, tmp / "output.png", 2, 256, 64);
 
-TEST_CASE("SeedVR2Engine rejects missing python interpreter", "[sr]") {
-    // Create a temp dir with no python/ subdirectory
-    auto tmp = fs::temp_directory_path() / "idiff_test_sr_no_python";
-    fs::create_directories(tmp);
+        REQUIRE_FALSE(started);
+        REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
+        auto err = engine.last_error();
+        REQUIRE(err.type == "io");
+        REQUIRE(err.description.find("Python interpreter not found") !=
+                std::string::npos);
+        fs::remove_all(tmp);
+    }
 
-    // Create a dummy input file
-    auto input = tmp / "input.png";
-    { std::ofstream f(input, std::ios::binary); f << "dummy"; }
+    SECTION("missing upscale script") {
+        auto tmp = fs::temp_directory_path() / "idiff_test_sr_no_script";
+        fs::create_directories(tmp / "python");
+        auto python_exe = tmp / "python" / "python.exe";
+        { std::ofstream f(python_exe, std::ios::binary); f << "dummy"; }
+        auto input = tmp / "input.png";
+        { std::ofstream f(input, std::ios::binary); f << "dummy"; }
 
-    idiff::SeedVR2Engine engine(tmp);
+        idiff::SeedVR2Engine engine(tmp);
+        bool started =
+            engine.start_inference(input, tmp / "output.png", 2, 256, 64);
 
-    bool started = engine.start_inference(input, tmp / "output.png", 2, 256, 64);
-
-    REQUIRE_FALSE(started);
-    REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
-    auto err = engine.last_error();
-    REQUIRE(err.type == "io");
-    REQUIRE(err.description.find("Python interpreter not found") != std::string::npos);
-
-    // Cleanup
-    fs::remove_all(tmp);
-}
-
-TEST_CASE("SeedVR2Engine rejects missing upscale script", "[sr]") {
-    // Create a temp dir with python/python.exe but no app/upscale.py
-    auto tmp = fs::temp_directory_path() / "idiff_test_sr_no_script";
-    fs::create_directories(tmp / "python");
-
-    // Create a dummy python.exe
-    auto python_exe = tmp / "python" / "python.exe";
-    { std::ofstream f(python_exe, std::ios::binary); f << "dummy"; }
-
-    // Create a dummy input file
-    auto input = tmp / "input.png";
-    { std::ofstream f(input, std::ios::binary); f << "dummy"; }
-
-    idiff::SeedVR2Engine engine(tmp);
-
-    bool started = engine.start_inference(input, tmp / "output.png", 2, 256, 64);
-
-    REQUIRE_FALSE(started);
-    REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
-    auto err = engine.last_error();
-    REQUIRE(err.type == "io");
-    REQUIRE(err.description.find("Upscale script not found") != std::string::npos);
-
-    // Cleanup
-    fs::remove_all(tmp);
+        REQUIRE_FALSE(started);
+        REQUIRE(engine.get_status() == idiff::SREngineStatus::Failed);
+        auto err = engine.last_error();
+        REQUIRE(err.type == "io");
+        REQUIRE(err.description.find("Upscale script not found") !=
+                std::string::npos);
+        fs::remove_all(tmp);
+    }
 }
 
 // ─── SeedVR2Engine::parse_progress ────────────────────────────────────
