@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "core/image_processor.h"
 #include "core/image_impl.h"
@@ -7,7 +8,10 @@
 
 using namespace idiff;
 
-static std::unique_ptr<Image> make_image(cv::Mat mat, PixelFormat fmt = PixelFormat::RGB8) {
+namespace {
+
+std::unique_ptr<Image> make_image(cv::Mat mat,
+                                  PixelFormat fmt = PixelFormat::RGB8) {
     auto img = std::make_unique<Image>();
     img->internal().info.width = mat.cols;
     img->internal().info.height = mat.rows;
@@ -18,122 +22,92 @@ static std::unique_ptr<Image> make_image(cv::Mat mat, PixelFormat fmt = PixelFor
     return img;
 }
 
-TEST_CASE("ImageProcessor: upscale with zero dimensions returns nullptr", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(10, 10, CV_8UC3, cv::Scalar(128, 128, 128)));
+}  // namespace
+
+// -----------------------------------------------------------------------------
+// Failure paths.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("ImageProcessor: rejects invalid upscale requests",
+          "[image_processor]") {
+    ImageProcessor proc;
+
+    SECTION("zero target dimensions") {
+        auto src =
+            make_image(cv::Mat(10, 10, CV_8UC3, cv::Scalar(128, 128, 128)));
+        UpscaleOptions opts;
+        opts.target_width = 0;
+        opts.target_height = 0;
+        REQUIRE(proc.upscale(*src, opts) == nullptr);
+        REQUIRE_FALSE(proc.last_error().empty());
+    }
+    SECTION("empty source image") {
+        Image empty;
+        UpscaleOptions opts;
+        opts.target_width = 100;
+        opts.target_height = 100;
+        REQUIRE(proc.upscale(empty, opts) == nullptr);
+    }
+    SECTION("upscale_to_match where src >= ref") {
+        auto src =
+            make_image(cv::Mat(64, 64, CV_8UC3, cv::Scalar(100, 100, 100)));
+        auto ref =
+            make_image(cv::Mat(32, 32, CV_8UC3, cv::Scalar(200, 200, 200)));
+        REQUIRE(proc.upscale_to_match(*src, *ref) == nullptr);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// upscale: dimensions, channel count and methods.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("ImageProcessor: upscale resizes and preserves channel count "
+          "across methods and pixel formats",
+          "[image_processor]") {
+    auto method = GENERATE(UpscaleMethod::Nearest, UpscaleMethod::Bilinear,
+                           UpscaleMethod::Bicubic, UpscaleMethod::Lanczos);
+    CAPTURE(static_cast<int>(method));
+
+    struct Case {
+        PixelFormat fmt;
+        int cv_type;
+        int channels;
+    };
+    auto c =
+        GENERATE(Case{PixelFormat::RGB8, CV_8UC3, 3},
+                 Case{PixelFormat::Gray8, CV_8UC1, 1});
+    CAPTURE(static_cast<int>(c.fmt));
+
+    cv::Mat src_mat(16, 16, c.cv_type, cv::Scalar::all(128));
+    auto src = make_image(src_mat, c.fmt);
 
     ImageProcessor proc;
     UpscaleOptions opts;
-    opts.target_width = 0;
-    opts.target_height = 0;
+    opts.target_width = 48;
+    opts.target_height = 48;
+    opts.method = method;
 
-    auto result = proc.upscale(*src, opts);
-    REQUIRE(result == nullptr);
-    REQUIRE_FALSE(proc.last_error().empty());
+    auto r = proc.upscale(*src, opts);
+    REQUIRE(r != nullptr);
+    REQUIRE(r->info().width == 48);
+    REQUIRE(r->info().height == 48);
+    REQUIRE(r->mat().cols == 48);
+    REQUIRE(r->mat().rows == 48);
+    REQUIRE(r->mat().channels() == c.channels);
 }
 
-TEST_CASE("ImageProcessor: upscale empty image returns nullptr", "[image_processor]")
-{
-    Image empty_img;
-    ImageProcessor proc;
-    UpscaleOptions opts;
-    opts.target_width = 100;
-    opts.target_height = 100;
+// -----------------------------------------------------------------------------
+// upscale_to_match: smaller source matches reference dimensions.
+// -----------------------------------------------------------------------------
 
-    auto result = proc.upscale(empty_img, opts);
-    REQUIRE(result == nullptr);
-}
-
-TEST_CASE("ImageProcessor: upscale produces correct dimensions", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(32, 32, CV_8UC3, cv::Scalar(100, 150, 200)));
-
-    ImageProcessor proc;
-    UpscaleOptions opts;
-    opts.target_width = 64;
-    opts.target_height = 64;
-    opts.method = UpscaleMethod::Lanczos;
-
-    auto result = proc.upscale(*src, opts);
-    REQUIRE(result != nullptr);
-    REQUIRE(result->info().width == 64);
-    REQUIRE(result->info().height == 64);
-    REQUIRE(result->mat().cols == 64);
-    REQUIRE(result->mat().rows == 64);
-}
-
-TEST_CASE("ImageProcessor: upscale preserves channel count", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(16, 16, CV_8UC3, cv::Scalar(50, 100, 150)));
-
-    ImageProcessor proc;
-    UpscaleOptions opts;
-    opts.target_width = 32;
-    opts.target_height = 32;
-
-    auto result = proc.upscale(*src, opts);
-    REQUIRE(result != nullptr);
-    REQUIRE(result->mat().channels() == 3);
-}
-
-TEST_CASE("ImageProcessor: upscale_to_match works when src is smaller", "[image_processor]")
-{
+TEST_CASE("ImageProcessor: upscale_to_match grows src to ref dimensions",
+          "[image_processor]") {
     auto src = make_image(cv::Mat(32, 32, CV_8UC3, cv::Scalar(100, 100, 100)));
     auto ref = make_image(cv::Mat(64, 64, CV_8UC3, cv::Scalar(200, 200, 200)));
 
     ImageProcessor proc;
-    auto result = proc.upscale_to_match(*src, *ref);
-    REQUIRE(result != nullptr);
-    REQUIRE(result->info().width == 64);
-    REQUIRE(result->info().height == 64);
-}
-
-TEST_CASE("ImageProcessor: upscale_to_match fails when src is not smaller", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(64, 64, CV_8UC3, cv::Scalar(100, 100, 100)));
-    auto ref = make_image(cv::Mat(32, 32, CV_8UC3, cv::Scalar(200, 200, 200)));
-
-    ImageProcessor proc;
-    auto result = proc.upscale_to_match(*src, *ref);
-    REQUIRE(result == nullptr);
-}
-
-TEST_CASE("ImageProcessor: all upscale methods produce valid output", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(16, 16, CV_8UC3, cv::Scalar(128, 128, 128)));
-
-    UpscaleMethod methods[] = {
-        UpscaleMethod::Nearest,
-        UpscaleMethod::Bilinear,
-        UpscaleMethod::Bicubic,
-        UpscaleMethod::Lanczos,
-    };
-
-    ImageProcessor proc;
-    for (auto method : methods) {
-        UpscaleOptions opts;
-        opts.target_width = 48;
-        opts.target_height = 48;
-        opts.method = method;
-
-        auto result = proc.upscale(*src, opts);
-        REQUIRE(result != nullptr);
-        REQUIRE(result->mat().cols == 48);
-        REQUIRE(result->mat().rows == 48);
-    }
-}
-
-TEST_CASE("ImageProcessor: upscale grayscale image", "[image_processor]")
-{
-    auto src = make_image(cv::Mat(16, 16, CV_8UC1, cv::Scalar(128)), PixelFormat::Gray8);
-
-    ImageProcessor proc;
-    UpscaleOptions opts;
-    opts.target_width = 32;
-    opts.target_height = 32;
-
-    auto result = proc.upscale(*src, opts);
-    REQUIRE(result != nullptr);
-    REQUIRE(result->mat().channels() == 1);
-    REQUIRE(result->mat().cols == 32);
+    auto r = proc.upscale_to_match(*src, *ref);
+    REQUIRE(r != nullptr);
+    REQUIRE(r->info().width == 64);
+    REQUIRE(r->info().height == 64);
 }
