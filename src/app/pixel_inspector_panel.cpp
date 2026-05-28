@@ -98,6 +98,41 @@ bool any_sample_has_yuv_source(
 #endif
 }
 
+// True when the loaded samples mix a native-YUV video source with at
+// least one non-YUV source (a still image, or a video whose pix_fmt
+// is already RGB).  In that case format_delta refuses to subtract Y
+// from R and prints an em-dash; the toggle's RGB position would let
+// us re-read both sides through the post-conversion mat and recover
+// a meaningful delta, so the panel surfaces a one-line hint pointing
+// at the toggle.
+bool samples_mix_yuv_and_rgb(
+    const std::vector<std::pair<std::string, const Image*>>& samples) {
+#ifdef IDIFF_HAVE_FFMPEG
+    bool has_yuv = false;
+    bool has_rgb = false;
+    for (const auto& kv : samples) {
+        const Image* img = kv.second;
+        if (!img || img->mat().empty()) continue;
+        const AVFrame* f = img->internal().src_av_frame;
+        bool sample_is_yuv = false;
+        if (f && f->data[0]) {
+            const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(
+                static_cast<AVPixelFormat>(f->format));
+            if (d && (d->flags & AV_PIX_FMT_FLAG_RGB) == 0) {
+                sample_is_yuv = true;
+            }
+        }
+        if (sample_is_yuv) has_yuv = true;
+        else                has_rgb = true;
+        if (has_yuv && has_rgb) return true;
+    }
+    return false;
+#else
+    (void)samples;
+    return false;
+#endif
+}
+
 } // namespace
 
 PixelInspectorPanel::PixelInspectorPanel() = default;
@@ -225,6 +260,17 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
             ImGui::SetTooltip(
                 "Show 8-bit sRGB pixels after colour conversion --\n"
                 "the values that drive what's drawn on screen.");
+        }
+
+        // Mixed YUV + RGB sources: the Delta column will fall back to
+        // em-dashes while the panel is in YUV mode, because
+        // subtracting an R sample from a Y one is not meaningful.
+        // Surface a one-line nudge towards the RGB position rather
+        // than letting the user wonder why every delta is empty.
+        if (!prefer_rgb_ && samples_mix_yuv_and_rgb(samples)) {
+            ImGui::SameLine();
+            ImGui::TextDisabled(
+                "(mixed YUV/RGB sources -- switch to RGB for delta)");
         }
     }
 

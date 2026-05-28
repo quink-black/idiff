@@ -461,12 +461,16 @@ TEST_CASE("format_delta: kind label inherits from the operands",
     REQUIRE(std::string(buf) == "Y Cb Cr: (+20, +2, -8)");
 }
 
-TEST_CASE("format_delta: mismatched kinds drop the prefix",
+TEST_CASE("format_delta: mismatched kinds are not comparable",
           "[pixel_sampler][kind]") {
     // Cross-layout deltas (one side YUV, one side RGB) are numerically
-    // meaningless, but we still emit per-channel deltas so callers can
-    // see something rather than an em-dash.  Drop the prefix in that
-    // case to avoid mislabelling the result as either kind.
+    // meaningless: subtracting an R channel from a Y channel produces
+    // a signed integer with no physical interpretation, and printing
+    // it would mislead the reader far more than refusing to print it.
+    // Treat the pair the same way as a depth or channel-count
+    // mismatch -- emit an em-dash and report false -- so the caller
+    // (and the user) get a clear "these two are not comparable"
+    // signal instead of fake numbers.
     PixelSample a; a.valid = true; a.channels = 3; a.depth = CV_8U;
     a.kind = PixelKind::RGB;
     a.v[0] = 10; a.v[1] = 20; a.v[2] = 30;
@@ -474,8 +478,26 @@ TEST_CASE("format_delta: mismatched kinds drop the prefix",
     b.kind = PixelKind::YUV;
     b.v[0] = 5;  b.v[1] = 18; b.v[2] = 32;
     char buf[64] = {};
+    REQUIRE_FALSE(format_delta(a, b, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "\xE2\x80\x94");
+}
+
+TEST_CASE("format_delta: Unknown kind on one side is still allowed",
+          "[pixel_sampler][kind]") {
+    // Older inspector / status-bar code paths predating PixelKind, and
+    // the existing back-compat tests above, build PixelSamples with
+    // kind=Unknown.  Pair them with a kind-tagged sample and the
+    // delta should still go through (using the tagged side's prefix);
+    // only a *known* kind mismatch is rejected.
+    PixelSample a; a.valid = true; a.channels = 3; a.depth = CV_8U;
+    a.kind = PixelKind::RGB;
+    a.v[0] = 10; a.v[1] = 20; a.v[2] = 30;
+    PixelSample b; b.valid = true; b.channels = 3; b.depth = CV_8U;
+    // b.kind defaults to Unknown.
+    b.v[0] = 5;  b.v[1] = 18; b.v[2] = 32;
+    char buf[64] = {};
     REQUIRE(format_delta(a, b, buf, sizeof(buf)));
-    REQUIRE(std::string(buf) == "(+5, +2, -2)");
+    REQUIRE(std::string(buf) == "R G B: (+5, +2, -2)");
 }
 
 // -----------------------------------------------------------------------------

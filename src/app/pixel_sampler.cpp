@@ -342,14 +342,26 @@ bool format_delta(const PixelSample& cur, const PixelSample& ref,
         return false;
     }
 
-    // Use whichever side carries a known kind; mismatch falls back to
-    // no prefix, which is the only sensible thing for an A-vs-B
-    // comparison across different layouts.
-    PixelKind kind = (cur.kind != PixelKind::Unknown) ? cur.kind : ref.kind;
+    // Cross-kind comparisons (e.g. one side is native YUV from a
+    // video frame, the other is RGB from an image or the prefer_rgb
+    // mat path) are not directly comparable: subtracting an R channel
+    // from a Y channel produces a number with no physical meaning.
+    // Surface this the same way every other "not comparable" case is
+    // surfaced -- as an em-dash -- so the user is not misled by a
+    // signed integer that happens to look like a delta.  We treat
+    // Unknown as "trust the caller" and let it through; that path is
+    // exercised by hand-built PixelSamples in the older tests and by
+    // call sites predating PixelKind.
     if (cur.kind != PixelKind::Unknown && ref.kind != PixelKind::Unknown &&
         cur.kind != ref.kind) {
-        kind = PixelKind::Unknown;
+        write_em_dash(buf, n);
+        return false;
     }
+
+    // Use whichever side carries a known kind for the channel-name
+    // prefix.  At this point the two sides either match or at least
+    // one is Unknown, so there is no ambiguity to resolve.
+    PixelKind kind = (cur.kind != PixelKind::Unknown) ? cur.kind : ref.kind;
     const std::size_t off = write_prefix(buf, n, kind_prefix(kind, cur.channels));
     char* tail = buf + off;
     std::size_t tail_n = n - off;
