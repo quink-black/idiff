@@ -80,33 +80,28 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
 
     if (selection.size() < 2) return;
 
-    int idx_a = -1, idx_b = -1;
-    selection.get_ab_indices(idx_a, idx_b);
-    if (idx_a < 0 || idx_a >= static_cast<int>(entries.size())) return;
+    int idx_ref = -1;
+    selection.get_ref_index(idx_ref);
+    if (idx_ref < 0 || idx_ref >= static_cast<int>(entries.size())) return;
 
-    const auto& entry_a = entries[idx_a];
-    const auto* img_a = entry_a.display_image ? entry_a.display_image.get()
-                                              : entry_a.image.get();
-    if (!img_a) return;
+    const auto& entry_ref = entries[idx_ref];
+    const auto* img_ref = entry_ref.display_image ? entry_ref.display_image.get()
+                                                  : entry_ref.image.get();
+    if (!img_ref) return;
 
-    // When a single-channel view is active, extract that channel from A
-    // once and reuse it for every partner comparison.
-    std::unique_ptr<Image> chan_a = extract_channel_image(*img_a, opts.channel_mode);
-    const Image* eff_a = chan_a ? chan_a.get() : img_a;
+    // When a single-channel view is active, extract that channel from
+    // the reference once and reuse it for every partner comparison.
+    std::unique_ptr<Image> chan_ref =
+        extract_channel_image(*img_ref, opts.channel_mode);
+    const Image* eff_ref = chan_ref ? chan_ref.get() : img_ref;
 
-    // Build the partner order to match the viewport's slot order: B
-    // first (the second entry from get_ab_indices), then any other
-    // selected entries in their natural selection order.  This keeps
-    // the visual layout predictable and makes the metrics table row
-    // order match what the viewport shows.
+    // Build the partner list: every selected entry other than the
+    // reference, in natural selection order.  This matches the viewport
+    // slot order so the metrics table rows and viewport cells align.
     std::vector<int> partners;
     partners.reserve(selection.size());
-    if (idx_b >= 0 && idx_b < static_cast<int>(entries.size())) {
-        partners.push_back(idx_b);
-    }
     for (int s : selection.indices()) {
-        if (s == idx_a) continue;
-        if (s == idx_b) continue;
+        if (s == idx_ref) continue;
         partners.push_back(s);
     }
 
@@ -127,7 +122,7 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
         std::unique_ptr<Image> chan_p = extract_channel_image(*img_p, opts.channel_mode);
         const Image* eff_p = chan_p ? chan_p.get() : img_p;
 
-        auto diff = comparator.compute_difference(*eff_a, *eff_p, diff_opts);
+        auto diff = comparator.compute_difference(*eff_ref, *eff_p, diff_opts);
         if (!diff) {
             const auto err = "Diff: " + comparator.last_error();
             LOG_WARN("%s", err.c_str());

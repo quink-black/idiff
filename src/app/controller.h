@@ -55,10 +55,11 @@ public:
     // at every site) so the same flow can be exercised from headless
     // tests without bringing up the SDL / ImGui front-end.
 
-    // Returns the entry indices used as A and B for overlay / diff.
-    // Derived from the first two selected items (in selection order),
-    // honouring the user-controlled swap flag.  Missing slots are -1.
-    void get_ab_indices(int& a_idx, int& b_idx) const;
+    // Returns the reference entry index used by overlay / diff.  The
+    // reference is the smallest selected index, or -1 when nothing is
+    // selected.  Every other selected entry is a partner compared
+    // against the reference.
+    void get_ref_index(int& ref_idx) const;
 
     // Length of the shared timeline, i.e. the maximum number of frames
     // across all multi-frame entries (clamped to at least 1).
@@ -80,9 +81,8 @@ public:
 
     // Remove the entry at `index` (destroying its texture via the
     // injected ITextureUploader), patch the selection, refresh
-    // display labels and mark the diff dirty.  Resets the A/B swap
-    // toggle if the removed entry was actually selected.  Out-of-
-    // range indices are ignored.
+    // display labels and mark the diff dirty.  Out-of-range indices
+    // are ignored.
     void remove_entry(int index);
 
     // True while at least one super-resolution task is still running.

@@ -28,28 +28,38 @@ void render_right_sidebar(const InspectorInputs& in) {
         return;
     }
 
-    // Resolve A and B via the shared helper so the inspector matches the
-    // viewport / image list labeling (including the Swap A/B toggle).
-    int ab_idx[2] = {-1, -1};
-    if (in.get_ab_indices) in.get_ab_indices(ab_idx[0], ab_idx[1]);
+    // Resolve the reference index via the shared helper so the
+    // inspector matches the viewport / image list labeling.  The first
+    // partner (the smallest selected index that is not the reference)
+    // feeds the side-by-side Properties / Metrics views below.
+    int ref_idx = -1;
+    if (in.get_ref_index) in.get_ref_index(ref_idx);
+    int partner_idx = -1;
+    for (int s : selection.indices()) {
+        if (s == ref_idx) continue;
+        partner_idx = s;
+        break;
+    }
 
     auto get_entry = [&](int idx) -> const ImageEntry* {
         if (idx < 0 || idx >= static_cast<int>(entries.size())) return nullptr;
         return &entries[idx];
     };
-    const ImageEntry* entry_a = get_entry(ab_idx[0]);
-    const ImageEntry* entry_b = get_entry(ab_idx[1]);
+    const ImageEntry* entry_ref = get_entry(ref_idx);
+    const ImageEntry* entry_partner = get_entry(partner_idx);
 
-    const Image* img_a = entry_a ? entry_a->image.get() : nullptr;
-    const Image* img_b = entry_b ? entry_b->image.get() : nullptr;
-    const Image* disp_a = entry_a ? (entry_a->display_image ? entry_a->display_image.get()
-                                                            : entry_a->image.get())
-                                  : nullptr;
-    const Image* disp_b = entry_b ? (entry_b->display_image ? entry_b->display_image.get()
-                                                            : entry_b->image.get())
-                                  : nullptr;
-    const char* name_a = entry_a ? entry_a->display_label.c_str() : nullptr;
-    const char* name_b = entry_b ? entry_b->display_label.c_str() : nullptr;
+    const Image* img_ref = entry_ref ? entry_ref->image.get() : nullptr;
+    const Image* img_partner = entry_partner ? entry_partner->image.get() : nullptr;
+    const Image* disp_ref = entry_ref
+        ? (entry_ref->display_image ? entry_ref->display_image.get()
+                                    : entry_ref->image.get())
+        : nullptr;
+    const Image* disp_partner = entry_partner
+        ? (entry_partner->display_image ? entry_partner->display_image.get()
+                                        : entry_partner->image.get())
+        : nullptr;
+    const char* name_ref = entry_ref ? entry_ref->display_label.c_str() : nullptr;
+    const char* name_partner = entry_partner ? entry_partner->display_label.c_str() : nullptr;
 
     // Sub-panel selection.  We keep a local mirror of *in.current_panel
     // when the host did not supply persistent storage so the user can
@@ -76,8 +86,9 @@ void render_right_sidebar(const InspectorInputs& in) {
     switch (*current_panel) {
         case 0: { // Properties
             if (in.properties_panel) {
-                in.properties_panel->render_inline(img_a, img_b, disp_a, disp_b,
-                                                   name_a, name_b);
+                in.properties_panel->render_inline(img_ref, img_partner,
+                                                   disp_ref, disp_partner,
+                                                   name_ref, name_partner);
             } else {
                 ImGui::TextDisabled("Properties panel unavailable.");
             }
@@ -86,9 +97,9 @@ void render_right_sidebar(const InspectorInputs& in) {
         case 1: { // Pixel
             if (in.pixel_panel) {
                 // Build the (label, image) list in viewport order:
-                // A first, then B, then any extra selection entries.
-                // This matches what the viewport draws and what the
-                // existing Metrics tab uses.
+                // reference first, then any other selected entries in
+                // natural order.  This matches what the viewport draws
+                // and what the existing Metrics tab uses.
                 std::vector<std::pair<std::string, const Image*>> samples;
                 auto add_entry_native = [&](int idx) {
                     if (idx < 0 ||
@@ -98,10 +109,9 @@ void render_right_sidebar(const InspectorInputs& in) {
                     if (!native) return;
                     samples.emplace_back(e.display_label, native);
                 };
-                add_entry_native(ab_idx[0]);
-                add_entry_native(ab_idx[1]);
+                add_entry_native(ref_idx);
                 for (int s : selection.indices()) {
-                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    if (s == ref_idx) continue;
                     add_entry_native(s);
                 }
                 PixelInspectorInputs pix_in;
@@ -114,11 +124,11 @@ void render_right_sidebar(const InspectorInputs& in) {
         }
         case 2: { // Metrics
             if (in.metrics_panel) {
-                // Multi-image metrics: compare A against every other
-                // selected entry (B, C, D, ...).  Rows follow the same
-                // order as the viewport cells and as diff_service_->slots(),
-                // so the visual/spatial layout and the metrics table stay
-                // in lockstep.
+                // Multi-image metrics: compare the reference image
+                // against every other selected entry.  Rows follow the
+                // same order as the viewport cells and as
+                // diff_service_->slots(), so the visual/spatial layout
+                // and the metrics table stay in lockstep.
                 std::vector<std::pair<std::string, const Image*>> partners;
                 auto add_partner = [&](int idx) {
                     if (idx < 0 ||
@@ -130,12 +140,11 @@ void render_right_sidebar(const InspectorInputs& in) {
                     if (!disp) return;
                     partners.emplace_back(e.display_label, disp);
                 };
-                if (ab_idx[1] >= 0) add_partner(ab_idx[1]);
                 for (int s : selection.indices()) {
-                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    if (s == ref_idx) continue;
                     add_partner(s);
                 }
-                in.metrics_panel->render_pair_metrics(disp_a, partners);
+                in.metrics_panel->render_pair_metrics(disp_ref, partners);
             } else {
                 ImGui::TextDisabled("Metrics panel unavailable.");
             }
@@ -146,7 +155,8 @@ void render_right_sidebar(const InspectorInputs& in) {
                 // Gather all selected images with their names for per-image stats
                 std::vector<std::pair<std::string, const Image*>> stat_images;
 
-                // A first, then B, then remaining selected (same order as viewport)
+                // Reference first, then remaining selected (same order
+                // as viewport).
                 auto add_entry = [&](int idx, const char* prefix) {
                     if (idx < 0 || idx >= static_cast<int>(entries.size())) return;
                     const auto& e = entries[idx];
@@ -159,10 +169,9 @@ void render_right_sidebar(const InspectorInputs& in) {
                     stat_images.emplace_back(std::move(label), disp);
                 };
 
-                add_entry(ab_idx[0], "A");
-                add_entry(ab_idx[1], "B");
+                add_entry(ref_idx, "Ref");
                 for (int s : selection.indices()) {
-                    if (s == ab_idx[0] || s == ab_idx[1]) continue;
+                    if (s == ref_idx) continue;
                     add_entry(s, nullptr);
                 }
 

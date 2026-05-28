@@ -34,10 +34,11 @@ struct StatusBarInputs {
     const std::string* status_text;
     const std::string* status_msg;
 
-    // Returns the entries-index pair currently used as A and B for
-    // overlay / diff (-1 when missing).  Provided as a callback so the
-    // renderer does not duplicate the swap-aware selection logic.
-    std::function<void(int& a_idx, int& b_idx)> get_ab_indices;
+    // Returns the entries-index currently used as the reference image
+    // for overlay / diff (-1 when the selection is empty).  Provided
+    // as a callback so the renderer does not duplicate the selection
+    // logic.
+    std::function<void(int& ref_idx)> get_ref_index;
 };
 
 void render_status_bar(const StatusBarInputs& in);

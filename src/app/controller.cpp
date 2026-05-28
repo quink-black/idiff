@@ -74,8 +74,8 @@ bool filename_less(const std::string& a, const std::string& b) {
 
 } // namespace
 
-void AppController::get_ab_indices(int& a_idx, int& b_idx) const {
-    selection_->get_ab_indices(a_idx, b_idx);
+void AppController::get_ref_index(int& ref_idx) const {
+    selection_->get_ref_index(ref_idx);
 }
 
 int AppController::timeline_length() const {
@@ -139,13 +139,8 @@ void AppController::remove_entry(int index) {
 
     // The library destroys the entry's texture via ITextureUploader
     // and returns a remap so we can fix up selection indices.
-    // apply_remap tells us whether membership actually changed; if so,
-    // the A/B swap toggle no longer refers to a meaningful pair and
-    // must reset.
     auto remap = library_->remove(static_cast<std::size_t>(index));
-    if (selection_->apply_remap(remap)) {
-        selection_->set_swap_ab(false);
-    }
+    selection_->apply_remap(remap);
 
     compute_display_labels();
     diff_->mark_dirty();
@@ -398,7 +393,6 @@ AppController::load_images(const std::vector<std::string>& paths) {
     // the UI layer.
     if (was_empty && !library_->all().empty()) {
         selection_->clear();
-        selection_->set_swap_ab(false);
         const int n = static_cast<int>(library_->all().size());
         const int pick = std::min(2, n);
         for (int i = 0; i < pick; ++i) selection_->insert(i);
@@ -429,7 +423,6 @@ AppController::load_comparison_config(const std::string& path) {
     // navigation.
     library_->clear();
     selection_->clear();
-    selection_->set_swap_ab(false);
     diff_->clear();
     diff_->mark_dirty();
 
@@ -451,7 +444,6 @@ AppController::switch_to_comparison_group(int group_idx) {
     // memory lever for configs with many large groups.
     library_->clear();
     selection_->clear();
-    selection_->set_swap_ab(false);
     diff_->clear();
     diff_->mark_dirty();
 

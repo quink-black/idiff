@@ -71,7 +71,6 @@ void render_image_list(const ImageListInputs& in) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear")) {
             selection.clear();
-            selection.set_swap_ab(false);
             diff_service.mark_dirty();
         }
     }
@@ -85,18 +84,17 @@ void render_image_list(const ImageListInputs& in) {
 
     float list_height = ImGui::GetContentRegionAvail().y;
     if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
-        // The first two selected entries drive overlay / diff. A/B may be
-        // swapped by the user via the viewport's Swap A/B button.
-        int ab_idx[2] = {-1, -1};
-        if (in.get_ab_indices) in.get_ab_indices(ab_idx[0], ab_idx[1]);
+        // The smallest selected index is the reference image used by
+        // overlay / diff; every other selected entry is a partner.
+        int ref_idx = -1;
+        if (in.get_ref_index) in.get_ref_index(ref_idx);
 
         for (int i = 0; i < static_cast<int>(entries.size()); i++) {
             auto& entry = entries[i];
             ImGui::PushID(i);
 
             bool is_sel = selection.contains(i);
-            const char* ab_tag = (i == ab_idx[0]) ? "A"
-                                : (i == ab_idx[1]) ? "B" : nullptr;
+            const char* ref_tag = (i == ref_idx) ? "Ref" : nullptr;
 
             if (is_sel) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.40f, 0.80f, 1.00f, 1.00f));
@@ -109,9 +107,6 @@ void render_image_list(const ImageListInputs& in) {
                 } else {
                     selection.erase(i);
                 }
-                // Selection membership changed -- reset A/B swap so the
-                // user's intent isn't attached to stale slot mapping.
-                selection.set_swap_ab(false);
                 // Selection change affects upscale targets for all selected images
                 for (int s : selection.indices()) {
                     if (s >= 0 && s < static_cast<int>(entries.size())) {
@@ -125,17 +120,16 @@ void render_image_list(const ImageListInputs& in) {
 
             ImGui::SameLine();
 
-            // Draw A / B tag as a pill in front of the label so the user
-            // can tell which selected entries feed overlay / diff.
-            if (ab_tag) {
-                ImVec4 pill_col = (ab_tag[0] == 'A')
-                    ? ImVec4(0.30f, 0.70f, 1.00f, 1.00f)    // A: blue
-                    : ImVec4(1.00f, 0.55f, 0.25f, 1.00f);   // B: orange
+            // Draw the Ref tag as a pill in front of the label so the
+            // user can tell which selected entry feeds overlay / diff
+            // as the reference image.
+            if (ref_tag) {
+                ImVec4 pill_col = ImVec4(0.30f, 0.70f, 1.00f, 1.00f);
                 ImGui::PushStyleColor(ImGuiCol_Button, pill_col);
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pill_col);
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, pill_col);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
-                ImGui::SmallButton(ab_tag);
+                ImGui::SmallButton(ref_tag);
                 ImGui::PopStyleColor(4);
                 ImGui::SameLine();
             }

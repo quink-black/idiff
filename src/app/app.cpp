@@ -649,8 +649,8 @@ void App::reload_all_images() {
     controller_->reload_all_images();
 }
 
-void App::get_ab_indices(int& a_idx, int& b_idx) const {
-    controller_->get_ab_indices(a_idx, b_idx);
+void App::get_ref_index(int& ref_idx) const {
+    controller_->get_ref_index(ref_idx);
 }
 
 bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) {
@@ -702,7 +702,6 @@ diff_service_->mark_dirty();
     // two items and switch to Overlay.
     if (was_empty && !entries_view().empty()) {
         selection_->clear();
-        selection_->set_swap_ab(false);
         int pick = std::min<int>(2, static_cast<int>(entries_view().size()));
         for (int i = 0; i < pick; i++) selection_->insert(i);
         for (int s : selection_->indices()) {
@@ -944,8 +943,8 @@ void App::save_viewport_dialog() {
     ComparisonMode mode = vport.mode();
 
     // --- Collect the input images that feed the viewport ---
-    int ab_idx[2] = {-1, -1};
-    get_ab_indices(ab_idx[0], ab_idx[1]);
+    int ref_idx = -1;
+    get_ref_index(ref_idx);
 
     auto entry_display_mat = [&](int idx) -> cv::Mat {
         if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return {};
@@ -957,7 +956,8 @@ void App::save_viewport_dialog() {
     };
 
     // Gather the ordered list of mats in the same order push_entry()
-    // populates for the viewport (A, B, then the remaining selected).
+    // populates for the viewport (Ref first, then the remaining
+    // selected entries in natural order).
     std::vector<cv::Mat> slot_mats;
     std::vector<std::string> slot_labels;
     auto push_slot = [&](int idx, const char* tag) {
@@ -968,10 +968,9 @@ void App::save_viewport_dialog() {
             tag ? (std::string("[") + tag + "] " + entries_view()[idx].display_label)
                 : entries_view()[idx].display_label);
     };
-    if (ab_idx[0] >= 0) push_slot(ab_idx[0], "A");
-    if (ab_idx[1] >= 0) push_slot(ab_idx[1], "B");
+    if (ref_idx >= 0) push_slot(ref_idx, "Ref");
     for (int s : selection_->indices()) {
-        if (s == ab_idx[0] || s == ab_idx[1]) continue;
+        if (s == ref_idx) continue;
         push_slot(s, nullptr);
     }
 
@@ -1366,7 +1365,7 @@ void App::render_image_list() {
     in.sr_service = sr_service_;
     in.show_image_list = &state_->show_image_list;
     in.sr_enabled = sr_enabled_;
-    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.entry_is_yuv = [this](int idx) -> bool {
         if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
             return false;
@@ -1405,7 +1404,6 @@ void App::render_image_list() {
             selection_->insert(i);
             entries_view()[i].texture_dirty = true;
         }
-        selection_->set_swap_ab(false);
         diff_service_->mark_dirty();
     };
     in.on_select_only_this = [this](int idx) {
@@ -1414,7 +1412,6 @@ void App::render_image_list() {
         for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
             entries_view()[i].texture_dirty = true;
         }
-        selection_->set_swap_ab(false);
         diff_service_->mark_dirty();
     };
     in.on_invert_selection = [this]() {
@@ -1426,12 +1423,10 @@ void App::render_image_list() {
             }
             entries_view()[i].texture_dirty = true;
         }
-        selection_->set_swap_ab(false);
         diff_service_->mark_dirty();
     };
     in.on_unselect_all = [this]() {
         selection_->clear();
-        selection_->set_swap_ab(false);
         diff_service_->mark_dirty();
     };
     idiff::render_image_list(in);
@@ -1450,7 +1445,7 @@ void App::render_viewport() {
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.last_channel_view_mode = &last_channel_view_mode_;
     in.sel_drag_is_ctrl = &sel_drag_is_ctrl_;
-    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.on_update_display_image = [this](int s) { update_display_image(s); };
     in.on_upload_texture = [this](int s) { upload_texture(entries_view()[s]); };
     in.on_save_viewport = [this]() { save_viewport_dialog(); };
@@ -1473,7 +1468,7 @@ void App::render_right_sidebar() {
     in.entries = &entries_view();
     in.selection = selection_;
     in.viewport = state_->viewport.get();
-    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.properties_panel = state_->properties_panel.get();
     in.metrics_panel = state_->metrics_panel.get();
@@ -1671,13 +1666,13 @@ void App::poll_sr_tasks() {
             new_entry.display_label = input_name + " (SR " +
                 std::to_string(scale) + "x)";
 
-            // Auto-select: input as A, output as B for comparison.
+            // Auto-select: input as the reference, output as a partner
+            // for comparison.
             selection_->clear();
             if (input_idx >= 0) {
                 selection_->insert(input_idx);
             }
             selection_->insert(new_idx);
-            selection_->set_swap_ab(false);
             diff_service_->mark_dirty();
 
             for (int s : selection_->indices()) {
@@ -1709,7 +1704,7 @@ void App::render_status_bar() {
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.status_text = &state_->status_text;
     in.status_msg = &state_->status_msg;
-    in.get_ab_indices = [this](int& a, int& b) { get_ab_indices(a, b); };
+    in.get_ref_index = [this](int& r) { get_ref_index(r); };
     idiff::render_status_bar(in);
 }
 

@@ -4,10 +4,9 @@
 // Diff service.
 //
 // Owns the per-frame difference cache: one DiffSlot per partner image
-// compared against A (the first selected entry, modulo the swap_ab
-// flag held by SelectionModel).  Each slot keeps the heatmap Image
-// and an SDL texture handle uploaded through the injected
-// ITextureUploader.
+// compared against the reference (the smallest selected entry index).
+// Each slot keeps the heatmap Image and an SDL texture handle
+// uploaded through the injected ITextureUploader.
 //
 // The service is invalidated lazily.  Anything that can change the
 // inputs (selection membership, frame index, decoder reload, options
@@ -69,10 +68,10 @@ public:
 
     // Recompute the slots if the cache is dirty.  No-op when clean.
     //
-    // Builds one slot per "partner" entry: the second selected entry
-    // first (so it lines up with the viewport's B cell), then any
-    // remaining selected entries in selection order, skipping A.  A
-    // single per-partner failure (compute_difference or
+    // Builds one slot per "partner" entry: every selected entry other
+    // than the reference (smallest selected index), in natural
+    // selection order, so the slot order matches the viewport's cell
+    // order.  A single per-partner failure (compute_difference or
     // compute_heatmap returning null) appends a " | "-separated
     // message into out_error and continues with the next partner so
     // a single bad input cannot blank out the entire diff column.

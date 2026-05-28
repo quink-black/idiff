@@ -195,10 +195,11 @@ private:
     // recomputing diff.
     void preview_entries_to_timeline();
 
-    // Returns the entry indices used as A and B for overlay / diff.
-    // Derived from the first two selected items (in selection order),
-    // honoring the user-controlled swap flag. Missing slots are -1.
-    void get_ab_indices(int& a_idx, int& b_idx) const;
+    // Returns the reference entry index used by overlay / diff.  The
+    // reference is the smallest selected index, or -1 when the
+    // selection is empty.  Every other selected entry is a partner
+    // compared against the reference.
+    void get_ref_index(int& ref_idx) const;
 
     // Render an error notification popup (modal dialog).
     void render_error_dialog();

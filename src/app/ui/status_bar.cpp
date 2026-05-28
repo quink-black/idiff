@@ -78,18 +78,15 @@ void render_status_bar(const StatusBarInputs& in) {
                 if (m > 0) n += m;
             };
 
-            int ab_idx[2] = {-1, -1};
-            in.get_ab_indices(ab_idx[0], ab_idx[1]);
-            if (ab_idx[0] >= 0 && ab_idx[0] < static_cast<int>(entries.size())) {
-                append(" | A: %s", entries[ab_idx[0]].display_label.c_str());
-            }
-            if (ab_idx[1] >= 0 && ab_idx[1] < static_cast<int>(entries.size())) {
-                append(" | B: %s", entries[ab_idx[1]].display_label.c_str());
+            int ref_idx = -1;
+            in.get_ref_index(ref_idx);
+            if (ref_idx >= 0 && ref_idx < static_cast<int>(entries.size())) {
+                append(" | Ref: %s", entries[ref_idx].display_label.c_str());
             }
             int extra = static_cast<int>(selection.size()) -
-                        ((ab_idx[0] >= 0 ? 1 : 0) + (ab_idx[1] >= 0 ? 1 : 0));
+                        (ref_idx >= 0 ? 1 : 0);
             if (extra > 0) {
-                append(" (+%d shown, ignored by overlay/diff)", extra);
+                append(" (+%d partner%s)", extra, extra == 1 ? "" : "s");
             }
 
             // Hover pixel readout -- resolved against the display image
@@ -106,7 +103,7 @@ void render_status_bar(const StatusBarInputs& in) {
 
                 if (vport.mode() == ComparisonMode::Difference) {
                     // Map the hovered cell back to its diff slot so
-                    // the status bar shows "A vs <partner>" and the
+                    // the status bar shows "Ref vs <partner>" and the
                     // pixel value comes from the heatmap the user is
                     // looking at.
                     if (cell >= 0 &&
@@ -121,13 +118,13 @@ void render_status_bar(const StatusBarInputs& in) {
                             partner =
                                 entries[slot.partner_entry_idx].display_label;
                         }
-                        int a_idx = -1, b_unused = -1;
-                        in.get_ab_indices(a_idx, b_unused);
-                        std::string a_name = (a_idx >= 0 &&
-                                              a_idx < static_cast<int>(entries.size()))
-                                                  ? entries[a_idx].display_label
-                                                  : std::string("A");
-                        diff_label = "Diff: " + a_name + " vs " + partner;
+                        int ref_idx = -1;
+                        in.get_ref_index(ref_idx);
+                        std::string ref_name = (ref_idx >= 0 &&
+                                                ref_idx < static_cast<int>(entries.size()))
+                                                  ? entries[ref_idx].display_label
+                                                  : std::string("Ref");
+                        diff_label = "Diff: " + ref_name + " vs " + partner;
                         src_label = diff_label.c_str();
                     } else {
                         src_label = "Diff";

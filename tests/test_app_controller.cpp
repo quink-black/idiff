@@ -6,13 +6,13 @@
 // ImGui).  These tests exercise the cross-service contracts that App
 // previously relied on:
 //
-//   * remove_entry triggers library removal, selection remap, swap_ab
-//     reset, label recomputation and a diff dirty mark in one shot.
+//   * remove_entry triggers library removal, selection remap,
+//     label recomputation and a diff dirty mark in one shot.
 //   * sort_entries_by_name and move_entry both keep the selection in
 //     sync with the new positions.
 //   * compute_display_labels disambiguates duplicate filenames using
 //     parent directories.
-//   * timeline_length, has_running_sr_tasks and get_ab_indices forward
+//   * timeline_length, has_running_sr_tasks and get_ref_index forward
 //     to the underlying service without modification.
 
 #include <catch2/catch_test_macros.hpp>
@@ -136,7 +136,6 @@ TEST_CASE("AppController::remove_entry coordinates library, selection, diff",
 
     controller.selection().insert(0);
     controller.selection().insert(2);
-    controller.selection().set_swap_ab(true);
 
     controller.remove_entry(0);
 
@@ -148,9 +147,6 @@ TEST_CASE("AppController::remove_entry coordinates library, selection, diff",
     // The previously-selected indices were {0, 2}; 0 dropped, 2 -> 1.
     REQUIRE(controller.selection().indices().size() == 1);
     REQUIRE(controller.selection().indices().count(1) == 1);
-
-    // Membership changed -> swap_ab must reset.
-    REQUIRE_FALSE(controller.selection().swap_ab());
 
     // Diff cache is dirty so the next render recomputes it.
     REQUIRE(controller.diff().is_dirty());
@@ -258,11 +254,10 @@ TEST_CASE("AppController forwards trivial queries to its services",
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
 
-    // Empty selection -> both A and B are -1.
-    int a = 99, b = 99;
-    controller.get_ab_indices(a, b);
-    REQUIRE(a == -1);
-    REQUIRE(b == -1);
+    // Empty selection -> reference is -1.
+    int ref = 99;
+    controller.get_ref_index(ref);
+    REQUIRE(ref == -1);
 
     // No multi-frame entries -> timeline length clamps to 1.
     REQUIRE(controller.timeline_length() == 1);
@@ -372,7 +367,6 @@ TEST_CASE("AppController::load_images first load auto-selects up to two entries"
     // and the result tells the caller to switch the viewport mode.
     REQUIRE(result.did_first_load_select);
     REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
-    REQUIRE_FALSE(controller.selection().swap_ab());
 
     // The diff cache was marked dirty so the next render recomputes it.
     REQUIRE(controller.diff().is_dirty());
@@ -398,7 +392,6 @@ TEST_CASE("AppController::load_images appends without disturbing selection",
     // The caller pretends to manually pick a different selection set
     // (mimicking a user clicking around in the image list).
     controller.selection().clear();
-    controller.selection().set_swap_ab(true);
 
     const auto c = write_tmp_png("append", "c.png");
     auto result = controller.load_images({b, c});
@@ -408,7 +401,6 @@ TEST_CASE("AppController::load_images appends without disturbing selection",
     REQUIRE(controller.library().all().size() == 3);
     REQUIRE_FALSE(result.did_first_load_select);
     REQUIRE(controller.selection().indices().empty());
-    REQUIRE(controller.selection().swap_ab());
 }
 
 TEST_CASE("AppController::load_images reports failures via the status reporter",

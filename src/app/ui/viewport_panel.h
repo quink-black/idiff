@@ -24,7 +24,6 @@ struct ImageEntry;
 //   * entries[*].texture_dirty (after a channel-view change)
 //   * entries[*].measurements (when a measurement is committed,
 //     and when the user clears or deletes a measurement)
-//   * selection (Swap A/B)
 //   * diff_service (mark_dirty on heatmap / amplification edits)
 //   * viewport (input gestures, render call)
 //   * settings (persisted on every toolbar option change)
@@ -48,9 +47,9 @@ struct ViewportPanelInputs {
     ChannelViewMode* last_channel_view_mode;
     bool* sel_drag_is_ctrl;
 
-    // Resolves the current A and B entries-indices in the same swap-aware
-    // way as the image list and inspector.
-    std::function<void(int& a_idx, int& b_idx)> get_ab_indices;
+    // Resolves the current reference entry index in the same way as
+    // the image list and inspector.
+    std::function<void(int& ref_idx)> get_ref_index;
 
     // Re-runs the channel-view + upscale pipeline for the entry at the
     // given index and uploads the resulting pixels to its SDL texture.

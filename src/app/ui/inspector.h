@@ -22,10 +22,10 @@ struct InspectorInputs {
     const SelectionModel* selection;
     Viewport* viewport;
 
-    // Resolves the current A and B entries-indices in the same swap-aware
-    // way as the image list and viewport.  Either may be -1 when the
-    // selection is empty or holds a single entry.
-    std::function<void(int& a_idx, int& b_idx)> get_ab_indices;
+    // Resolves the current reference entry index in the same way as
+    // the image list and viewport.  May be -1 when the selection is
+    // empty.
+    std::function<void(int& ref_idx)> get_ref_index;
 
     // Maps each viewport slot index back to an entries index.  Populated
     // by render_viewport earlier in the same frame and consumed by the

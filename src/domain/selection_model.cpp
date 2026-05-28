@@ -58,16 +58,8 @@ bool SelectionModel::apply_remap(const std::vector<int>& remap) {
     return dropped || size_changed;
 }
 
-void SelectionModel::get_ab_indices(int& a_idx, int& b_idx) const noexcept {
-    a_idx = -1;
-    b_idx = -1;
-    int k = 0;
-    for (int s : indices_) {
-        if (k == 0) a_idx = s;
-        else if (k == 1) { b_idx = s; break; }
-        ++k;
-    }
-    if (swap_ab_) std::swap(a_idx, b_idx);
+void SelectionModel::get_ref_index(int& ref_idx) const noexcept {
+    ref_idx = indices_.empty() ? -1 : *indices_.begin();
 }
 
 } // namespace idiff

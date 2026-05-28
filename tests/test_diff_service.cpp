@@ -3,8 +3,8 @@
 // DiffService owns the diff/heatmap cache used by Difference mode.
 // These tests cover:
 //   * empty / single-selection states produce no slots
-//   * partner ordering: B (from get_ab_indices) first, then the rest of
-//     the selection in natural order, A always excluded
+//   * partner ordering: every selected entry except the reference
+//     (smallest selected index), in natural selection order
 //   * texture lifecycle: every uploaded texture is destroyed exactly
 //     once when the cache is rebuilt, cleared, or the service is
 //     destroyed
@@ -138,7 +138,7 @@ TEST_CASE("DiffService::update produces no slots when fewer than two selected",
     REQUIRE(up.upload_count() == 0);
 }
 
-TEST_CASE("DiffService::update produces one slot per partner with B first",
+TEST_CASE("DiffService::update produces one slot per partner in natural order",
           "[diff_service]") {
     FakeUploader up;
     DiffService svc(up);
@@ -152,9 +152,8 @@ TEST_CASE("DiffService::update produces one slot per partner with B first",
 
     // Select a, b, d -- but insert order is a, d, b so the natural
     // order from selection.indices() (which is a std::set) is 0, 1, 3.
-    // get_ab_indices returns A=0 (first) and B=1 (second), so partner
-    // order should be: B(1), then 3 (the remaining selected entry,
-    // skipping A).
+    // The reference is 0 (smallest), so the partner list in slot order
+    // is [1, 3].
     sel.insert(0);
     sel.insert(1);
     sel.insert(3);
@@ -170,33 +169,6 @@ TEST_CASE("DiffService::update produces one slot per partner with B first",
     REQUIRE(svc.slots()[0].texture != nullptr);
     REQUIRE(svc.slots()[1].texture != nullptr);
     REQUIRE(up.upload_count() == 2);
-}
-
-TEST_CASE("DiffService respects swap_ab when picking A and B",
-          "[diff_service]") {
-    FakeUploader up;
-    DiffService svc(up);
-    SelectionModel sel;
-
-    std::vector<ImageEntry> entries;
-    entries.push_back(make_entry("a.png", 8, 8, cv::Scalar(10, 20, 30)));
-    entries.push_back(make_entry("b.png", 8, 8, cv::Scalar(40, 50, 60)));
-    entries.push_back(make_entry("c.png", 8, 8, cv::Scalar(70, 80, 90)));
-
-    sel.insert(0);
-    sel.insert(1);
-    sel.insert(2);
-    sel.set_swap_ab(true);
-    // After swap, get_ab_indices yields A=1, B=0; partner order is
-    // therefore [0, 2] (B first, then the remaining selected entry
-    // skipping A).
-
-    std::string err;
-    svc.update(entries, sel, {}, err);
-
-    REQUIRE(svc.size() == 2);
-    REQUIRE(svc.slots()[0].partner_entry_idx == 0);
-    REQUIRE(svc.slots()[1].partner_entry_idx == 2);
 }
 
 TEST_CASE("DiffService::update destroys old textures before recomputing",

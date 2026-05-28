@@ -17,7 +17,7 @@ struct ImageEntry;
 //
 // Mutable fields (entries, selection, diff_service, show_image_list)
 // are written by the renderer in response to user input:
-//   * selection toggles flip the corresponding bit and reset swap_ab
+//   * selection toggles flip the corresponding bit
 //   * selection toggles also mark every selected entry's texture
 //     dirty so the upscale-on-selection logic re-uploads it
 //   * diff_service is marked dirty whenever the selection changes
@@ -37,10 +37,10 @@ struct ImageListInputs {
     // "Super Resolution..." context-menu item.
     bool sr_enabled;
 
-    // Returns the entries-index pair currently used as A and B for
-    // overlay / diff (-1 when missing).  Provided as a callback so
-    // the list does not duplicate the swap-aware selection logic.
-    std::function<void(int& a_idx, int& b_idx)> get_ab_indices;
+    // Returns the entries-index currently used as the reference image
+    // for overlay / diff (-1 when the selection is empty).  Provided
+    // as a callback so the list does not duplicate the selection logic.
+    std::function<void(int& ref_idx)> get_ref_index;
 
     // True when the entry at the given index wraps a YuvRawSource
     // and therefore supports the "Edit YUV parameters..." menu

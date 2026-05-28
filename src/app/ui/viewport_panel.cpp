@@ -55,9 +55,9 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         diff_service.update(entries, selection, opts, *in.status_text);
     }
 
-    // Build texture list from selected images. Place A then B in the first
-    // two slots (honoring the swap flag), followed by any additional
-    // selected images in their natural order.
+    // Build texture list from selected images. Place the reference
+    // image first, followed by any additional selected images in their
+    // natural order.
     std::vector<SDL_Texture*> tex_ptrs;
     std::vector<int> tex_ws, tex_hs;
     std::vector<const char*> labels;
@@ -70,8 +70,8 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
     slot_to_entry.clear();
     slot_to_entry.reserve(selection.size());
 
-    int ab_idx[2] = {-1, -1};
-    if (in.get_ab_indices) in.get_ab_indices(ab_idx[0], ab_idx[1]);
+    int ref_idx = -1;
+    if (in.get_ref_index) in.get_ref_index(ref_idx);
 
     auto push_entry = [&](int s, const char* prefix) {
         if (s < 0 || s >= static_cast<int>(entries.size())) return;
@@ -97,10 +97,9 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         slot_to_entry.push_back(s);
     };
 
-    if (ab_idx[0] >= 0) push_entry(ab_idx[0], "A");
-    if (ab_idx[1] >= 0) push_entry(ab_idx[1], "B");
+    if (ref_idx >= 0) push_entry(ref_idx, "Ref");
     for (int s : selection.indices()) {
-        if (s == ab_idx[0] || s == ab_idx[1]) continue;
+        if (s == ref_idx) continue;
         push_entry(s, nullptr);
     }
 
@@ -435,20 +434,6 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                               "to a PNG or JPEG file");
         }
 
-        int sel_count = static_cast<int>(selection.size());
-        if (sel_count >= 2) {
-            ImGui::SameLine();
-            ImGui::Spacing();
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Swap A/B")) {
-                selection.toggle_swap_ab();
-                diff_service.mark_dirty();
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Swap which selected image acts as A and B");
-            }
-        }
-
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
@@ -496,11 +481,12 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                     }
                 }
             }
-            if (ImGui::IsItemHovered()) {
+        if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Remove all saved measurements");
             }
         }
 
+        int sel_count = static_cast<int>(selection.size());
         if (sel_count > 0) {
             ImGui::SameLine();
             ImGui::Spacing();
@@ -537,12 +523,12 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
     diff_labels.reserve(diff_service.size());
     diff_label_storage.reserve(diff_service.size());
     {
-        int a_lbl_idx = -1, b_unused = -1;
-        if (in.get_ab_indices) in.get_ab_indices(a_lbl_idx, b_unused);
-        std::string a_name = (a_lbl_idx >= 0 &&
-                              a_lbl_idx < static_cast<int>(entries.size()))
-                                  ? entries[a_lbl_idx].display_label
-                                  : std::string("A");
+        int ref_lbl_idx = -1;
+        if (in.get_ref_index) in.get_ref_index(ref_lbl_idx);
+        std::string ref_name = (ref_lbl_idx >= 0 &&
+                                ref_lbl_idx < static_cast<int>(entries.size()))
+                                    ? entries[ref_lbl_idx].display_label
+                                    : std::string("Ref");
         for (const auto& slot : diff_service.slots()) {
             diff_tex_ptrs.push_back(slot.texture);
             diff_tex_ws.push_back(slot.tex_w);
@@ -554,7 +540,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             } else {
                 partner_name = "?";
             }
-            diff_label_storage.push_back("Diff: " + a_name + " vs " + partner_name);
+            diff_label_storage.push_back("Diff: " + ref_name + " vs " + partner_name);
             diff_labels.push_back(diff_label_storage.back().c_str());
         }
     }
