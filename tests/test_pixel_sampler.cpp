@@ -258,9 +258,10 @@ TEST_CASE("format_delta: signed deltas, mismatches and float formatting",
         REQUIRE_FALSE(format_delta(a, b, buf, sizeof(buf)));
         REQUIRE(std::string(buf) == "\xE2\x80\x94");
 
-        // channel mismatch
+        // channel mismatch (1 vs 3: not the RGB<->RGBA bridge)
         b.depth = CV_8U;
-        b.channels = 4;
+        b.channels = 1;
+        a.channels = 3;
         REQUIRE_FALSE(format_delta(a, b, buf, sizeof(buf)));
         REQUIRE(std::string(buf) == "\xE2\x80\x94");
 
@@ -354,8 +355,11 @@ TEST_CASE("format_delta: depth mismatch -> em-dash", "[pixel_sampler]") {
 }
 
 TEST_CASE("format_delta: channel mismatch -> em-dash", "[pixel_sampler]") {
+    // 1 vs 3 has no defensible per-channel alignment, so it must stay
+    // an em-dash.  (The 3 vs 4 case is intentionally bridged for
+    // RGB <-> RGBA -- see the dedicated test further down.)
     PixelSample a; a.valid = true; a.channels = 3; a.depth = CV_8U;
-    PixelSample b; b.valid = true; b.channels = 4; b.depth = CV_8U;
+    PixelSample b; b.valid = true; b.channels = 1; b.depth = CV_8U;
     char buf[32] = {};
     REQUIRE_FALSE(format_delta(a, b, buf, sizeof(buf)));
     REQUIRE(std::string(buf) == "\xE2\x80\x94");
@@ -532,4 +536,120 @@ TEST_CASE("sample_image_at: prefer_rgb is a no-op when there is no AVFrame",
     for (int i = 0; i < a.channels; ++i) {
         REQUIRE(a.v[i] == b.v[i]);
     }
+}
+
+// -----------------------------------------------------------------------------
+// format_delta: RGB <-> RGBA bridge.
+//
+// Real-world trigger: a user lines up an RGB24 PNG against a PAL8
+// PNG that decodes (via tRNS or the OpenCV / ImageMagick alpha
+// expansion) to RGBA8.  Refusing to subtract the two would leave the
+// Delta column permanently empty, which is the exact regression we
+// want to fix.  Treat the missing alpha as fully opaque so the user
+// sees how far the RGBA side is from opaque, and tag the row with
+// the wider "R G B A:" prefix so the channel geometry stays obvious.
+// -----------------------------------------------------------------------------
+
+TEST_CASE("format_delta: RGB(3) vs RGBA(4) bridges with opaque alpha",
+          "[pixel_sampler][kind]") {
+    PixelSample rgb;
+    rgb.valid = true; rgb.channels = 3; rgb.depth = CV_8U;
+    rgb.kind = PixelKind::RGB;
+    rgb.v[0] = 100; rgb.v[1] = 150; rgb.v[2] = 200;
+
+    PixelSample rgba;
+    rgba.valid = true; rgba.channels = 4; rgba.depth = CV_8U;
+    rgba.kind = PixelKind::RGB;
+    rgba.v[0] = 90; rgba.v[1] = 160; rgba.v[2] = 200; rgba.v[3] = 128;
+
+    char buf[96] = {};
+
+    SECTION("rgb minus rgba: missing alpha back-fills as 255") {
+        // 255 (rgb) - 128 (rgba) = +127 in the alpha column.
+        REQUIRE(format_delta(rgb, rgba, buf, sizeof(buf)));
+        REQUIRE(std::string(buf) == "R G B A: (+10, -10, 0, +127)");
+    }
+
+    SECTION("rgba minus rgb: symmetric, opposite sign on alpha") {
+        REQUIRE(format_delta(rgba, rgb, buf, sizeof(buf)));
+        REQUIRE(std::string(buf) == "R G B A: (-10, +10, 0, -127)");
+    }
+}
+
+TEST_CASE("format_delta: RGB <-> RGBA bridge works across supported depths",
+          "[pixel_sampler][kind]") {
+    SECTION("16-bit: opaque alpha is 65535") {
+        PixelSample rgb;
+        rgb.valid = true; rgb.channels = 3; rgb.depth = CV_16U;
+        rgb.kind = PixelKind::RGB;
+        rgb.v[0] = 1000; rgb.v[1] = 2000; rgb.v[2] = 3000;
+
+        PixelSample rgba;
+        rgba.valid = true; rgba.channels = 4; rgba.depth = CV_16U;
+        rgba.kind = PixelKind::RGB;
+        rgba.v[0] = 1000; rgba.v[1] = 2000; rgba.v[2] = 3000;
+        rgba.v[3] = 32768;
+
+        char buf[96] = {};
+        REQUIRE(format_delta(rgb, rgba, buf, sizeof(buf)));
+        REQUIRE(std::string(buf) == "R G B A: (0, 0, 0, +32767)");
+    }
+
+    SECTION("32F: opaque alpha is 1.0") {
+        PixelSample rgb;
+        rgb.valid = true; rgb.channels = 3; rgb.depth = CV_32F;
+        rgb.kind = PixelKind::RGB;
+        rgb.v[0] = 0.25; rgb.v[1] = 0.5; rgb.v[2] = 0.75;
+
+        PixelSample rgba;
+        rgba.valid = true; rgba.channels = 4; rgba.depth = CV_32F;
+        rgba.kind = PixelKind::RGB;
+        rgba.v[0] = 0.25; rgba.v[1] = 0.5; rgba.v[2] = 0.75;
+        rgba.v[3] = 0.5;
+
+        char buf[96] = {};
+        REQUIRE(format_delta(rgb, rgba, buf, sizeof(buf)));
+        REQUIRE(std::string(buf) == "R G B A: (0.0000, 0.0000, 0.0000, +0.5000)");
+    }
+}
+
+TEST_CASE("format_delta: RGB <-> RGBA bridge requires RGB-shaped layout",
+          "[pixel_sampler][kind]") {
+    // A 3-channel YUV frame and a 4-channel "RGBA" sample have no
+    // shared interpretation -- alpha back-fill would be meaningless
+    // because the 3-channel side is not even RGB.  The bridge must
+    // refuse this pair the same way it refuses any cross-kind delta.
+    PixelSample yuv;
+    yuv.valid = true; yuv.channels = 3; yuv.depth = CV_8U;
+    yuv.kind = PixelKind::YUV;
+    yuv.v[0] = 180; yuv.v[1] = 128; yuv.v[2] = 128;
+
+    PixelSample rgba;
+    rgba.valid = true; rgba.channels = 4; rgba.depth = CV_8U;
+    rgba.kind = PixelKind::RGB;
+    rgba.v[0] = 100; rgba.v[1] = 100; rgba.v[2] = 100; rgba.v[3] = 255;
+
+    char buf[64] = {};
+    REQUIRE_FALSE(format_delta(yuv, rgba, buf, sizeof(buf)));
+    REQUIRE(std::string(buf) == "\xE2\x80\x94");
+}
+
+TEST_CASE("format_delta: RGB <-> RGBA bridge accepts Unknown-kind operands",
+          "[pixel_sampler][kind]") {
+    // Pre-PixelKind call sites build samples with kind=Unknown.  The
+    // bridge should still trigger so the long-standing contract that
+    // Unknown is treated as "trust the caller" carries over to the
+    // 3-vs-4 case as well.
+    PixelSample three;
+    three.valid = true; three.channels = 3; three.depth = CV_8U;
+    three.v[0] = 10; three.v[1] = 20; three.v[2] = 30;
+
+    PixelSample four;
+    four.valid = true; four.channels = 4; four.depth = CV_8U;
+    four.v[0] = 10; four.v[1] = 20; four.v[2] = 30; four.v[3] = 200;
+
+    char buf[96] = {};
+    REQUIRE(format_delta(three, four, buf, sizeof(buf)));
+    // No prefix because both sides are Unknown -- legacy back-compat.
+    REQUIRE(std::string(buf) == "(0, 0, 0, +55)");
 }

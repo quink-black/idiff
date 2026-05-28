@@ -332,12 +332,39 @@ bool format_pixel(const PixelSample& s, char* buf, std::size_t n) {
     }
 }
 
+namespace {
+
+// Treat two PixelKinds as compatible-for-delta when they are equal,
+// or when at least one side is Unknown (the back-compat path used by
+// hand-built PixelSamples in older tests and pre-PixelKind call
+// sites).  Cross-layout pairs like RGB vs YUV remain incomparable.
+bool kinds_compatible(PixelKind a, PixelKind b) {
+    if (a == PixelKind::Unknown || b == PixelKind::Unknown) return true;
+    return a == b;
+}
+
+// Per-depth "fully opaque" alpha value used to back-fill the
+// alpha channel on a 3-channel sample when its peer carries a 4th
+// channel.  This matches the natural sRGB / PNG semantic that an
+// image without an alpha channel is fully opaque, so the resulting
+// alpha delta against a real RGBA pixel is "how far below opaque is
+// the other side?", which is what users actually want to see when
+// they line up an RGB24 PNG with a paletted (PAL8 + tRNS) PNG.
+double opaque_alpha_for_depth(int depth) {
+    switch (depth) {
+        case CV_8U:  return 255.0;
+        case CV_16U: return 65535.0;
+        case CV_32F: return 1.0;
+        default:     return 0.0;
+    }
+}
+
+} // namespace
+
 bool format_delta(const PixelSample& cur, const PixelSample& ref,
                   char* buf, std::size_t n) {
     if (n == 0) return false;
-    if (!cur.valid || !ref.valid ||
-        cur.channels != ref.channels ||
-        cur.depth != ref.depth) {
+    if (!cur.valid || !ref.valid || cur.depth != ref.depth) {
         write_em_dash(buf, n);
         return false;
     }
@@ -352,27 +379,61 @@ bool format_delta(const PixelSample& cur, const PixelSample& ref,
     // Unknown as "trust the caller" and let it through; that path is
     // exercised by hand-built PixelSamples in the older tests and by
     // call sites predating PixelKind.
-    if (cur.kind != PixelKind::Unknown && ref.kind != PixelKind::Unknown &&
-        cur.kind != ref.kind) {
+    if (!kinds_compatible(cur.kind, ref.kind)) {
         write_em_dash(buf, n);
         return false;
     }
 
-    // Use whichever side carries a known kind for the channel-name
-    // prefix.  At this point the two sides either match or at least
-    // one is Unknown, so there is no ambiguity to resolve.
+    // Channel-count handling.  Equal counts are the common case and
+    // need no fix-up.  RGB(3) vs RGBA(4) -- in either order -- is the
+    // realistic mixed case we care about: compare A's RGB24 PNG with
+    // B's PAL8+tRNS PNG, or any other RGB <-> RGBA pair.  Back-fill
+    // the missing alpha as "fully opaque" so the user sees an actual
+    // delta (including how far the RGBA side is from opaque), tagged
+    // with the wider "R G B A:" prefix to make the geometry obvious.
+    // Anything else (e.g. 1 vs 3, 2 vs 4) stays an em-dash because
+    // there is no defensible way to align the channels.
+    int compare_n = cur.channels;
+    bool rgb_vs_rgba =
+        (cur.channels != ref.channels) &&
+        ((cur.channels == 3 && ref.channels == 4) ||
+         (cur.channels == 4 && ref.channels == 3)) &&
+        // Only RGB layouts (or Unknown, treated as RGB-shaped) get the
+        // alpha back-fill; YUV / Gray have no alpha concept.
+        (cur.kind == PixelKind::RGB || cur.kind == PixelKind::Unknown) &&
+        (ref.kind == PixelKind::RGB || ref.kind == PixelKind::Unknown);
+
+    if (cur.channels != ref.channels) {
+        if (!rgb_vs_rgba) {
+            write_em_dash(buf, n);
+            return false;
+        }
+        compare_n = 4;
+    }
+
+    auto get = [&](const PixelSample& s, int i) -> double {
+        if (i < s.channels) return s.v[i];
+        // i is past the source's channel count -- only happens for the
+        // RGB(3)-vs-RGBA(4) bridge above, where the missing slot is
+        // alpha.  Return the depth-appropriate "fully opaque" value.
+        return opaque_alpha_for_depth(s.depth);
+    };
+
+    // Prefix uses the wider channel count so a 3-vs-4 delta still
+    // renders as "R G B A:".  Pick whichever side advertises a known
+    // kind for the layout label.
     PixelKind kind = (cur.kind != PixelKind::Unknown) ? cur.kind : ref.kind;
-    const std::size_t off = write_prefix(buf, n, kind_prefix(kind, cur.channels));
+    const std::size_t off = write_prefix(buf, n, kind_prefix(kind, compare_n));
     char* tail = buf + off;
     std::size_t tail_n = n - off;
 
     switch (cur.depth) {
         case CV_8U:
         case CV_16U: {
-            append_channels(tail, tail_n, cur.channels,
+            append_channels(tail, tail_n, compare_n,
                 [&](int i, char* tmp, std::size_t tn) {
-                    long long d = static_cast<long long>(std::lround(cur.v[i])) -
-                                  static_cast<long long>(std::lround(ref.v[i]));
+                    long long d = static_cast<long long>(std::lround(get(cur, i))) -
+                                  static_cast<long long>(std::lround(get(ref, i)));
                     // Always show sign for non-zero deltas to make A/B
                     // direction obvious; zero stays unsigned to keep
                     // the common "identical pixel" case visually quiet.
@@ -382,9 +443,9 @@ bool format_delta(const PixelSample& cur, const PixelSample& ref,
             return true;
         }
         case CV_32F: {
-            append_channels(tail, tail_n, cur.channels,
+            append_channels(tail, tail_n, compare_n,
                 [&](int i, char* tmp, std::size_t tn) {
-                    double d = cur.v[i] - ref.v[i];
+                    double d = get(cur, i) - get(ref, i);
                     if (d == 0.0) std::snprintf(tmp, tn, "0.0000");
                     else          std::snprintf(tmp, tn, "%+.4f", d);
                 });
