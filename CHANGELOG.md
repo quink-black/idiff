@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-05-28
+
+### Added
+
+- **Pixel inspector panel**: New Inspector tab samples every selected
+  image at a shared coordinate, shows R/G/B (or Y/U/V) values in a
+  multi-row table, and supports manual coordinate input. RGB vs RGBA
+  samples display a per-channel delta; cross-kind comparisons (e.g.
+  RGB vs YUV) are refused instead of printing meaningless numbers.
+- **Reload workflow**: Right-click "Reload" and "Reload All" entries
+  in the image list, plus a visible Reload button in the toolbar. A
+  background file watcher detects on-disk changes and surfaces a
+  reload dialog; spurious notifications from background activity are
+  suppressed and removed entries are purged from the dialog.
+- **Reference image action**: New "Mark as Reference" entry in the
+  image list context menu moves a row to the top so it becomes the
+  reference for overlay and diff. The selected reference is tagged
+  with a single `[Ref]` pill (replacing the previous `[A]`/`[B]`
+  labels and the Swap A/B button).
+- **Keyframe timeline preview**: Scrubbing the timeline shows a
+  thumbnail preview of the target keyframe. The actual seek is now
+  deferred until the user releases the drag, so dragging across long
+  videos is responsive.
+- **vf_scale-based video color pipeline**: Replaced the ad-hoc
+  swscale RGB24 path with a reusable libavfilter graph. Color tags
+  are read per-AVFrame instead of from codecpar, the source AVFrame
+  is attached to the resulting Image so the pixel sampler can read
+  values in the original color domain, and the inspector exposes a
+  YUV/RGB toggle for video frames.
+- **Event-driven file watching on Windows**: Replaces the previous
+  polling backend with ReadDirectoryChangesW.
+- **Pixel readout labelling**: Status bar prefixes pixel values with
+  the channel kind so RGB and YUV readouts are unambiguous.
+
+### Changed
+
+- **Test consolidation**: `ImageComparator`, `MetricsEngine`,
+  `ImageProcessor`, `ChannelView`, `depth_utils`, `ImageLoader` UTF-8
+  paths, YUV source, video decoder/source, pixel sampler and
+  `SeedVR2Engine` pre-launch failures are now grouped into
+  parameter-generator-driven test cases so adding new variants no
+  longer requires copying boilerplate.
+- **Minimum FFmpeg version lowered to 8.0** (libavfilter still
+  required for the new color pipeline).
+
+### Fixed
+
+- Fix HLG midtones rendering as washed-out near-white on SDR sinks.
+- Fix video reload showing stale content after the source file was
+  replaced.
+- Fix use-after-free in `FileWatcher` rewatch on both backends.
+- Fix inotify backend deadlock from blocking on the wake pipe.
+- Fix diff viewport not refreshing after reordering image entries
+  (slot textures kept showing pre-drag content).
+
 ## [0.2.0] - 2026-05-24
 
 ### Added

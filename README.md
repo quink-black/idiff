@@ -9,8 +9,12 @@ Cross-platform image comparison tool for super-resolution workflows.
 ### Comparison Modes
 
 - **Split** — side-by-side grid, auto-upscales different-resolution images (Lanczos / Nearest / Bilinear / Area)
-- **Overlay** — A/B slider with drag handle
-- **Difference** — pixel-level heatmap with adjustable amplification and color scheme (Inferno / Viridis / Magma / Turbo / Coolwarm)
+- **Overlay** — slider with drag handle that wipes between the reference image and any other selected image
+- **Difference** — pixel-level heatmap of the reference vs every other selected image, with adjustable amplification and color scheme (Inferno / Viridis / Magma / Turbo / Coolwarm)
+
+The **reference image** (smallest selected index, tagged `[Ref]` in the
+image list) feeds Overlay and Difference. Right-click any row and
+choose **Mark as Reference** to promote it to the top of the list.
 
 ![overlay](resource/overlay.png)
 
@@ -22,6 +26,23 @@ Cross-platform image comparison tool for super-resolution workflows.
 - Per-channel statistics (mean, stddev, min, max, variance)
 - Histogram visualization
 - Cached computation — flip tabs without recomputation
+
+### Pixel Inspector
+
+- Sample every selected image at a shared coordinate and read back
+  R/G/B (or Y/U/V) values in a multi-row table
+- Manual coordinate entry alongside hover-driven sampling
+- Per-channel delta between RGB and RGBA samples; cross-kind
+  comparisons (e.g. RGB vs YUV) are refused instead of printing
+  meaningless numbers
+
+### Reload
+
+- File watcher detects on-disk changes and surfaces a reload dialog
+- `Reload` and `Reload All` entries in the image list right-click
+  menu, plus a Reload button in the toolbar
+- Video reloads honor the new file contents instead of replaying
+  cached frames
 
 ### Image Support
 
