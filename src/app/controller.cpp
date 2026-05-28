@@ -123,6 +123,14 @@ void AppController::move_entry(int from, int to) {
     auto remap = library_->move(static_cast<std::size_t>(from),
                                 static_cast<std::size_t>(to));
     selection_->apply_remap(remap);
+    // Reordering can change which entry plays the A role (selection is
+    // a sorted set so the smallest index is A) and invalidates the
+    // partner_entry_idx values cached inside DiffService's slots.  Mark
+    // the diff dirty so it recomputes against the new mapping; without
+    // this the viewport keeps showing the previous heatmap pixels even
+    // though the slot labels have shifted to point at different
+    // entries.
+    diff_->mark_dirty();
 }
 
 void AppController::remove_entry(int index) {
