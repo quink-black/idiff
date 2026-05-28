@@ -1377,6 +1377,18 @@ void App::render_image_list() {
     in.on_switch_comparison_group =
         [this](int g) { switch_to_comparison_group(g); };
     in.on_move_entry = [this](int from, int to) { move_entry(from, to); };
+    in.on_mark_as_reference = [this](int idx) {
+        controller_->mark_as_reference(idx);
+        // The newly-promoted entry's texture must be re-uploaded so
+        // the viewport picks it up at the top slot.  Mark every
+        // selected entry's texture dirty for the same reason
+        // selection toggles do.
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < static_cast<int>(entries_view().size())) {
+                entries_view()[s].texture_dirty = true;
+            }
+        }
+    };
     in.on_reload_entry = [this](int idx) { controller_->reload_entry(idx); };
     in.on_reload_all = [this]() { reload_all_images(); };
     in.on_remove_entry = [this](int idx) { remove_entry(idx); };

@@ -123,13 +123,33 @@ void AppController::move_entry(int from, int to) {
     auto remap = library_->move(static_cast<std::size_t>(from),
                                 static_cast<std::size_t>(to));
     selection_->apply_remap(remap);
-    // Reordering can change which entry plays the A role (selection is
-    // a sorted set so the smallest index is A) and invalidates the
-    // partner_entry_idx values cached inside DiffService's slots.  Mark
-    // the diff dirty so it recomputes against the new mapping; without
-    // this the viewport keeps showing the previous heatmap pixels even
-    // though the slot labels have shifted to point at different
-    // entries.
+    // Reordering can change which entry plays the reference role
+    // (selection is a sorted set so the smallest index is the
+    // reference) and invalidates the partner_entry_idx values cached
+    // inside DiffService's slots.  Mark the diff dirty so it
+    // recomputes against the new mapping; without this the viewport
+    // keeps showing the previous heatmap pixels even though the slot
+    // labels have shifted to point at different entries.
+    diff_->mark_dirty();
+}
+
+void AppController::mark_as_reference(int index) {
+    const int n = static_cast<int>(library_->all().size());
+    if (index < 0 || index >= n) return;
+
+    // Move the entry to the top so it becomes the smallest selected
+    // index (and therefore the reference) regardless of whether the
+    // user had already selected it.  apply_remap follows the move.
+    if (index != 0) {
+        auto remap = library_->move(static_cast<std::size_t>(index),
+                                    static_cast<std::size_t>(0));
+        selection_->apply_remap(remap);
+    }
+    // Ensure the new top entry is part of the selection so overlay /
+    // diff actually use it.  No-op when the entry was already
+    // selected.
+    selection_->insert(0);
+
     diff_->mark_dirty();
 }
 

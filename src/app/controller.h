@@ -79,6 +79,12 @@ public:
     // no-op move (from == to) returns immediately.
     void move_entry(int from, int to);
 
+    // Mark the entry at `index` as the reference image: move it to
+    // the top of the library so it becomes the smallest selected
+    // index, and ensure it is part of the selection so overlay / diff
+    // actually use it.  Out-of-range indices are ignored.
+    void mark_as_reference(int index);
+
     // Remove the entry at `index` (destroying its texture via the
     // injected ITextureUploader), patch the selection, refresh
     // display labels and mark the diff dirty.  Out-of-range indices

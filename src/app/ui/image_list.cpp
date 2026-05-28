@@ -258,6 +258,16 @@ void render_image_list(const ImageListInputs& in) {
                 if (ImGui::MenuItem("Select Only This")) {
                     if (in.on_select_only_this) in.on_select_only_this(i);
                 }
+                bool already_ref = (i == ref_idx);
+                if (ImGui::MenuItem("Mark as Reference", nullptr, false,
+                                    !already_ref)) {
+                    if (in.on_mark_as_reference) in.on_mark_as_reference(i);
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip(
+                        "Move this image to the top of the list and use\n"
+                        "it as the reference for overlay / diff.");
+                }
                 if (!entries.empty() && selection.size() < entries.size()) {
                     if (ImGui::MenuItem("Invert Selection")) {
                         if (in.on_invert_selection) in.on_invert_selection();

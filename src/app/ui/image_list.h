@@ -53,6 +53,7 @@ struct ImageListInputs {
     std::function<void()> on_open_files;
     std::function<void(int group_idx)> on_switch_comparison_group;
     std::function<void(int from, int to)> on_move_entry;
+    std::function<void(int entry_idx)> on_mark_as_reference;
     std::function<void()> on_select_all;
     std::function<void(int entry_idx)> on_select_only_this;
     std::function<void()> on_invert_selection;
