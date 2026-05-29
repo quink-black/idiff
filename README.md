@@ -46,7 +46,7 @@ choose **Mark as Reference** to promote it to the top of the list.
 
 ### Image Support
 
-- **Formats**: PNG, JPEG, WebP, TIFF, BMP, RAW (via LibRaw), HEIF/AVIF (via ImageMagick)
+- **Formats**: PNG, JPEG, WebP, TIFF, BMP, RAW (via LibRaw, optional), HEIF/AVIF (via ImageMagick, optional)
 - **ICC color profile** detection and display
 - **Raw YUV video streams** — configurable resolution, pixel format, frame stepping
 - **HTTP/HTTPS URLs** — automatic download with on-disk cache and background prefetch
@@ -101,8 +101,8 @@ Open via `File > Open Comparison Config...` or drag the JSON into the window. Ad
 - CMake 3.20+
 - C++17 compiler
 - OpenCV 4.x (with imgcodecs and quality module from opencv_contrib)
-- LibRaw
 - SDL2
+- LibRaw (optional — required for camera RAW formats: .dng, .cr2, .nef, ...)
 - ImageMagick 7+ (optional — preferred loader for ICC profiles and wider format coverage)
 - vcpkg (recommended on Windows)
 

@@ -210,27 +210,50 @@ else()
     set(IDIFF_BUILD_JSON OFF)
 endif()
 
-# LibRaw -- try find_package (CONFIG mode for vcpkg), then pkg-config,
-# then build from source.
-find_package(libraw CONFIG QUIET)
-if(libraw_FOUND)
-    message(STATUS "Found system LibRaw via CMake config")
-    set(IDIFF_BUILD_LIBRAW OFF)
-    set(LIBRAW_TARGET libraw::raw_r)
-else()
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBRAW QUIET IMPORTED_TARGET libraw)
-    endif()
-    if(LIBRAW_FOUND)
-        message(STATUS "Found system LibRaw via pkg-config")
-        set(IDIFF_BUILD_LIBRAW OFF)
-        set(LIBRAW_TARGET PkgConfig::LIBRAW)
+# LibRaw -- optional, controlled by IDIFF_WITH_LIBRAW.  Detected via
+# find_package (CONFIG mode for vcpkg) first, then pkg-config.  Source
+# builds were dropped because LibRaw has its own non-trivial dependencies
+# (LCMS2, jpeg, jasper) and tickles OpenMP / clang quirks on macOS;
+# users who need RAW support should install it from their package
+# manager (brew install libraw / apt install libraw-dev / vcpkg).
+#
+# Values:
+#   AUTO (default): use LibRaw if found on the system, otherwise skip.
+#   ON:             require LibRaw; fail configuration if missing.
+#   OFF:            skip LibRaw entirely, no RAW file support.
+set(IDIFF_WITH_LIBRAW "AUTO" CACHE STRING
+    "Enable LibRaw RAW decoder backend: AUTO | ON | OFF")
+set_property(CACHE IDIFF_WITH_LIBRAW PROPERTY STRINGS AUTO ON OFF)
+
+set(IDIFF_HAVE_LIBRAW OFF)
+set(LIBRAW_TARGET "")
+if(NOT IDIFF_WITH_LIBRAW STREQUAL "OFF")
+    find_package(libraw CONFIG QUIET)
+    if(libraw_FOUND)
+        message(STATUS "Found system LibRaw via CMake config")
+        set(IDIFF_HAVE_LIBRAW ON)
+        set(LIBRAW_TARGET libraw::raw_r)
     else()
-        message(STATUS "LibRaw not found on system -- will build from source")
-        set(IDIFF_BUILD_LIBRAW ON)
-        set(LIBRAW_TARGET PkgConfig::LIBRAW)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBRAW QUIET IMPORTED_TARGET libraw)
+        endif()
+        if(LIBRAW_FOUND)
+            message(STATUS "Found system LibRaw via pkg-config")
+            set(IDIFF_HAVE_LIBRAW ON)
+            set(LIBRAW_TARGET PkgConfig::LIBRAW)
+        elseif(IDIFF_WITH_LIBRAW STREQUAL "ON")
+            message(FATAL_ERROR
+                    "IDIFF_WITH_LIBRAW=ON but LibRaw was not found "
+                    "(install libraw via brew / apt / vcpkg)")
+        endif()
     endif()
+endif()
+
+if(NOT IDIFF_HAVE_LIBRAW)
+    message(STATUS
+        "LibRaw RAW decoder disabled -- "
+        "camera RAW files (.dng, .cr2, .nef, ...) will not be supported")
 endif()
 
 add_subdirectory(third_party)

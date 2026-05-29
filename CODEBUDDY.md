@@ -106,4 +106,4 @@ Some app-layer source files (controller, SR engine, IO adapters) are compiled di
 - Namespace: `idiff`
 - C++17, no extensions (`CMAKE_CXX_EXTENSIONS OFF`)
 - `compile_commands.json` is exported for tooling
-- Third-party dependencies via FetchContent (imgui, Catch2, nfd, nlohmann_json, LibRaw) with system-package fallbacks
+- Third-party dependencies via FetchContent (imgui, Catch2, nfd, nlohmann_json) with system-package fallbacks; LibRaw, ImageMagick, and FFmpeg are detected on the system only

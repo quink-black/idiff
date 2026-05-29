@@ -25,8 +25,12 @@ target_link_libraries(idiff_core PUBLIC
     opencv_imgproc
     opencv_quality
     nlohmann_json::nlohmann_json
-    ${LIBRAW_TARGET}
 )
+
+if(IDIFF_HAVE_LIBRAW)
+    target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_LIBRAW)
+    target_link_libraries(idiff_core PUBLIC ${LIBRAW_TARGET})
+endif()
 
 if(IDIFF_HAVE_IMAGEMAGICK)
     target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_MAGICK)

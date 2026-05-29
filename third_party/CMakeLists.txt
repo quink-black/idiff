@@ -1,7 +1,9 @@
 # Third-party dependencies.
 # ImGui is always built from source (no standard system package).
-# Catch2, nfd, and LibRaw are built from source only when not found on the system
+# Catch2 and nfd are built from source only when not found on the system
 # (controlled by IDIFF_BUILD_* flags set in the root CMakeLists.txt).
+# LibRaw is detected only on the system; users who want RAW support
+# install it via brew / apt / vcpkg.
 
 include(FetchContent)
 
@@ -84,23 +86,4 @@ if(IDIFF_BUILD_NFD)
     )
     FetchContent_MakeAvailable(nativefiledialog-extended)
     # nfd's CMakeLists.txt creates the nfd::nfd target automatically.
-endif()
-
-# ---- LibRaw (from source when not found on system) ----
-
-if(IDIFF_BUILD_LIBRAW)
-    FetchContent_Declare(
-        libraw
-        GIT_REPOSITORY https://github.com/LibRaw/LibRaw.git
-        GIT_TAG        0.21.2
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(libraw)
-
-    # LibRaw's CMake build creates a 'raw' target.  Create an ALIAS so
-    # both paths can use the same target name via LIBRAW_TARGET.
-    if(TARGET raw AND NOT TARGET PkgConfig::LIBRAW)
-        add_library(PkgConfig::LIBRAW ALIAS raw)
-    endif()
-    set(LIBRAW_TARGET PkgConfig::LIBRAW PARENT_SCOPE)
 endif()

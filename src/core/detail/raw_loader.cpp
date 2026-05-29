@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#ifdef IDIFF_HAVE_LIBRAW
 // LibRaw headers auto-enable OpenMP on macOS when _REENTRANT is defined,
 // but clang on macOS doesn't ship omp.h. Undefine before including.
 #ifdef __APPLE__
@@ -13,6 +14,7 @@
 
 #include <libraw/libraw.h>
 #include <opencv2/core.hpp>
+#endif // IDIFF_HAVE_LIBRAW
 
 namespace idiff {
 
@@ -27,6 +29,8 @@ const char* raw_extensions[] = {
 };
 
 } // namespace
+
+#ifdef IDIFF_HAVE_LIBRAW
 
 std::unique_ptr<Image> RawLoader::load(const std::string& path, bool keep_16bit) {
     last_error_.clear();
@@ -104,6 +108,17 @@ std::unique_ptr<Image> RawLoader::load(const std::string& path, bool keep_16bit)
 
     return image;
 }
+
+#else // !IDIFF_HAVE_LIBRAW
+
+std::unique_ptr<Image> RawLoader::load(const std::string& path, bool keep_16bit) {
+    (void)path;
+    (void)keep_16bit;
+    last_error_ = "RAW support not compiled in (rebuild with libraw installed)";
+    return nullptr;
+}
+
+#endif // IDIFF_HAVE_LIBRAW
 
 bool RawLoader::is_raw_extension(const std::string& path) {
     auto dot = path.rfind('.');
