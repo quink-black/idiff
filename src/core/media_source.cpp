@@ -27,6 +27,8 @@ const char* source_format_name(SourceFormat f) noexcept {
         case SourceFormat::TIFF: return "TIFF";
         case SourceFormat::BMP:  return "BMP";
         case SourceFormat::RAW:  return "RAW";
+        case SourceFormat::HEIF: return "HEIF";
+        case SourceFormat::AVIF: return "AVIF";
         default:                 return "Unknown";
     }
 }

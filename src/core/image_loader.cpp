@@ -15,6 +15,10 @@
 
 #include "core/detail/raw_loader.h"
 
+#ifdef IDIFF_HAVE_FFMPEG_IMAGE_DECODE
+#include "core/detail/ffmpeg_image_loader.h"
+#endif
+
 namespace idiff {
 
 namespace {
@@ -39,6 +43,9 @@ SourceFormat extension_to_format(const std::string& path) {
     if (ext == ".webp") return SourceFormat::WebP;
     if (ext == ".tif" || ext == ".tiff") return SourceFormat::TIFF;
     if (ext == ".bmp")  return SourceFormat::BMP;
+    if (ext == ".heic" || ext == ".heif" || ext == ".hif")
+        return SourceFormat::HEIF;
+    if (ext == ".avif") return SourceFormat::AVIF;
 
     for (const auto* raw_ext : raw_extensions) {
         if (ext == raw_ext) return SourceFormat::RAW;
@@ -198,6 +205,12 @@ bool ImageLoader::has_backend(LoaderBackend backend) noexcept {
 #else
             return false;
 #endif
+        case LoaderBackend::FFmpeg:
+#ifdef IDIFF_HAVE_FFMPEG_IMAGE_DECODE
+            return true;
+#else
+            return false;
+#endif
     }
     return false;
 }
@@ -214,6 +227,7 @@ const char* ImageLoader::backend_name(LoaderBackend backend) noexcept {
     switch (backend) {
         case LoaderBackend::ImageMagick: return "ImageMagick";
         case LoaderBackend::OpenCV:      return "OpenCV";
+        case LoaderBackend::FFmpeg:      return "FFmpeg";
     }
     return "Unknown";
 }
@@ -247,46 +261,49 @@ std::unique_ptr<Image> ImageLoader::load(const std::string& path) {
         return img;
     }
 
-    // Try preferred backend first, then fall back to the other one.
-    LoaderBackend primary = preferred_;
-    LoaderBackend secondary = (primary == LoaderBackend::ImageMagick)
-        ? LoaderBackend::OpenCV : LoaderBackend::ImageMagick;
+    // Build the backend priority list.  HEIF/AVIF prefers the FFmpeg
+    // backend (libav* is far more reliable than ImageMagick HEIF
+    // delegates on Windows/vcpkg); everything else keeps the historic
+    // ImageMagick -> OpenCV order honoured by `preferred_`.
+    LoaderBackend candidates[3];
+    int nb = 0;
+    if (is_heif_family(path)) {
+        candidates[nb++] = LoaderBackend::FFmpeg;
+        candidates[nb++] = LoaderBackend::ImageMagick;
+        candidates[nb++] = LoaderBackend::OpenCV;
+    } else {
+        LoaderBackend primary = preferred_;
+        LoaderBackend secondary = (primary == LoaderBackend::ImageMagick)
+            ? LoaderBackend::OpenCV : LoaderBackend::ImageMagick;
+        candidates[nb++] = primary;
+        candidates[nb++] = secondary;
+    }
 
-    if (has_backend(primary)) {
-        std::string saved_err = last_error_;
-        auto img = load_with_backend(path, primary);
+    // Try each compiled-in backend in order; collect every error so
+    // the caller sees which backends were attempted.
+    std::string combined;
+    int tried = 0;
+    for (int i = 0; i < nb; ++i) {
+        LoaderBackend b = candidates[i];
+        if (!has_backend(b)) continue;
+        last_error_.clear();
+        auto img = load_with_backend(path, b);
         if (img) {
-            last_used_ = primary;
+            last_used_ = b;
             return img;
         }
-        // Preserve the primary error for reporting if fallback also fails.
-        saved_err = last_error_;
-        if (has_backend(secondary)) {
-            last_error_.clear();
-            img = load_with_backend(path, secondary);
-            if (img) {
-                last_used_ = secondary;
-                return img;
-            }
-            // Both failed -- compose a combined error.
-            last_error_ = std::string(backend_name(primary)) + ": " + saved_err
-                + "; " + backend_name(secondary) + ": " + last_error_;
-        } else {
-            last_error_ = saved_err;
-        }
-        return nullptr;
+        if (!combined.empty()) combined += "; ";
+        combined += backend_name(b);
+        combined += ": ";
+        combined += last_error_;
+        ++tried;
     }
 
-    // Preferred backend is not compiled in (should not normally happen
-    // since set_preferred_backend snaps to a valid one) -- use whichever
-    // is available.
-    if (has_backend(secondary)) {
-        auto img = load_with_backend(path, secondary);
-        if (img) last_used_ = secondary;
-        return img;
+    if (tried == 0) {
+        last_error_ = "No image loader backend is available";
+    } else {
+        last_error_ = std::move(combined);
     }
-
-    last_error_ = "No image loader backend is available";
     return nullptr;
 }
 
@@ -299,39 +316,43 @@ std::unique_ptr<Image> ImageLoader::load_from_memory(const uint8_t* data, size_t
         return nullptr;
     }
 
-    LoaderBackend primary = preferred_;
-    LoaderBackend secondary = (primary == LoaderBackend::ImageMagick)
-        ? LoaderBackend::OpenCV : LoaderBackend::ImageMagick;
+    LoaderBackend candidates[3];
+    int nb = 0;
+    if (is_heif_family(format)) {
+        candidates[nb++] = LoaderBackend::FFmpeg;
+        candidates[nb++] = LoaderBackend::ImageMagick;
+        candidates[nb++] = LoaderBackend::OpenCV;
+    } else {
+        LoaderBackend primary = preferred_;
+        LoaderBackend secondary = (primary == LoaderBackend::ImageMagick)
+            ? LoaderBackend::OpenCV : LoaderBackend::ImageMagick;
+        candidates[nb++] = primary;
+        candidates[nb++] = secondary;
+    }
 
-    if (has_backend(primary)) {
-        auto img = load_from_memory_with_backend(data, size, format, primary);
+    std::string combined;
+    int tried = 0;
+    for (int i = 0; i < nb; ++i) {
+        LoaderBackend b = candidates[i];
+        if (!has_backend(b)) continue;
+        last_error_.clear();
+        auto img = load_from_memory_with_backend(data, size, format, b);
         if (img) {
-            last_used_ = primary;
+            last_used_ = b;
             return img;
         }
-        std::string saved_err = last_error_;
-        if (has_backend(secondary)) {
-            last_error_.clear();
-            img = load_from_memory_with_backend(data, size, format, secondary);
-            if (img) {
-                last_used_ = secondary;
-                return img;
-            }
-            last_error_ = std::string(backend_name(primary)) + ": " + saved_err
-                + "; " + backend_name(secondary) + ": " + last_error_;
-        } else {
-            last_error_ = saved_err;
-        }
-        return nullptr;
+        if (!combined.empty()) combined += "; ";
+        combined += backend_name(b);
+        combined += ": ";
+        combined += last_error_;
+        ++tried;
     }
 
-    if (has_backend(secondary)) {
-        auto img = load_from_memory_with_backend(data, size, format, secondary);
-        if (img) last_used_ = secondary;
-        return img;
+    if (tried == 0) {
+        last_error_ = "No image loader backend is available";
+    } else {
+        last_error_ = std::move(combined);
     }
-
-    last_error_ = "No image loader backend is available";
     return nullptr;
 }
 
@@ -347,6 +368,8 @@ ImageLoader::load_with_backend(const std::string& path, LoaderBackend backend) {
             last_error_ = "ImageMagick backend not compiled in";
             return nullptr;
 #endif
+        case LoaderBackend::FFmpeg:
+            return load_via_ffmpeg(path);
     }
     return nullptr;
 }
@@ -365,6 +388,8 @@ ImageLoader::load_from_memory_with_backend(const uint8_t* data, size_t size,
             last_error_ = "ImageMagick backend not compiled in";
             return nullptr;
 #endif
+        case LoaderBackend::FFmpeg:
+            return load_via_ffmpeg_memory(data, size, format);
     }
     return nullptr;
 }
@@ -517,5 +542,81 @@ bool ImageLoader::is_raw_format(const std::string& path) {
 bool ImageLoader::is_raw_format(SourceFormat format) {
     return format == SourceFormat::RAW;
 }
+
+bool ImageLoader::is_heif_family(const std::string& path) {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".heic" || ext == ".heif" || ext == ".hif" || ext == ".avif";
+}
+
+bool ImageLoader::is_heif_family(SourceFormat format) {
+    return format == SourceFormat::HEIF || format == SourceFormat::AVIF;
+}
+
+// ---- FFmpeg path / memory ----
+//
+// The actual decoder lives in detail/ffmpeg_image_loader.* and is
+// pulled in only when IDIFF_HAVE_FFMPEG_IMAGE_DECODE is on.  The stub
+// path keeps the binary linkable (and produces a clear error) for
+// builds without FFmpeg.
+
+#ifdef IDIFF_HAVE_FFMPEG_IMAGE_DECODE
+
+std::unique_ptr<Image> ImageLoader::load_via_ffmpeg(const std::string& path) {
+    try {
+        auto buf = platform::read_file_binary(path);
+        if (buf.empty()) {
+            last_error_ = "Failed to read file: " + path;
+            return nullptr;
+        }
+        SourceFormat fmt = extension_to_format(path);
+        auto image = load_heif_avif_from_memory(
+            buf.data(), buf.size(), fmt, flags_, last_error_);
+        if (image) {
+            // load_heif_avif_from_memory does not know the on-disk
+            // path, so it falls back to whatever caller-supplied
+            // SourceFormat we passed -- but if extension_to_format
+            // returned Unknown we still want the field set to the
+            // detected format so the UI shows a useful label.
+            if (image->internal().info.source_format == SourceFormat::Unknown) {
+                image->internal().info.source_format = fmt;
+            }
+        }
+        return image;
+    } catch (const std::exception& e) {
+        last_error_ = std::string("FFmpeg: ") + e.what();
+        return nullptr;
+    }
+}
+
+std::unique_ptr<Image>
+ImageLoader::load_via_ffmpeg_memory(const uint8_t* data, size_t size,
+                                     SourceFormat format) {
+    try {
+        return load_heif_avif_from_memory(
+            data, size, format, flags_, last_error_);
+    } catch (const std::exception& e) {
+        last_error_ = std::string("FFmpeg: ") + e.what();
+        return nullptr;
+    }
+}
+
+#else
+
+std::unique_ptr<Image> ImageLoader::load_via_ffmpeg(const std::string& /*path*/) {
+    last_error_ = "FFmpeg image backend not compiled in";
+    return nullptr;
+}
+
+std::unique_ptr<Image>
+ImageLoader::load_via_ffmpeg_memory(const uint8_t* /*data*/, size_t /*size*/,
+                                     SourceFormat /*format*/) {
+    last_error_ = "FFmpeg image backend not compiled in";
+    return nullptr;
+}
+
+#endif // IDIFF_HAVE_FFMPEG_IMAGE_DECODE
 
 } // namespace idiff

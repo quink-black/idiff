@@ -164,6 +164,31 @@ if(NOT IDIFF_HAVE_FFMPEG)
         "video container files (MP4, MKV, etc.) will not be supported")
 endif()
 
+# HEIF / AVIF decoder selection.
+#
+# FFmpeg ≥ 8.0 ships HEVC + AV1 decoders and the ISOBMFF demuxer that
+# parses HEIF / AVIF tile-grid metadata; combined with libavfilter
+# (already linked when IDIFF_HAVE_FFMPEG is ON) idiff can natively
+# read .heic / .heif / .hif / .avif without pulling in libheif /
+# libavif / libde265 / dav1d as direct dependencies.  ImageMagick is
+# kept as a fallback for builds without FFmpeg, since it can also
+# read those formats when its libheif delegate is present.
+set(IDIFF_HAVE_FFMPEG_IMAGE_DECODE OFF)
+if(IDIFF_HAVE_FFMPEG)
+    set(IDIFF_HAVE_FFMPEG_IMAGE_DECODE ON)
+endif()
+
+if(IDIFF_HAVE_FFMPEG_IMAGE_DECODE)
+    message(STATUS "HEIF / AVIF backend: FFmpeg (preferred), "
+                   "ImageMagick (fallback if available)")
+elseif(IDIFF_HAVE_IMAGEMAGICK)
+    message(STATUS "HEIF / AVIF backend: ImageMagick "
+                   "(install FFmpeg ≥ 8.0 for native support)")
+else()
+    message(STATUS "HEIF / AVIF backend: NONE -- .heic / .avif files "
+                   "cannot be opened in this build")
+endif()
+
 # SDL2
 find_package(SDL2 REQUIRED CONFIG)
 

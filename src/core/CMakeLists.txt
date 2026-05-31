@@ -44,6 +44,13 @@ if(IDIFF_HAVE_FFMPEG)
         video_filter_graph.cpp
     )
     target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_FFMPEG)
+    if(IDIFF_HAVE_FFMPEG_IMAGE_DECODE)
+        target_sources(idiff_core PRIVATE
+            detail/heif_tile_assembler.cpp
+            detail/ffmpeg_image_loader.cpp
+        )
+        target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_FFMPEG_IMAGE_DECODE)
+    endif()
     target_link_libraries(idiff_core PUBLIC
         PkgConfig::FFMPEG_LIBAVFORMAT
         PkgConfig::FFMPEG_LIBAVCODEC

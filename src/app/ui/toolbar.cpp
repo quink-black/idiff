@@ -41,11 +41,21 @@ void render_toolbar(const ToolbarInputs& in) {
         ImGui::MenuItem("Inspector", nullptr, in.show_inspector);
 
         if (ImGui::BeginMenu("Image Loader")) {
-            // Let the user compare decoding output between backends at
-            // runtime.  Switching reloads all currently-open images so
-            // the viewport immediately reflects the new backend.  A
-            // backend entry is disabled (and annotated) when it was
-            // not compiled into this build.
+            // The selectable items below set the *preferred backend
+            // for general still images* (PNG / JPEG / WebP / TIFF /
+            // BMP).  HEIF / AVIF is not user-selectable: those
+            // formats always try FFmpeg first, then fall back to
+            // ImageMagick, then OpenCV, regardless of the choice
+            // here -- FFmpeg cannot decode the general formats and
+            // OpenCV cannot decode HEIF/AVIF, so a single global
+            // toggle would be wrong for one half of the file types.
+            //
+            // The FFmpeg row below is therefore informational only:
+            // it shows whether the FFmpeg image backend is built in,
+            // not a user choice.
+            ImGui::TextDisabled("Preferred backend (PNG / JPEG / etc.)");
+            ImGui::Separator();
+
             auto loader_item = [&](LoaderBackend b) {
                 const bool available = ImageLoader::has_backend(b);
                 const bool selected = in.get_loader_backend &&
@@ -60,6 +70,25 @@ void render_toolbar(const ToolbarInputs& in) {
             };
             loader_item(LoaderBackend::ImageMagick);
             loader_item(LoaderBackend::OpenCV);
+
+            ImGui::Separator();
+            ImGui::TextDisabled("HEIF / AVIF (automatic)");
+            {
+                const bool ffmpeg_available =
+                    ImageLoader::has_backend(LoaderBackend::FFmpeg);
+                std::string ff_label = "FFmpeg  (preferred for HEIF / AVIF)";
+                if (!ffmpeg_available) ff_label += "  (not compiled in)";
+                // Disabled: this is a status row, not a chooser.
+                ImGui::MenuItem(ff_label.c_str(), nullptr,
+                                /*selected*/ ffmpeg_available,
+                                /*enabled*/  false);
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip(
+                    "HEIF / AVIF files always try FFmpeg first, then\n"
+                    "ImageMagick, then OpenCV. The selection above\n"
+                    "only affects general formats like PNG and JPEG.");
+            }
             ImGui::EndMenu();
         }
 

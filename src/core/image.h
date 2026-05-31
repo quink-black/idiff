@@ -26,6 +26,8 @@ enum class SourceFormat {
     TIFF,
     BMP,
     RAW,
+    HEIF,
+    AVIF,
     Unknown,
 };
 
