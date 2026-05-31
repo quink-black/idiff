@@ -11,6 +11,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -114,6 +115,24 @@ void set_window_icon(SDL_Window* window) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Make this a UTF-8 process top to bottom.  The application
+    // manifest already declares activeCodePage=UTF-8 so the Win32
+    // *A APIs (and CRT routines that consult the ACP, like
+    // std::filesystem::path's narrow-string constructor) interpret
+    // std::string bytes as UTF-8 instead of GBK / CP936.  Pair that
+    // with a UTF-8 C locale so the iostreams / standard streams
+    // agree, and tell the console it is also receiving UTF-8 so
+    // stdout / stderr render Chinese filenames instead of mojibake.
+    //
+    // Each call is best-effort: on a system that does not support
+    // UTF-8 locales the previous setting is preserved and we fall
+    // back to the platform_utf8.h wide-char wrappers for I/O.
+    std::setlocale(LC_ALL, ".UTF-8");
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     // Install the logger before anything else so init failures get
     // captured.  Console sink defaults to Info; the file sink keeps
     // Debug for richer post-mortem diagnostics.  IDIFF_LOG_LEVEL=trace|

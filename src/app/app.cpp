@@ -890,7 +890,19 @@ void App::load_paths(const std::vector<std::string>& paths) {
     std::vector<std::string> json_paths;
     image_paths.reserve(paths.size());
     for (const auto& p : paths) {
-        std::string ext = std::filesystem::path(p).extension().string();
+        // Construct the path from a UTF-16 string so we never go
+        // through MSVC's narrow-string overload, which calls
+        // MultiByteToWideChar(CP_ACP, ...) and throws system_error
+        // 1113 on UTF-8 bytes that don't round-trip through the
+        // active ANSI code page.  The application manifest sets the
+        // process ACP to UTF-8 on Windows 10 1903+, but this keeps
+        // older systems crash-free as well.
+#ifdef _WIN32
+        std::filesystem::path fp(idiff::platform::utf8_to_wide(p));
+#else
+        std::filesystem::path fp(p);
+#endif
+        std::string ext = fp.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return std::tolower(c); });
         if (ext == ".json") {

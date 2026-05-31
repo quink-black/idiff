@@ -33,6 +33,26 @@ if(APPLE)
 elseif(WIN32)
     target_sources(idiff PRIVATE platform/platform_win32.cpp)
     target_sources(idiff PRIVATE platform/idiff.rc)
+    # Listed as a source for IDE visibility only; the linker picks it
+    # up via the /MANIFESTINPUT option set further down.
+    target_sources(idiff PRIVATE platform/idiff.manifest)
+    set_source_files_properties(platform/idiff.manifest
+        PROPERTIES HEADER_FILE_ONLY TRUE)
+    # Hand the manifest to mt.exe via the linker so it gets merged
+    # with MSVC's auto-generated CRT dependency manifest.  Embedding
+    # the file directly through `RT_MANIFEST` in idiff.rc instead
+    # produces a malformed RT_MANIFEST resource on some Windows SDK
+    # versions (an 11-byte raw-resource prefix gets prepended to the
+    # XML), which SxS then rejects with error 14001 at process
+    # launch.  /MANIFESTINPUT routes through mt.exe's manifest tool,
+    # which knows how to author RT_MANIFEST correctly and how to
+    # combine multiple manifest fragments.
+    if(MSVC)
+        target_link_options(idiff PRIVATE
+            "/MANIFEST"
+            "/MANIFESTUAC:NO"
+            "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/platform/idiff.manifest")
+    endif()
 else()
     target_sources(idiff PRIVATE platform/platform_posix.cpp)
 endif()
