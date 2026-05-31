@@ -100,6 +100,8 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
                 case SourceFormat::TIFF:   fmt_name = "TIFF"; break;
                 case SourceFormat::BMP:    fmt_name = "BMP"; break;
                 case SourceFormat::RAW:    fmt_name = "RAW"; break;
+                case SourceFormat::HEIF:   fmt_name = "HEIF"; break;
+                case SourceFormat::AVIF:   fmt_name = "AVIF"; break;
                 default: break;
             }
 

@@ -46,7 +46,7 @@ choose **Mark as Reference** to promote it to the top of the list.
 
 ### Image Support
 
-- **Formats**: PNG, JPEG, WebP, TIFF, BMP, RAW (via LibRaw, optional), HEIF/AVIF (via ImageMagick, optional)
+- **Formats**: PNG, JPEG, WebP, TIFF, BMP, RAW (via LibRaw, optional), HEIF/AVIF (via FFmpeg ≥ 8.0, or ImageMagick 7+ as fallback)
 - **ICC color profile** detection and display
 - **Raw YUV video streams** — configurable resolution, pixel format, frame stepping
 - **HTTP/HTTPS URLs** — automatic download with on-disk cache and background prefetch

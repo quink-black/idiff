@@ -25,14 +25,16 @@ inline bool operator&(LoadFlag a, LoadFlag b) {
     return (static_cast<uint32_t>(a) & static_cast<uint32_t>(b)) != 0;
 }
 
-// Which decoder library to use for general (non-RAW) images.  Both
-// backends may be compiled into the same binary; ImageMagick is preferred
-// when available because it handles ICC profiles and a wider set of
-// formats, while OpenCV imgcodecs is always present and serves as the
-// fallback.
+// Which decoder library to use for general (non-RAW) images.  Multiple
+// backends may be compiled into the same binary; for HEIF/AVIF the
+// preferred order is FFmpeg -> ImageMagick -> OpenCV, while the
+// existing PNG/JPEG/WebP/TIFF/BMP path uses ImageMagick -> OpenCV.
+// load() transparently falls back to the next available backend if
+// the preferred one fails.
 enum class LoaderBackend {
     ImageMagick,  // Magick++; only available when built with IDIFF_HAVE_MAGICK
     OpenCV,       // opencv_imgcodecs; always available
+    FFmpeg,       // libav* HEIF/AVIF path; built when IDIFF_HAVE_FFMPEG_IMAGE_DECODE
 };
 
 class ImageLoader {
@@ -82,10 +84,19 @@ private:
     std::unique_ptr<Image> load_via_magick_memory(const uint8_t* data, size_t size,
                                                   SourceFormat format);
 #endif
+    std::unique_ptr<Image> load_via_ffmpeg(const std::string& path);
+    std::unique_ptr<Image> load_via_ffmpeg_memory(const uint8_t* data, size_t size,
+                                                  SourceFormat format);
     std::unique_ptr<Image> load_via_raw(const std::string& path);
 
     static bool is_raw_format(const std::string& path);
     static bool is_raw_format(SourceFormat format);
+
+    // True for the HEIF / AVIF family.  Used by load() to pick the
+    // FFmpeg-first backend order; everything else stays on the
+    // ImageMagick-first order.
+    static bool is_heif_family(const std::string& path);
+    static bool is_heif_family(SourceFormat format);
 };
 
 } // namespace idiff
