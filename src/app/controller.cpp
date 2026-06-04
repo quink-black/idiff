@@ -104,6 +104,44 @@ void AppController::sort_entries_by_name() {
     selection_->apply_remap(remap);
 }
 
+std::set<int> AppController::group_indices(int index) const {
+    const int n = static_cast<int>(library_->all().size());
+    if (index < 0 || index >= n) return {};
+
+    const auto& entries = library_->all();
+    std::string key = group_key_from_filename(entries[index].filename);
+
+    std::set<int> result;
+    for (int i = 0; i < n; ++i) {
+        if (group_key_from_filename(entries[i].filename) == key) {
+            result.insert(i);
+        }
+    }
+    return result;
+}
+
+bool AppController::select_group(int index) {
+    auto group = group_indices(index);
+    if (group.empty()) return false;
+    bool changed = selection_->replace(std::move(group));
+    if (changed) diff_->mark_dirty();
+    return changed;
+}
+
+bool AppController::select_range(int from, int to) {
+    const int n = static_cast<int>(library_->all().size());
+    if (n == 0) return false;
+    from = std::max(0, std::min(from, n - 1));
+    to = std::max(0, std::min(to, n - 1));
+    if (from > to) std::swap(from, to);
+
+    std::set<int> range;
+    for (int i = from; i <= to; ++i) range.insert(i);
+    bool changed = selection_->replace(std::move(range));
+    if (changed) diff_->mark_dirty();
+    return changed;
+}
+
 void AppController::move_entry(int from, int to) {
     if (from == to) return;
     const int n = static_cast<int>(library_->all().size());

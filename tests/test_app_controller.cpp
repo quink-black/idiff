@@ -738,3 +738,127 @@ TEST_CASE("AppController::load_images dedup mixed with new paths",
     // Should have exactly 2 entries, not 3.
     REQUIRE(controller.library().all().size() == 2);
 }
+
+TEST_CASE("AppController::group_indices returns matching entries by stem",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // kid.jpg and kid.png share the stem "kid"; other.png is alone.
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/other.png", "other.png"));
+
+    auto group = controller.group_indices(0);
+    REQUIRE(group == std::set<int>{0, 1});
+
+    group = controller.group_indices(1);
+    REQUIRE(group == std::set<int>{0, 1});
+
+    group = controller.group_indices(2);
+    REQUIRE(group == std::set<int>{2});
+}
+
+TEST_CASE("AppController::group_indices returns empty for out-of-range",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/x.png", "x.png"));
+
+    REQUIRE(controller.group_indices(-1).empty());
+    REQUIRE(controller.group_indices(99).empty());
+}
+
+TEST_CASE("AppController::select_group replaces selection with group",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/other.png", "other.png"));
+
+    // Start with "other" selected, then switch to kid's group.
+    controller.selection().insert(2);
+    bool changed = controller.select_group(0);
+
+    REQUIRE(changed);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::select_group no-op when already selected",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+
+    controller.selection().insert(0);
+    controller.selection().insert(1);
+
+    bool changed = controller.select_group(0);
+    REQUIRE_FALSE(changed);
+}
+
+TEST_CASE("AppController::select_range replaces selection",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a.png", "a.png"));
+    controller.library().add(make_entry("/b.png", "b.png"));
+    controller.library().add(make_entry("/c.png", "c.png"));
+    controller.library().add(make_entry("/d.png", "d.png"));
+
+    bool changed = controller.select_range(1, 3);
+    REQUIRE(changed);
+    REQUIRE(controller.selection().indices() == std::set<int>{1, 2, 3});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::select_range swaps reversed indices",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a.png", "a.png"));
+    controller.library().add(make_entry("/b.png", "b.png"));
+    controller.library().add(make_entry("/c.png", "c.png"));
+
+    bool changed = controller.select_range(2, 0);
+    REQUIRE(changed);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1, 2});
+}
+
+TEST_CASE("AppController::select_range clamps out-of-range indices",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a.png", "a.png"));
+    controller.library().add(make_entry("/b.png", "b.png"));
+
+    bool changed = controller.select_range(-5, 99);
+    REQUIRE(changed);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+}
+
+TEST_CASE("AppController::select_range no-op on empty library",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    bool changed = controller.select_range(0, 5);
+    REQUIRE_FALSE(changed);
+}
