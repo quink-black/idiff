@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-06-04
+
+### Added
+
+- **10-bit and semi-planar YUV raw streams**: Replace the hand-written
+  planar YUV-to-RGB decoder with FFmpeg's rawvideo demuxer +
+  VideoFilterGraph pipeline. Supports YUV420P10, YUV422P10, YUV444P10,
+  P010, and NV16 pixel formats with correct color-space handling
+  (BT.601/709/2020 matrix + primaries). The YUV parameter dialog
+  exposes color matrix, color primaries, color range, and transfer
+  function selectors; all settings are persisted and used to configure
+  the filter graph for accurate conversion.
+- **Native HEIF and AVIF loading via FFmpeg**: Decode .heic, .heif,
+  .hif, and .avif files through libavformat/libavcodec (already linked
+  for video) instead of relying on ImageMagick delegates. Multi-tile
+  grids are composed via an xstack-based filter graph. No new
+  third-party dependency required.
+- **Transfer function selector** in the YUV parameter dialog (BT.709,
+  PQ, HLG) persisted alongside the existing color metadata fields.
+
+### Changed
+
+- **YUV format names are now FFmpeg strings** (e.g. `"yuv420p"`,
+  `"nv12"`) instead of project-local enums. This eliminates the
+  translation layer and lets the dialog accept any format that the
+  installed FFmpeg build supports, including names not known at compile
+  time.
+- **LibRaw is now an optional system-detected dependency**. No longer
+  fetched from source; found via CMake config or pkg-config, otherwise
+  skipped. New `IDIFF_WITH_LIBRAW` CMake option (AUTO/ON/OFF).
+
+### Fixed
+
+- **Windows non-ASCII path crashes**: Embed a UTF-8 process manifest so
+  narrow-string Win32 entry points handle Chinese and other non-ASCII
+  paths correctly on Windows 10 1903+.
+- **Linux CI build failure**: FFmpeg on Ubuntu (6.x) is too old for the
+  rawvideo pipeline; the Linux CI job now builds with
+  `IDIFF_WITH_FFMPEG=OFF`.
+
 ## [0.2.1] - 2026-05-28
 
 ### Added
