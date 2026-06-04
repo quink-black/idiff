@@ -135,6 +135,7 @@ private:
 
     void open_file_dialog();
     void save_viewport_dialog();
+    void save_settings();
     // Open a comparison-config JSON file.  Lets the user describe several
     // groups of image URLs in a single document; we then download (with
     // disk caching) one group at a time and feed the cached local paths

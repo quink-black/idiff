@@ -135,7 +135,7 @@ struct App::State {
     QuitConfirmDialogState quit_confirm_dialog;
     bool show_inspector = true;
     bool show_image_list = true;
-    bool group_by_name = false;
+    bool group_by_name = true;
     int last_clicked_index = -1;  // anchor for Shift+click range select
     int sidebar_tab = 0;
 
@@ -344,6 +344,27 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Restore difference-mode options from the last session.
     state_->heatmap_color = static_cast<HeatmapColor>(state_->settings.heatmap_color);
     state_->diff_amplification = state_->settings.diff_amplification;
+
+    // Restore panel visibility and grouping.
+    state_->show_image_list = state_->settings.show_image_list;
+    state_->show_inspector = state_->settings.show_inspector;
+    state_->group_by_name = state_->settings.group_by_name;
+
+    // Restore upscale method.
+    state_->upscale_method = static_cast<UpscaleMethod>(
+        state_->settings.upscale_method);
+
+    // Restore viewport display options.
+    state_->viewport->set_channel_view_mode(
+        static_cast<ChannelViewMode>(state_->settings.channel_view_mode));
+    state_->viewport->set_view_background(
+        static_cast<ViewBackground>(state_->settings.view_background));
+    state_->viewport->set_mode(
+        static_cast<ComparisonMode>(state_->settings.comparison_mode));
+
+    // Restore image loader backend.
+    controller_->set_loader_backend(
+        static_cast<LoaderBackend>(state_->settings.loader_backend));
 
     NFD_Init();
 
@@ -970,6 +991,37 @@ void App::switch_to_comparison_group(int group_idx) {
 // it to disk.  The output is in image-pixel space (not window pixels), so
 // zoom / pan does not affect quality; the user always gets a full-resolution
 // snapshot of what the three comparison modes depict.
+void App::save_settings() {
+    auto& s = state_->settings;
+    auto& vp = *state_->viewport;
+
+    // Panel visibility and grouping.
+    s.show_image_list = state_->show_image_list;
+    s.show_inspector = state_->show_inspector;
+    s.group_by_name = state_->group_by_name;
+
+    // Viewport display options.
+    s.upscale_method = static_cast<int>(state_->upscale_method);
+    s.channel_view_mode = static_cast<int>(vp.channel_view_mode());
+    s.view_background = static_cast<int>(vp.view_background());
+    s.comparison_mode = static_cast<int>(vp.mode());
+    s.loader_backend = static_cast<int>(controller_->loader_backend());
+
+    // Viewport overlay options (may also be written directly by the
+    // viewport panel; sync from the viewport object so the settings
+    // file always reflects the current state).
+    s.show_ruler = vp.show_ruler();
+    s.show_grid = vp.show_grid();
+    s.grid_layout = static_cast<int>(vp.grid_layout());
+    s.grid_cols = vp.grid_cols();
+
+    // Difference-mode options.
+    s.heatmap_color = static_cast<int>(state_->heatmap_color);
+    s.diff_amplification = state_->diff_amplification;
+
+    s.save();
+}
+
 void App::save_viewport_dialog() {
     auto& vport = *state_->viewport;
     ComparisonMode mode = vport.mode();
@@ -1385,6 +1437,7 @@ void App::render_toolbar() {
             }
         }
     };
+    in.on_settings_changed = [this]() { save_settings(); };
     idiff::render_toolbar(in);
 }
 
@@ -1497,6 +1550,7 @@ void App::render_image_list() {
         selection_->clear();
         diff_service_->mark_dirty();
     };
+    in.on_settings_changed = [this]() { save_settings(); };
     idiff::render_image_list(in);
 }
 
@@ -1528,6 +1582,7 @@ void App::render_viewport() {
         update_pixel_inspector_hover();
         if (state_->pixel_panel) state_->pixel_panel->pin_current_hover();
     };
+    in.on_settings_changed = [this]() { save_settings(); };
     idiff::render_viewport_panel(in);
 }
 

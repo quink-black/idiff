@@ -43,6 +43,10 @@ struct ToolbarInputs {
     // Invoked after the user changed channel view or background so
     // the host can mark the affected textures dirty.  May be empty.
     std::function<void()> on_view_invalidated;
+
+    // Invoked after any persistent setting changed (panel visibility,
+    // upscale method, etc.) so the host can save settings.
+    std::function<void()> on_settings_changed;
 };
 
 void render_toolbar(const ToolbarInputs& in);

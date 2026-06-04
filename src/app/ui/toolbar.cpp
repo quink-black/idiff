@@ -38,7 +38,13 @@ void render_toolbar(const ToolbarInputs& in) {
 
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Image List", nullptr, in.show_image_list);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (in.on_settings_changed) in.on_settings_changed();
+        }
         ImGui::MenuItem("Inspector", nullptr, in.show_inspector);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (in.on_settings_changed) in.on_settings_changed();
+        }
 
         if (ImGui::BeginMenu("Image Loader")) {
             // The selectable items below set the *preferred backend
@@ -66,6 +72,7 @@ void render_toolbar(const ToolbarInputs& in) {
                                     available && !selected)) {
                     if (in.set_loader_backend) in.set_loader_backend(b);
                     if (in.on_reload_all_images) in.on_reload_all_images();
+                    if (in.on_settings_changed) in.on_settings_changed();
                 }
             };
             loader_item(LoaderBackend::ImageMagick);
@@ -104,15 +111,19 @@ void render_toolbar(const ToolbarInputs& in) {
 
         if (ImGui::Checkbox("Nearest", &is_nearest) && is_nearest) {
             method = UpscaleMethod::Nearest;
+            if (in.on_settings_changed) in.on_settings_changed();
         }
         if (ImGui::Checkbox("Bilinear", &is_bilinear) && is_bilinear) {
             method = UpscaleMethod::Bilinear;
+            if (in.on_settings_changed) in.on_settings_changed();
         }
         if (ImGui::Checkbox("Bicubic", &is_bicubic) && is_bicubic) {
             method = UpscaleMethod::Bicubic;
+            if (in.on_settings_changed) in.on_settings_changed();
         }
         if (ImGui::Checkbox("Lanczos", &is_lanczos) && is_lanczos) {
             method = UpscaleMethod::Lanczos;
+            if (in.on_settings_changed) in.on_settings_changed();
         }
 
         ImGui::EndMenu();
@@ -155,6 +166,7 @@ void render_toolbar(const ToolbarInputs& in) {
                 if (ImGui::Selectable(channel_view_mode_label(m), is_selected)) {
                     in.viewport->set_channel_view_mode(m);
                     if (in.on_view_invalidated) in.on_view_invalidated();
+                    if (in.on_settings_changed) in.on_settings_changed();
                 }
                 if (is_selected) ImGui::SetItemDefaultFocus();
             }
@@ -187,6 +199,7 @@ void render_toolbar(const ToolbarInputs& in) {
                 if (ImGui::Selectable(view_background_label(b), is_selected)) {
                     in.viewport->set_view_background(b);
                     if (in.on_view_invalidated) in.on_view_invalidated();
+                    if (in.on_settings_changed) in.on_settings_changed();
                 }
                 if (is_selected) ImGui::SetItemDefaultFocus();
             }

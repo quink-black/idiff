@@ -60,6 +60,10 @@ struct ViewportPanelInputs {
     // Save Viewport... toolbar button.  May be empty.
     std::function<void()> on_save_viewport;
 
+    // Invoked after any persistent setting changed so the host can
+    // synchronize state and save.  May be empty.
+    std::function<void()> on_settings_changed;
+
     // Fires once per Shift+left-click over the viewport when there is a
     // valid hover sample.  Used to forward the cursor position to the
     // pixel inspector as a "quick pin".  Coexists with pan / measure /
