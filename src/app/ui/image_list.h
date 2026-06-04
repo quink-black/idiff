@@ -77,6 +77,10 @@ struct ImageListInputs {
     std::function<void()> on_remove_all;
     std::function<void(int entry_idx)> on_edit_yuv_entry;
     std::function<void(int entry_idx)> on_open_sr_dialog;
+
+    // Invoked after any persistent setting changed (group_by_name,
+    // panel visibility) so the host can save settings.
+    std::function<void()> on_settings_changed;
 };
 
 void render_image_list(const ImageListInputs& in);

@@ -22,6 +22,10 @@ void render_image_list(const ImageListInputs& in) {
     auto& diff_service = *in.diff_service;
     const auto& sr_service = *in.sr_service;
 
+    // Track whether the panel close button was clicked so we can
+    // persist the change.
+    bool was_visible = in.show_image_list ? *in.show_image_list : true;
+
     ImGui::SetNextWindowSize(ImVec2(220, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Images", in.show_image_list)) {
         ImGui::End();
@@ -34,7 +38,9 @@ void render_image_list(const ImageListInputs& in) {
 
     // Group by Name toggle -- directly in the panel for easy access.
     if (in.group_by_name_ptr) {
-        ImGui::Checkbox("Group by Name", in.group_by_name_ptr);
+        if (ImGui::Checkbox("Group by Name", in.group_by_name_ptr)) {
+            if (in.on_settings_changed) in.on_settings_changed();
+        }
     }
 
     // Group selector, only shown when a comparison-config is active.
@@ -409,6 +415,11 @@ void render_image_list(const ImageListInputs& in) {
     }
 
     ImGui::End();
+
+    // Persist panel visibility if the close button was clicked.
+    if (in.show_image_list && *in.show_image_list != was_visible) {
+        if (in.on_settings_changed) in.on_settings_changed();
+    }
 }
 
 } // namespace idiff

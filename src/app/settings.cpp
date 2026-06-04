@@ -134,6 +134,22 @@ AppSettings AppSettings::load(const std::string& path) {
             s.sr_color_correction = val;
         } else if (key == "inspector.panel") {
             s.inspector_panel = std::atoi(val.c_str());
+        } else if (key == "panel.show_image_list") {
+            s.show_image_list = parse_bool(val, s.show_image_list);
+        } else if (key == "panel.show_inspector") {
+            s.show_inspector = parse_bool(val, s.show_inspector);
+        } else if (key == "panel.group_by_name") {
+            s.group_by_name = parse_bool(val, s.group_by_name);
+        } else if (key == "viewport.upscale_method") {
+            s.upscale_method = std::atoi(val.c_str());
+        } else if (key == "viewport.channel_view_mode") {
+            s.channel_view_mode = std::atoi(val.c_str());
+        } else if (key == "viewport.view_background") {
+            s.view_background = std::atoi(val.c_str());
+        } else if (key == "viewport.comparison_mode") {
+            s.comparison_mode = std::atoi(val.c_str());
+        } else if (key == "viewport.loader_backend") {
+            s.loader_backend = std::atoi(val.c_str());
         }
     }
     return s;
@@ -178,6 +194,14 @@ bool AppSettings::save(const std::string& path) const {
     out << "sr.model="             << sr_model << "\n";
     out << "sr.color_correction="  << sr_color_correction << "\n";
     out << "inspector.panel="      << inspector_panel << "\n";
+    out << "panel.show_image_list=" << (show_image_list ? "true" : "false") << "\n";
+    out << "panel.show_inspector="  << (show_inspector  ? "true" : "false") << "\n";
+    out << "panel.group_by_name="   << (group_by_name   ? "true" : "false") << "\n";
+    out << "viewport.upscale_method="    << upscale_method    << "\n";
+    out << "viewport.channel_view_mode=" << channel_view_mode << "\n";
+    out << "viewport.view_background="   << view_background   << "\n";
+    out << "viewport.comparison_mode="   << comparison_mode   << "\n";
+    out << "viewport.loader_backend="    << loader_backend    << "\n";
     if (!out) {
         last_error = "I/O error while writing settings";
         return false;

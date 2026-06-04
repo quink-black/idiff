@@ -48,6 +48,33 @@ struct AppSettings {
     // not have to reselect their preferred inspector tab on every launch.
     int inspector_panel = 0;
 
+    // Panel visibility.  Persisted so the workspace layout survives
+    // restarts.
+    bool show_image_list = true;
+    bool show_inspector = true;
+
+    // Image grouping.  When true, clicking an entry selects all
+    // entries sharing the same filename stem.
+    bool group_by_name = true;
+
+    // Upscale method: 0 = Nearest, 1 = Bilinear, 2 = Bicubic,
+    // 3 = Lanczos.
+    int upscale_method = 3;
+
+    // Channel view mode: 0 = None, 1 = RGB, 2 = R, 3 = G, 4 = B,
+    // 5 = AlphaGray, 6 = AlphaContour, 7 = Y, 8 = U, 9 = V.
+    int channel_view_mode = 0;
+
+    // View background: 0 = Black, 1 = White, 2 = Red, 3 = Green,
+    // 4 = Blue, 5 = DarkChecker, 6 = LightChecker.
+    int view_background = 5;
+
+    // Comparison mode: 0 = Split, 1 = Overlay, 2 = Difference.
+    int comparison_mode = 0;
+
+    // Image loader backend: 0 = ImageMagick, 1 = OpenCV, 2 = FFmpeg.
+    int loader_backend = 0;
+
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
     //   $XDG_CONFIG_HOME/idiff/settings.txt  (or $HOME/.config/idiff/settings.txt)

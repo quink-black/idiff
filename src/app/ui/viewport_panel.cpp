@@ -318,7 +318,10 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         ImGui::RadioButton("Overlay", &mode_int, 1);
         ImGui::SameLine();
         ImGui::RadioButton("Diff", &mode_int, 2);
-        vp.set_mode(static_cast<ComparisonMode>(mode_int));
+        if (static_cast<ComparisonMode>(mode_int) != mode) {
+            vp.set_mode(static_cast<ComparisonMode>(mode_int));
+            if (in.settings) in.settings->save();
+        }
 
         // Grid layout selector (only meaningful in Split/Diff modes)
         ComparisonMode current_mode = static_cast<ComparisonMode>(mode_int);
@@ -335,7 +338,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                 gl = static_cast<GridLayout>(gl_int);
                 vp.set_grid_layout(gl);
                 settings.grid_layout = gl_int;
-                settings.save();
+                if (in.on_settings_changed) in.on_settings_changed();
             }
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
@@ -349,7 +352,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                 if (ImGui::InputInt("C##grid_cols", &cols, 1, 1)) {
                     vp.set_grid_cols(cols);
                     settings.grid_cols = vp.grid_cols();
-                    settings.save();
+                    if (in.on_settings_changed) in.on_settings_changed();
                 }
                 ImGui::PopItemWidth();
             }
@@ -368,7 +371,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                 *in.heatmap_color = static_cast<HeatmapColor>(hc_int);
                 diff_service.mark_dirty();
                 settings.heatmap_color = hc_int;
-                settings.save();
+                if (in.on_settings_changed) in.on_settings_changed();
             }
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
@@ -382,7 +385,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                 *in.diff_amplification = static_cast<double>(amp);
                 diff_service.mark_dirty();
                 settings.diff_amplification = *in.diff_amplification;
-                settings.save();
+                if (in.on_settings_changed) in.on_settings_changed();
             }
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered()) {
@@ -443,7 +446,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             if (ImGui::Checkbox("Ruler", &ruler)) {
                 vp.set_show_ruler(ruler);
                 settings.show_ruler = ruler;
-                settings.save();
+                if (in.on_settings_changed) in.on_settings_changed();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Show coordinate rulers along image edges");
@@ -455,7 +458,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             if (ImGui::Checkbox("Grid", &grid)) {
                 vp.set_show_grid(grid);
                 settings.show_grid = grid;
-                settings.save();
+                if (in.on_settings_changed) in.on_settings_changed();
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Show grid overlay on images");
