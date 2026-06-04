@@ -237,6 +237,89 @@ void AppController::set_loader_backend(LoaderBackend backend) noexcept {
 
 namespace {
 
+// Build the right MediaSource for `path`, with a fallback so files
+// whose extension is not in our hard-coded video list (e.g. `.y4m`,
+// raw `.yuv`, `.ivf`) still get a chance through the FFmpeg-backed
+// VideoFileSource when the regular still-image loaders give up.
+//
+// On success returns an opened source plus a freshly decoded frame 0.
+// On failure returns {nullptr, nullptr} and writes a combined error
+// describing what every attempted backend reported, so the status
+// bar / log line mentions both the image and the video failure.
+struct OpenedSource {
+    std::unique_ptr<idiff::MediaSource> source;
+    std::unique_ptr<idiff::Image> first_frame;
+};
+
+OpenedSource open_media_source(const std::string& path,
+                               idiff::LoaderBackend backend,
+                               std::string& out_error) {
+    OpenedSource result;
+
+#ifdef IDIFF_HAVE_FFMPEG
+    // Files with a known video container extension always go straight
+    // to the video pipeline -- no point in burning two failed image
+    // decode passes first.
+    if (idiff::is_video_file_extension(path)) {
+        auto vsrc = std::make_unique<idiff::VideoFileSource>(path);
+        if (!vsrc->is_valid()) {
+            out_error = vsrc->last_error();
+            return result;
+        }
+        auto img = vsrc->read_frame(0);
+        if (!img) {
+            out_error = vsrc->last_error();
+            return result;
+        }
+        result.source = std::move(vsrc);
+        result.first_frame = std::move(img);
+        return result;
+    }
+#endif
+
+    // Try the still-image loaders first.  ImageLoader already
+    // fails over between OpenCV / ImageMagick / FFmpeg-image-decode
+    // internally, so a failure here means none of the configured
+    // image backends recognised the file.
+    auto isrc = std::make_unique<idiff::ImageFileSource>(path, backend);
+    auto img = isrc->read_frame(0);
+    if (img) {
+        result.source = std::move(isrc);
+        result.first_frame = std::move(img);
+        return result;
+    }
+    std::string image_err = isrc->last_error();
+
+#ifdef IDIFF_HAVE_FFMPEG
+    // Last-chance fallback: hand the file to FFmpeg as if it were a
+    // video container.  This is what makes `.y4m` and other formats
+    // FFmpeg knows about but our image stack does not load through
+    // the image dialog without forcing the user to rename the file.
+    auto vsrc = std::make_unique<idiff::VideoFileSource>(path);
+    if (vsrc->is_valid()) {
+        auto vimg = vsrc->read_frame(0);
+        if (vimg) {
+            result.source = std::move(vsrc);
+            result.first_frame = std::move(vimg);
+            return result;
+        }
+        out_error = "image: " + image_err
+                  + "; FFmpeg: " + vsrc->last_error();
+        return result;
+    }
+    out_error = "image: " + image_err
+              + "; FFmpeg: " + vsrc->last_error();
+    return result;
+#else
+    out_error = std::move(image_err);
+    return result;
+#endif
+}
+
+} // namespace
+
+namespace {
+
 // Recreate the MediaSource for an entry from its on-disk path so the
 // decoder re-opens the file (picking up new content after an external
 // mv or overwrite).  Returns the freshly decoded frame 0 on success,
@@ -244,24 +327,11 @@ namespace {
 // on failure the previous source is left intact.
 std::unique_ptr<idiff::Image>
 reopen_source(idiff::ImageEntry& entry, idiff::LoaderBackend backend) {
-    std::unique_ptr<idiff::MediaSource> new_source;
-#ifdef IDIFF_HAVE_FFMPEG
-    if (idiff::is_video_file_extension(entry.path)) {
-        auto vsrc = std::make_unique<idiff::VideoFileSource>(entry.path);
-        if (!vsrc->is_valid()) return nullptr;
-        new_source = std::move(vsrc);
-    } else
-#endif
-    {
-        new_source = std::make_unique<idiff::ImageFileSource>(
-            entry.path, backend);
-    }
-
-    auto img = new_source->read_frame(0);
-    if (!img) return nullptr;
-
-    entry.source = std::move(new_source);
-    return img;
+    std::string err;
+    auto opened = open_media_source(entry.path, backend, err);
+    if (!opened.first_frame) return nullptr;
+    entry.source = std::move(opened.source);
+    return std::move(opened.first_frame);
 }
 
 } // namespace
@@ -378,31 +448,24 @@ AppController::load_images(const std::vector<std::string>& paths) {
         }
         if (found_existing) continue;
 
-        // Create the appropriate MediaSource based on file type.
-        // Video container files (MP4, MKV, etc.) get a VideoFileSource
-        // that supports multi-frame decoding; everything else gets an
-        // ImageFileSource for single-frame still images.
-        std::unique_ptr<MediaSource> source;
-#ifdef IDIFF_HAVE_FFMPEG
-        if (is_video_file_extension(path)) {
-            auto vsrc = std::make_unique<VideoFileSource>(path);
-            if (!vsrc->is_valid()) {
-                const auto err = vsrc->last_error();
-                status_reporter_->set_status("Failed to load: " + path
-                                             + " (" + err + ")");
-                LOG_WARN("load_images failed: %s (%s)",
-                         path.c_str(), err.c_str());
-                continue;
-            }
-            source = std::move(vsrc);
-        } else
-#endif
-        {
-            source = std::make_unique<ImageFileSource>(path, loader_backend_);
+        // Open the file through whichever backend recognises it.
+        // open_media_source picks VideoFileSource for known video
+        // extensions, otherwise tries the still-image loaders first
+        // and finally falls back to FFmpeg so formats outside our
+        // hard-coded extension list (e.g. .y4m) still load.
+        std::string open_err;
+        auto opened = open_media_source(path, loader_backend_, open_err);
+        if (!opened.first_frame) {
+            status_reporter_->set_status("Failed to load: " + path
+                                         + " (" + open_err + ")");
+            LOG_WARN("load_images failed: %s (%s)",
+                     path.c_str(), open_err.c_str());
+            continue;
         }
+        auto source = std::move(opened.source);
+        auto img = std::move(opened.first_frame);
 
-        auto img = source->read_frame(0);
-        if (img) {
+        {
             ImageEntry entry;
             entry.path = path;
             auto sep = path.find_last_of("/\\");
@@ -422,12 +485,6 @@ AppController::load_images(const std::vector<std::string>& paths) {
 
             library_->add(std::move(entry));
             status_reporter_->set_status("Loaded: " + path);
-        } else {
-            const auto err = source->last_error();
-            status_reporter_->set_status("Failed to load: " + path
-                                         + " (" + err + ")");
-            LOG_WARN("load_images failed: %s (%s)",
-                     path.c_str(), err.c_str());
         }
     }
 
