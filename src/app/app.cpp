@@ -8,6 +8,9 @@
 #include "app/ui/toolbar.h"
 #include "app/ui/viewport_panel.h"
 #include "app/ui/yuv_dialog.h"
+#ifdef IDIFF_HAVE_FFMPEG
+#include "core/yuv_raw_source.h"
+#endif
 #include "app/viewport.h"
 #include "app/metrics_panel.h"
 #include "app/pixel_inspector_panel.h"
@@ -138,17 +141,19 @@ struct App::State {
     HeatmapColor heatmap_color = HeatmapColor::Inferno;
     double diff_amplification = 5.0;
 
-    // Persistent cross-session settings (currently just last-used YUV
-    // parameters).  Loaded in App::init(), saved whenever a YUV file is
-    // successfully added.
+    // Persistent cross-session settings (last-used YUV parameters
+    // and viewport preferences).  Loaded in App::init(), saved
+    // whenever a YUV file is successfully added.
     AppSettings settings;
 
+#ifdef IDIFF_HAVE_FFMPEG
     // YUV-parameters dialog state.  When yuv_dialog.pending_paths is
     // non-empty, frame() opens a modal for the front element; the user
     // either confirms (turning it into a YuvRawSource entry) or skips.
     // When yuv_dialog.editing_entry_idx >= 0 the dialog is in "edit"
     // mode targeting that entry instead of loading a new file.
     YuvDialogState yuv_dialog;
+#endif
 
     // File-watcher state.  The watcher runs a background thread that
     // monitors all loaded file paths; poll_file_watcher() drains events
@@ -324,9 +329,11 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Load persistent settings (last-used YUV params, etc.).  A missing
     // file is fine -- AppSettings::load falls back to defaults.
     state_->settings = AppSettings::load();
+#ifdef IDIFF_HAVE_FFMPEG
     // Seed the dialog with whatever the user last confirmed so they do
     // not have to retype resolution / pixel-format for each file.
     state_->yuv_dialog.params = state_->settings.last_yuv_params;
+#endif
     // Restore viewport overlay toggles from the last session.
     state_->viewport->set_show_ruler(state_->settings.show_ruler);
     state_->viewport->set_show_grid(state_->settings.show_grid);
@@ -541,7 +548,9 @@ void App::frame() {
     if (state_->show_inspector) render_right_sidebar();
     render_timeline_bar();
     render_status_bar();
+#ifdef IDIFF_HAVE_FFMPEG
     render_yuv_params_dialog();
+#endif
     render_error_dialog();
     render_quit_confirm_dialog();
     render_reload_dialog();
@@ -612,10 +621,13 @@ void App::load_images(const std::vector<std::string>& paths) {
         for (auto& c : ext_lower) {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
+#ifdef IDIFF_HAVE_FFMPEG
         if (ext_lower == ".yuv") {
             state_->yuv_dialog.pending_paths.push_back(path);
             state_->yuv_dialog.needs_open = true;
-        } else {
+        } else
+#endif
+        {
             still_paths.push_back(path);
         }
     }
@@ -653,6 +665,7 @@ void App::get_ref_index(int& ref_idx) const {
     controller_->get_ref_index(ref_idx);
 }
 
+#ifdef IDIFF_HAVE_FFMPEG
 bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) {
     auto source = std::make_unique<YuvRawSource>(path, params);
     if (source->frame_count() <= 0) {
@@ -807,6 +820,7 @@ void App::render_yuv_params_dialog() {
     };
     idiff::render_yuv_params_dialog(state_->yuv_dialog, cb);
 }
+#endif
 
 int App::timeline_length() const {
     return controller_->timeline_length();
@@ -844,7 +858,11 @@ void App::open_file_dialog() {
     // move on.  load_paths() takes care of routing after the fact.
     std::vector<FileDialogFilter> filters = {
         { "Images, videos, YUV streams, and comparison configs",
-          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,yuv,json,"
+          "png,jpg,jpeg,bmp,tiff,tif,webp,dng,cr2,nef,arw,"
+#ifdef IDIFF_HAVE_FFMPEG
+          "yuv,"
+#endif
+          "json,"
           "mp4,mkv,mov,avi,webm,flv,ts,m4v,wmv,mpg,mpeg,3gp" },
     };
     auto result = state_->file_dialog->open_multiple(filters);
@@ -1382,8 +1400,12 @@ void App::render_image_list() {
         if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
             return false;
         }
+#ifdef IDIFF_HAVE_FFMPEG
         return dynamic_cast<YuvRawSource*>(
             entries_view()[idx].source.get()) != nullptr;
+#else
+        return false;
+#endif
     };
     in.on_open_files = [this]() { open_file_dialog(); };
     in.on_switch_comparison_group =
@@ -1416,7 +1438,11 @@ void App::render_image_list() {
             remove_entry(i);
         }
     };
+#ifdef IDIFF_HAVE_FFMPEG
     in.on_edit_yuv_entry = [this](int idx) { begin_edit_yuv_entry(idx); };
+#else
+    in.on_edit_yuv_entry = nullptr;
+#endif
     in.on_open_sr_dialog = [this](int idx) {
         std::vector<std::filesystem::path> inputs;
         inputs.emplace_back(entries_view()[idx].path);

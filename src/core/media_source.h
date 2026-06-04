@@ -77,18 +77,36 @@ private:
     std::string last_error_;
 };
 
-// Pixel layouts supported for raw YUV streams.  All variants are planar
-// and 8-bit per component.
+// Pixel layouts supported for raw YUV streams.
 enum class YuvPixelFormat {
-    YUV420P,  // I420: Y plane followed by U plane (w/2 x h/2) then V plane
-    YUV422P,  // Y plane followed by U (w/2 x h) then V (w/2 x h)
-    YUV444P,  // Y, U, V all w x h
+    YUV420P,    // I420: planar 4:2:0, 8-bit
+    YUV422P,    // planar 4:2:2, 8-bit
+    YUV444P,    // planar 4:4:4, 8-bit
+    YUV420P10,  // planar 4:2:0, 10-bit (16-bit LE samples)
+    YUV422P10,  // planar 4:2:2, 10-bit (16-bit LE samples)
+    YUV444P10,  // planar 4:4:4, 10-bit (16-bit LE samples)
+    P010,       // semi-planar 4:2:0, 10-bit (Y + interleaved UV in 16-bit LE)
+    NV16,       // semi-planar 4:2:2, 8-bit (Y + interleaved UV)
 };
 
 // Color range of the YUV samples.
 enum class YuvColorRange {
-    Limited,  // BT.601-style: Y in [16, 235], UV in [16, 240]
-    Full,     // Y and UV in [0, 255]
+    Limited,  // MPEG: Y in [16, 235], UV in [16, 240]
+    Full,     // JPEG: Y and UV in [0, 255]
+};
+
+// YUV-to-RGB conversion matrix.
+enum class YuvColorMatrix {
+    BT601,      // SMPTE170M / BT.601 (SD)
+    BT709,      // BT.709 (HD)
+    BT2020_NCL, // BT.2020 non-constant luminance (UHD)
+};
+
+// Color primaries defining the RGB gamut.
+enum class YuvColorPrimaries {
+    BT601,  // SMPTE170M / BT.601
+    BT709,  // BT.709
+    BT2020, // BT.2020
 };
 
 // All parameters needed to decode a raw YUV file.  The file itself carries
@@ -98,6 +116,8 @@ struct YuvStreamParams {
     int height = 0;
     YuvPixelFormat pixel_format = YuvPixelFormat::YUV420P;
     YuvColorRange color_range = YuvColorRange::Limited;
+    YuvColorMatrix color_matrix = YuvColorMatrix::BT709;
+    YuvColorPrimaries color_primaries = YuvColorPrimaries::BT709;
 };
 
 // Bytes per frame for the given format, or 0 if params are invalid.
@@ -106,6 +126,11 @@ std::size_t yuv_frame_size_bytes(const YuvStreamParams& p) noexcept;
 // Short human-readable label, e.g. "YUV420P".
 const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept;
 const char* yuv_color_range_name(YuvColorRange r) noexcept;
+const char* yuv_color_matrix_name(YuvColorMatrix m) noexcept;
+const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept;
+
+// Bits per component for the given pixel format (8 or 10).
+int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept;
 
 // Heuristically guess YUV parameters from a file path.  Recognizes
 // patterns like `name_1920x1080_yuv420p.yuv` or `name_nv12_1280x720.yuv`.
@@ -114,33 +139,6 @@ const char* yuv_color_range_name(YuvColorRange r) noexcept;
 // can recognize.  Returns true if any field was populated.
 bool guess_yuv_params_from_filename(const std::string& path,
                                     YuvStreamParams& out);
-
-// MediaSource backed by a raw YUV file on disk.  Frames are read on
-// demand using the configured parameters.  The file is opened lazily on
-// the first successful read_frame().
-class YuvRawSource final : public MediaSource {
-public:
-    YuvRawSource(std::string path, const YuvStreamParams& params);
-    ~YuvRawSource() override;
-
-    int frame_count() const noexcept override { return frame_count_; }
-    int width() const noexcept override { return params_.width; }
-    int height() const noexcept override { return params_.height; }
-    const std::string& format_description() const noexcept override { return format_desc_; }
-    std::unique_ptr<Image> read_frame(int index) override;
-    const std::string& last_error() const noexcept override { return last_error_; }
-
-    const std::string& path() const noexcept { return path_; }
-    const YuvStreamParams& params() const noexcept { return params_; }
-
-private:
-    std::string path_;
-    YuvStreamParams params_;
-    std::size_t frame_bytes_ = 0;
-    int frame_count_ = 0;
-    std::string format_desc_;
-    std::string last_error_;
-};
 
 } // namespace idiff
 

@@ -28,6 +28,9 @@ class DiffService;
 class SrTaskService;
 class ComparisonConfigService;
 struct YuvStreamParams;
+#ifdef IDIFF_HAVE_FFMPEG
+class YuvRawSource;
+#endif
 struct SRDialogState;
 
 // Forward declaration is not sufficient because App stores a default-
@@ -159,6 +162,7 @@ private:
     void sort_entries_by_name();
     void move_entry(int from, int to);
 
+#ifdef IDIFF_HAVE_FFMPEG
     // Pop up the YUV-parameters modal for the next file in
     // pending_yuv_paths_, if any.  Called from frame() after panels so
     // the dialog renders on top.
@@ -176,6 +180,7 @@ private:
     // index.  Seeds the dialog with the entry's current parameters so the
     // user can fix a misconfigured stream without reloading.
     void begin_edit_yuv_entry(int index);
+#endif
 
     // Timeline bar rendered above the status bar when at least one entry
     // exposes more than one frame.  Returns the bar height in pixels

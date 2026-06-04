@@ -56,7 +56,11 @@ void render_yuv_params_dialog(YuvDialogState& state,
         ImGui::InputInt("Width",  &params.width);
         ImGui::InputInt("Height", &params.height);
 
-        const char* fmt_items[] = { "YUV420P (I420)", "YUV422P", "YUV444P" };
+        const char* fmt_items[] = {
+            "YUV420P (I420)", "YUV422P", "YUV444P",
+            "YUV420P10", "YUV422P10", "YUV444P10",
+            "P010", "NV16"
+        };
         int fmt_idx = static_cast<int>(params.pixel_format);
         if (ImGui::Combo("Pixel format", &fmt_idx, fmt_items,
                          IM_ARRAYSIZE(fmt_items))) {
@@ -70,10 +74,24 @@ void render_yuv_params_dialog(YuvDialogState& state,
             params.color_range = static_cast<YuvColorRange>(range_idx);
         }
 
+        const char* matrix_items[] = { "BT.601", "BT.709", "BT.2020 NCL" };
+        int matrix_idx = static_cast<int>(params.color_matrix);
+        if (ImGui::Combo("Color matrix", &matrix_idx, matrix_items,
+                         IM_ARRAYSIZE(matrix_items))) {
+            params.color_matrix = static_cast<YuvColorMatrix>(matrix_idx);
+        }
+
+        const char* primaries_items[] = { "BT.601", "BT.709", "BT.2020" };
+        int primaries_idx = static_cast<int>(params.color_primaries);
+        if (ImGui::Combo("Color primaries", &primaries_idx, primaries_items,
+                         IM_ARRAYSIZE(primaries_items))) {
+            params.color_primaries = static_cast<YuvColorPrimaries>(primaries_idx);
+        }
+
         std::size_t frame_bytes = yuv_frame_size_bytes(params);
         if (frame_bytes == 0) {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
-                "Invalid: width/height must be positive (and even for 4:2:0/4:2:2)");
+                "Invalid: width/height must be positive (and even for subsampled formats)");
         } else {
             std::error_code ec;
             auto fsize = std::filesystem::file_size(current_path, ec);
@@ -82,8 +100,10 @@ void render_yuv_params_dialog(YuvDialogState& state,
                                      static_cast<size_t>(frame_bytes));
             } else {
                 int fc = static_cast<int>(fsize / frame_bytes);
-                ImGui::Text("Frame size: %zu bytes  |  File has %d frame(s)",
-                            static_cast<size_t>(frame_bytes), fc);
+            ImGui::Text("Frame size: %zu bytes (%d-bit)  |  File has %d frame(s)",
+                        static_cast<size_t>(frame_bytes),
+                        yuv_pixel_format_bit_depth(params.pixel_format),
+                        fc);
                 if (fsize % frame_bytes != 0) {
                     ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
                         "Warning: file size is not an exact multiple of frame size");
