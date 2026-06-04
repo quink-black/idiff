@@ -37,9 +37,11 @@ struct ImageListInputs {
     // "Super Resolution..." context-menu item.
     bool sr_enabled;
 
-    // When true, clicking an entry selects all entries sharing its
-    // group key (filename stem before the last extension dot).
-    bool group_by_name = false;
+    // "Group by Name" toggle.  When true, clicking an entry selects
+    // all entries sharing its group key (filename stem before the
+    // last extension dot).  The checkbox in the panel writes through
+    // this pointer.
+    bool* group_by_name_ptr = nullptr;
 
     // Current "anchor" for Shift+click range selection.  -1 means no
     // anchor.  Owned by App::State; the renderer updates it on click.
