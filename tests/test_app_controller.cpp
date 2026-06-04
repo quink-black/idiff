@@ -495,6 +495,15 @@ TEST_CASE("AppController::load_images reports failures via the status reporter",
     // user can see what went wrong.
     REQUIRE_FALSE(reporter.current_status.empty());
     REQUIRE(reporter.current_status.find("Failed to load:") != std::string::npos);
+
+    // It must also raise a modal so a status-bar glance is not the
+    // only chance the user has to notice the failure.
+    REQUIRE(reporter.error_titles.size() == 1);
+    REQUIRE(reporter.error_titles.front().find("Failed to load")
+            != std::string::npos);
+    REQUIRE(reporter.error_messages.size() == 1);
+    REQUIRE(reporter.error_messages.front().find("/no/such/file.png")
+            != std::string::npos);
 }
 
 TEST_CASE("AppController::load_comparison_config reports parse failure",

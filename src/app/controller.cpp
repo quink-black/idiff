@@ -343,6 +343,7 @@ void AppController::reload_all_images() {
     int reloaded = 0;
     int failed = 0;
     std::string last_fail;
+    std::string failure_details;
     for (auto& entry : entries) {
         auto img = reopen_source(entry, loader_backend_);
         if (img) {
@@ -355,6 +356,8 @@ void AppController::reload_all_images() {
             std::string err = entry.source ? entry.source->last_error()
                                            : "no source";
             last_fail = entry.filename + " (" + err + ")";
+            if (!failure_details.empty()) failure_details += "\n";
+            failure_details += entry.filename + "\n  " + err;
         }
     }
     diff_->mark_dirty();
@@ -369,6 +372,13 @@ void AppController::reload_all_images() {
                + ", " + std::to_string(failed) + " failed: " + last_fail;
     }
     status_reporter_->set_status(status);
+
+    // Status-bar text is easy to miss, especially when several
+    // entries failed and only the last one fits.  Raise a modal so
+    // the user actually notices and sees every failure at once.
+    if (failed > 0) {
+        status_reporter_->show_error("Reload failed", failure_details);
+    }
 }
 
 void AppController::reload_entry(int index) {
@@ -387,6 +397,8 @@ void AppController::reload_entry(int index) {
                                        : "no source";
         status_reporter_->set_status("Reload failed: " + entry.filename
                                      + " (" + err + ")");
+        status_reporter_->show_error("Reload failed",
+                                     entry.filename + "\n  " + err);
     }
 }
 
@@ -424,6 +436,16 @@ AppController::load_images(const std::vector<std::string>& paths) {
     // append-style calls.
     const bool was_empty = library_->all().empty();
 
+    // Collect every failed path so we can raise a single modal at
+    // the end.  The status bar already gets a per-file note via
+    // set_status() below, but that text is trivial to miss when the
+    // user picked a batch and walked away.
+    struct LoadFailure {
+        std::string path;
+        std::string error;
+    };
+    std::vector<LoadFailure> failures;
+
     for (const auto& path : paths) {
         // Deduplicate: if this path is already loaded, refresh the
         // existing entry instead of appending a duplicate.
@@ -460,6 +482,7 @@ AppController::load_images(const std::vector<std::string>& paths) {
                                          + " (" + open_err + ")");
             LOG_WARN("load_images failed: %s (%s)",
                      path.c_str(), open_err.c_str());
+            failures.push_back({path, open_err});
             continue;
         }
         auto source = std::move(opened.source);
@@ -491,6 +514,19 @@ AppController::load_images(const std::vector<std::string>& paths) {
     sort_entries_by_name();
     compute_display_labels();
     diff_->mark_dirty();
+
+    if (!failures.empty()) {
+        std::string body;
+        for (const auto& f : failures) {
+            if (!body.empty()) body += "\n\n";
+            body += f.path + "\n  " + f.error;
+        }
+        const std::string title = failures.size() == 1
+            ? std::string("Failed to load image")
+            : ("Failed to load " + std::to_string(failures.size())
+               + " images");
+        status_reporter_->show_error(title, body);
+    }
 
     // First-load convenience: pick the first up-to-two entries as A
     // and B and flag them for texture refresh.  The viewport mode
