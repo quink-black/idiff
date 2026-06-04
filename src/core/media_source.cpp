@@ -91,108 +91,7 @@ std::unique_ptr<Image> ImageFileSource::read_frame(int index) {
 
 // -------- YUV helpers --------
 
-const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept {
-    switch (f) {
-        case YuvPixelFormat::YUV420P:   return "YUV420P";
-        case YuvPixelFormat::YUV422P:   return "YUV422P";
-        case YuvPixelFormat::YUV444P:   return "YUV444P";
-        case YuvPixelFormat::YUV420P10: return "YUV420P10";
-        case YuvPixelFormat::YUV422P10: return "YUV422P10";
-        case YuvPixelFormat::YUV444P10: return "YUV444P10";
-        case YuvPixelFormat::P010:      return "P010";
-        case YuvPixelFormat::NV16:      return "NV16";
-    }
-    return "YUV?";
-}
-
-const char* yuv_color_range_name(YuvColorRange r) noexcept {
-    switch (r) {
-        case YuvColorRange::Limited: return "Limited";
-        case YuvColorRange::Full:    return "Full";
-    }
-    return "?";
-}
-
-const char* yuv_color_matrix_name(YuvColorMatrix m) noexcept {
-    switch (m) {
-        case YuvColorMatrix::BT601:      return "BT.601";
-        case YuvColorMatrix::BT709:      return "BT.709";
-        case YuvColorMatrix::BT2020_NCL: return "BT.2020 NCL";
-    }
-    return "?";
-}
-
-const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept {
-    switch (p) {
-        case YuvColorPrimaries::BT601:  return "BT.601";
-        case YuvColorPrimaries::BT709:  return "BT.709";
-        case YuvColorPrimaries::BT2020: return "BT.2020";
-    }
-    return "?";
-}
-
-const char* yuv_transfer_name(YuvTransfer t) noexcept {
-    switch (t) {
-        case YuvTransfer::BT709: return "BT.709";
-        case YuvTransfer::PQ:    return "PQ";
-        case YuvTransfer::HLG:   return "HLG";
-    }
-    return "?";
-}
-
-int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept {
-    switch (f) {
-        case YuvPixelFormat::YUV420P:
-        case YuvPixelFormat::YUV422P:
-        case YuvPixelFormat::YUV444P:
-        case YuvPixelFormat::NV16:
-            return 8;
-        case YuvPixelFormat::YUV420P10:
-        case YuvPixelFormat::YUV422P10:
-        case YuvPixelFormat::YUV444P10:
-        case YuvPixelFormat::P010:
-            return 10;
-    }
-    return 0;
-}
-
-std::size_t yuv_frame_size_bytes(const YuvStreamParams& p) noexcept {
-    if (p.width <= 0 || p.height <= 0) return 0;
-    const auto W = static_cast<std::size_t>(p.width);
-    const auto H = static_cast<std::size_t>(p.height);
-
-    switch (p.pixel_format) {
-        case YuvPixelFormat::YUV420P:
-            if ((p.width & 1) || (p.height & 1)) return 0;
-            return W * H * 3 / 2;
-        case YuvPixelFormat::YUV422P:
-            if (p.width & 1) return 0;
-            return W * H * 2;
-        case YuvPixelFormat::YUV444P:
-            return W * H * 3;
-        case YuvPixelFormat::YUV420P10:
-            if ((p.width & 1) || (p.height & 1)) return 0;
-            return W * H * 2 + (W / 2) * (H / 2) * 2 * 2;
-        case YuvPixelFormat::YUV422P10:
-            if (p.width & 1) return 0;
-            return W * H * 2 + (W / 2) * H * 2 * 2;
-        case YuvPixelFormat::YUV444P10:
-            return W * H * 2 * 3;
-        case YuvPixelFormat::P010:
-            if ((p.width & 1) || (p.height & 1)) return 0;
-            // Y: W*H pixels, 16-bit LE each; UV: (W/2)*(H/2) pairs, 16-bit LE each
-            return W * H * 2 + (W / 2) * (H / 2) * 2 * 2;
-        case YuvPixelFormat::NV16:
-            if (p.width & 1) return 0;
-            // Y: W*H bytes; UV interleaved: W*H bytes (W/2 pairs per row, 2 bytes each)
-            return W * H + W * H;
-    }
-    return 0;
-}
-
 bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& out) {
-    // Work on just the basename so directory names can't pollute the
-    // match.  Lowercased so regexes stay simple.
     std::string name;
     auto sep = path.find_last_of("/\\");
     name = (sep != std::string::npos) ? path.substr(sep + 1) : path;
@@ -200,7 +99,7 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
 
     bool changed = false;
 
-    // Resolution:  WIDTHxHEIGHT anywhere in the name, e.g. 1920x1080.
+    // Resolution: WIDTHxHEIGHT anywhere in the name.
     std::smatch m;
     std::regex re_res(R"((\d{2,5})x(\d{2,5}))");
     if (std::regex_search(name, m, re_res)) {
@@ -213,24 +112,27 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
         }
     }
 
-    // Pixel format keywords.  Longer/more-specific strings must be
-    // checked before shorter ones so "yuv420p10" is not swallowed by
-    // "yuv420p".
+    // Pixel format keywords.  Longer/more-specific strings first so
+    // "yuv420p10le" is not swallowed by "yuv420p10" or "yuv420p".
+    // These map directly to FFmpeg pixel format names.
     struct FmtKeyword {
         const char* key;
-        YuvPixelFormat fmt;
+        const char* fmt;
     };
     const FmtKeyword kws[] = {
-        {"yuv420p10", YuvPixelFormat::YUV420P10},
-        {"yuv422p10", YuvPixelFormat::YUV422P10},
-        {"yuv444p10", YuvPixelFormat::YUV444P10},
-        {"p010le",    YuvPixelFormat::P010},
-        {"p010",      YuvPixelFormat::P010},
-        {"nv16",      YuvPixelFormat::NV16},
-        {"yuv420p",   YuvPixelFormat::YUV420P},
-        {"yuv422p",   YuvPixelFormat::YUV422P},
-        {"yuv444p",   YuvPixelFormat::YUV444P},
-        {"i420",      YuvPixelFormat::YUV420P},
+        {"yuv420p10le", "yuv420p10le"},
+        {"yuv422p10le", "yuv422p10le"},
+        {"yuv444p10le", "yuv444p10le"},
+        {"yuv420p10",   "yuv420p10le"},
+        {"yuv422p10",   "yuv422p10le"},
+        {"yuv444p10",   "yuv444p10le"},
+        {"p010le",      "p010le"},
+        {"p010",        "p010le"},
+        {"nv12",        "nv12"},
+        {"yuv420p",     "yuv420p"},
+        {"yuv422p",     "yuv422p"},
+        {"yuv444p",     "yuv444p"},
+        {"i420",        "yuv420p"},
     };
     for (const auto& kw : kws) {
         if (name.find(kw.key) != std::string::npos) {
@@ -243,40 +145,40 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
     // Color range hints.
     if (name.find("fullrange") != std::string::npos ||
         name.find("full") != std::string::npos) {
-        out.color_range = YuvColorRange::Full;
+        out.color_range = "pc";
         changed = true;
     } else if (name.find("limited") != std::string::npos ||
                name.find("tv") != std::string::npos) {
-        out.color_range = YuvColorRange::Limited;
+        out.color_range = "tv";
         changed = true;
     }
 
-    // Color matrix hints.  bt2020 must be checked before bt601/bt709
-    // because "bt2020" contains neither "bt601" nor "bt709" as a
-    // substring, but checking the longer one first is safer.
+    // Color metadata as FFmpeg names.  bt2020 checked first because it
+    // is longer and does not contain bt601/bt709 as substrings.
     if (name.find("bt2020") != std::string::npos) {
-        out.color_matrix = YuvColorMatrix::BT2020_NCL;
-        out.color_primaries = YuvColorPrimaries::BT2020;
+        out.color_matrix = "bt2020-nccl";
+        out.color_primaries = "bt2020";
         changed = true;
     } else if (name.find("bt709") != std::string::npos) {
-        out.color_matrix = YuvColorMatrix::BT709;
-        out.color_primaries = YuvColorPrimaries::BT709;
+        out.color_matrix = "bt709";
+        out.color_primaries = "bt709";
         changed = true;
     } else if (name.find("bt601") != std::string::npos ||
                name.find("smpte170m") != std::string::npos) {
-        out.color_matrix = YuvColorMatrix::BT601;
-        out.color_primaries = YuvColorPrimaries::BT601;
+        out.color_matrix = "smpte170m";
+        out.color_primaries = "smpte170m";
         changed = true;
     }
 
-    // Transfer function hints.
+    // Transfer function hints as FFmpeg names.
     if (name.find("smpte2084") != std::string::npos ||
         name.find("pq") != std::string::npos) {
-        out.transfer = YuvTransfer::PQ;
+        out.transfer = "smpte2084";
         changed = true;
     } else if (name.find("hlg") != std::string::npos ||
+               name.find("arib-std-b67") != std::string::npos ||
                name.find("arib_std-b67") != std::string::npos) {
-        out.transfer = YuvTransfer::HLG;
+        out.transfer = "arib-std-b67";
         changed = true;
     }
 

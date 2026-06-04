@@ -77,69 +77,29 @@ private:
     std::string last_error_;
 };
 
-// Pixel layouts supported for raw YUV streams.
-enum class YuvPixelFormat {
-    YUV420P,    // I420: planar 4:2:0, 8-bit
-    YUV422P,    // planar 4:2:2, 8-bit
-    YUV444P,    // planar 4:4:4, 8-bit
-    YUV420P10,  // planar 4:2:0, 10-bit (16-bit LE samples)
-    YUV422P10,  // planar 4:2:2, 10-bit (16-bit LE samples)
-    YUV444P10,  // planar 4:4:4, 10-bit (16-bit LE samples)
-    P010,       // semi-planar 4:2:0, 10-bit (Y + interleaved UV in 16-bit LE)
-    NV16,       // semi-planar 4:2:2, 8-bit (Y + interleaved UV)
-};
-
-// Color range of the YUV samples.
-enum class YuvColorRange {
-    Limited,  // MPEG: Y in [16, 235], UV in [16, 240]
-    Full,     // JPEG: Y and UV in [0, 255]
-};
-
-// YUV-to-RGB conversion matrix.
-enum class YuvColorMatrix {
-    BT601,      // SMPTE170M / BT.601 (SD)
-    BT709,      // BT.709 (HD)
-    BT2020_NCL, // BT.2020 non-constant luminance (UHD)
-};
-
-// Color primaries defining the RGB gamut.
-enum class YuvColorPrimaries {
-    BT601,  // SMPTE170M / BT.601
-    BT709,  // BT.709
-    BT2020, // BT.2020
-};
-
-// Transfer characteristic (opto-electronic transfer function).
-enum class YuvTransfer {
-    BT709,  // BT.709 / SMPTE170M (SDR)
-    PQ,     // SMPTE ST 2084 (HDR perceptual quantizer)
-    HLG,    // ARIB STD-B67 (HDR hybrid log-gamma)
-};
-
 // All parameters needed to decode a raw YUV file.  The file itself carries
 // no metadata so the user (or a filename-based guess) must supply these.
+//
+// All format/metadata fields store FFmpeg names as strings.  This gives
+// full coverage of every value FFmpeg supports without needing to mirror
+// FFmpeg's enum constants:
+//
+//   pixel_format:  FFmpeg pixel format name, e.g. "yuv420p", "nv12",
+//                  "p010le", "yuv444p12le".
+//   color_range:   FFmpeg color range name: "tv" or "pc".
+//   color_matrix:  FFmpeg color space name, e.g. "bt709", "bt2020-nccl".
+//   color_primaries: FFmpeg color primaries name, e.g. "bt709", "bt2020".
+//   transfer:      FFmpeg transfer characteristic name, e.g. "bt709",
+//                  "smpte2084", "arib-std-b67".
 struct YuvStreamParams {
     int width = 0;
     int height = 0;
-    YuvPixelFormat pixel_format = YuvPixelFormat::YUV420P;
-    YuvColorRange color_range = YuvColorRange::Limited;
-    YuvColorMatrix color_matrix = YuvColorMatrix::BT709;
-    YuvColorPrimaries color_primaries = YuvColorPrimaries::BT709;
-    YuvTransfer transfer = YuvTransfer::BT709;
+    std::string pixel_format = "yuv420p";
+    std::string color_range = "tv";
+    std::string color_matrix = "bt709";
+    std::string color_primaries = "bt709";
+    std::string transfer = "bt709";
 };
-
-// Bytes per frame for the given format, or 0 if params are invalid.
-std::size_t yuv_frame_size_bytes(const YuvStreamParams& p) noexcept;
-
-// Short human-readable label, e.g. "YUV420P".
-const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept;
-const char* yuv_color_range_name(YuvColorRange r) noexcept;
-const char* yuv_color_matrix_name(YuvColorMatrix m) noexcept;
-const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept;
-const char* yuv_transfer_name(YuvTransfer t) noexcept;
-
-// Bits per component for the given pixel format (8 or 10).
-int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept;
 
 // Heuristically guess YUV parameters from a file path.  Recognizes
 // patterns like `name_1920x1080_yuv420p.yuv` or `name_nv12_1280x720.yuv`.

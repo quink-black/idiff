@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <system_error>
 
@@ -19,8 +20,6 @@ void render_yuv_params_dialog(YuvDialogState& state,
             ? callbacks.resolve_entry_path(state.editing_entry_idx)
             : std::string();
         if (current_path.empty()) {
-            // Entry disappeared (removed, reordered out of range).
-            // Abort silently so the dialog returns to idle.
             state.editing_entry_idx = -1;
             return;
         }
@@ -35,7 +34,6 @@ void render_yuv_params_dialog(YuvDialogState& state,
                 : YuvStreamParams{};
             guess_yuv_params_from_filename(current_path, state.params);
         }
-        // Edit mode: caller already seeded params; do not overwrite.
         ImGui::OpenPopup("YUV Parameters");
         state.needs_open = false;
     }
@@ -56,65 +54,79 @@ void render_yuv_params_dialog(YuvDialogState& state,
         ImGui::InputInt("Width",  &params.width);
         ImGui::InputInt("Height", &params.height);
 
-        const char* fmt_items[] = {
-            "YUV420P (I420)", "YUV422P", "YUV444P",
-            "YUV420P10", "YUV422P10", "YUV444P10",
-            "P010", "NV16"
-        };
-        int fmt_idx = static_cast<int>(params.pixel_format);
-        if (ImGui::Combo("Pixel format", &fmt_idx, fmt_items,
-                         IM_ARRAYSIZE(fmt_items))) {
-            params.pixel_format = static_cast<YuvPixelFormat>(fmt_idx);
+        // Pixel format: FFmpeg name text input.
+        char pix_fmt_buf[64];
+        std::strncpy(pix_fmt_buf, params.pixel_format.c_str(),
+                     sizeof(pix_fmt_buf) - 1);
+        pix_fmt_buf[sizeof(pix_fmt_buf) - 1] = '\0';
+        if (ImGui::InputText("Pixel format", pix_fmt_buf, sizeof(pix_fmt_buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
+            params.pixel_format = pix_fmt_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FFmpeg pixel format name, e.g. yuv420p, yuv420p10le, nv12, p010le, yuv444p12le");
         }
 
-        const char* range_items[] = { "Limited (TV, 16-235)", "Full (PC, 0-255)" };
-        int range_idx = static_cast<int>(params.color_range);
-        if (ImGui::Combo("Color range", &range_idx, range_items,
-                         IM_ARRAYSIZE(range_items))) {
-            params.color_range = static_cast<YuvColorRange>(range_idx);
+        // Color range: FFmpeg name text input.
+        char range_buf[16];
+        std::strncpy(range_buf, params.color_range.c_str(),
+                     sizeof(range_buf) - 1);
+        range_buf[sizeof(range_buf) - 1] = '\0';
+        if (ImGui::InputText("Color range", range_buf, sizeof(range_buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
+            params.color_range = range_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FFmpeg color range: tv (limited) or pc (full)");
         }
 
-        const char* matrix_items[] = { "BT.601", "BT.709", "BT.2020 NCL" };
-        int matrix_idx = static_cast<int>(params.color_matrix);
-        if (ImGui::Combo("Color matrix", &matrix_idx, matrix_items,
-                         IM_ARRAYSIZE(matrix_items))) {
-            params.color_matrix = static_cast<YuvColorMatrix>(matrix_idx);
+        // Color matrix: FFmpeg name text input.
+        char matrix_buf[64];
+        std::strncpy(matrix_buf, params.color_matrix.c_str(),
+                     sizeof(matrix_buf) - 1);
+        matrix_buf[sizeof(matrix_buf) - 1] = '\0';
+        if (ImGui::InputText("Color matrix", matrix_buf, sizeof(matrix_buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
+            params.color_matrix = matrix_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FFmpeg color space name, e.g. bt709, smpte170m, bt2020-nccl");
         }
 
-        const char* primaries_items[] = { "BT.601", "BT.709", "BT.2020" };
-        int primaries_idx = static_cast<int>(params.color_primaries);
-        if (ImGui::Combo("Color primaries", &primaries_idx, primaries_items,
-                         IM_ARRAYSIZE(primaries_items))) {
-            params.color_primaries = static_cast<YuvColorPrimaries>(primaries_idx);
+        // Color primaries: FFmpeg name text input.
+        char primaries_buf[64];
+        std::strncpy(primaries_buf, params.color_primaries.c_str(),
+                     sizeof(primaries_buf) - 1);
+        primaries_buf[sizeof(primaries_buf) - 1] = '\0';
+        if (ImGui::InputText("Color primaries", primaries_buf,
+                             sizeof(primaries_buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
+            params.color_primaries = primaries_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FFmpeg color primaries name, e.g. bt709, smpte170m, bt2020");
         }
 
-        const char* transfer_items[] = { "BT.709 (SDR)", "PQ / ST 2084 (HDR)", "HLG (HDR)" };
-        int transfer_idx = static_cast<int>(params.transfer);
-        if (ImGui::Combo("Transfer", &transfer_idx, transfer_items,
-                         IM_ARRAYSIZE(transfer_items))) {
-            params.transfer = static_cast<YuvTransfer>(transfer_idx);
+        // Transfer: FFmpeg name text input.
+        char transfer_buf[64];
+        std::strncpy(transfer_buf, params.transfer.c_str(),
+                     sizeof(transfer_buf) - 1);
+        transfer_buf[sizeof(transfer_buf) - 1] = '\0';
+        if (ImGui::InputText("Transfer", transfer_buf, sizeof(transfer_buf),
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
+            params.transfer = transfer_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FFmpeg transfer name, e.g. bt709, smpte2084, arib-std-b67");
         }
 
-        std::size_t frame_bytes = yuv_frame_size_bytes(params);
-        if (frame_bytes == 0) {
-            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
-                "Invalid: width/height must be positive (and even for subsampled formats)");
-        } else {
+        // Show file info if available.
+        if (params.width > 0 && params.height > 0) {
             std::error_code ec;
             auto fsize = std::filesystem::file_size(current_path, ec);
-            if (ec) {
-                ImGui::TextDisabled("Frame size: %zu bytes",
-                                     static_cast<size_t>(frame_bytes));
-            } else {
-                int fc = static_cast<int>(fsize / frame_bytes);
-            ImGui::Text("Frame size: %zu bytes (%d-bit)  |  File has %d frame(s)",
-                        static_cast<size_t>(frame_bytes),
-                        yuv_pixel_format_bit_depth(params.pixel_format),
-                        fc);
-                if (fsize % frame_bytes != 0) {
-                    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
-                        "Warning: file size is not an exact multiple of frame size");
-                }
+            if (!ec) {
+                ImGui::TextDisabled("File: %zu bytes",
+                                    static_cast<size_t>(fsize));
             }
         }
 
