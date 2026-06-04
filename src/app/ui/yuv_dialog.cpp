@@ -9,6 +9,142 @@
 
 namespace idiff {
 
+namespace {
+
+// A predefined Combo entry: a human-readable label paired with the
+// FFmpeg name actually written into YuvStreamParams.
+struct ComboOption {
+    const char* label;
+    const char* value;
+};
+
+// Pixel format presets.  The dialog appends a synthetic "Custom..."
+// entry so users can still type any FFmpeg pixel format name FFmpeg
+// supports, even ones not enumerated here.
+constexpr ComboOption kPixelFormats[] = {
+    {"YUV420P 8-bit (yuv420p)",       "yuv420p"},
+    {"YUV422P 8-bit (yuv422p)",       "yuv422p"},
+    {"YUV444P 8-bit (yuv444p)",       "yuv444p"},
+    {"YUV420P 10-bit (yuv420p10le)",  "yuv420p10le"},
+    {"YUV422P 10-bit (yuv422p10le)",  "yuv422p10le"},
+    {"YUV444P 10-bit (yuv444p10le)",  "yuv444p10le"},
+    {"NV12 (nv12)",                   "nv12"},
+    {"NV21 (nv21)",                   "nv21"},
+    {"P010 10-bit (p010le)",          "p010le"},
+};
+
+constexpr ComboOption kColorRanges[] = {
+    {"Limited / TV (tv)", "tv"},
+    {"Full / PC (pc)",    "pc"},
+};
+
+constexpr ComboOption kColorMatrices[] = {
+    {"BT.601 (smpte170m)",   "smpte170m"},
+    {"BT.709 (bt709)",       "bt709"},
+    {"BT.2020 NCL (bt2020nc)", "bt2020nc"},
+};
+
+constexpr ComboOption kColorPrimaries[] = {
+    {"BT.601 (smpte170m)", "smpte170m"},
+    {"BT.709 (bt709)",     "bt709"},
+    {"BT.2020 (bt2020)",   "bt2020"},
+};
+
+constexpr ComboOption kTransfers[] = {
+    {"BT.709 / SDR (bt709)",   "bt709"},
+    {"sRGB (iec61966-2-1)",    "iec61966-2-1"},
+    {"PQ / ST 2084 (smpte2084)", "smpte2084"},
+    {"HLG (arib-std-b67)",     "arib-std-b67"},
+};
+
+// Find the option whose value equals `current`.  Returns -1 when not
+// found, signaling the caller to fall back (Custom for pixel format,
+// or default-to-first for the closed enums).
+template <std::size_t N>
+int find_option_index(const ComboOption (&options)[N],
+                      const std::string& current) {
+    for (std::size_t i = 0; i < N; ++i) {
+        if (current == options[i].value) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+// Render a closed-set Combo whose values are constrained to entries in
+// `options`.  When `value` matches no preset the first entry is
+// selected and written back so the params never carry a stale name.
+template <std::size_t N>
+void render_closed_combo(const char* label,
+                         const ComboOption (&options)[N],
+                         std::string& value) {
+    int idx = find_option_index(options, value);
+    if (idx < 0) {
+        idx = 0;
+        value = options[0].value;
+    }
+    if (ImGui::BeginCombo(label, options[idx].label)) {
+        for (int i = 0; i < static_cast<int>(N); ++i) {
+            const bool selected = (i == idx);
+            if (ImGui::Selectable(options[i].label, selected)) {
+                value = options[i].value;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+}
+
+// Pixel format Combo + optional Custom text input.  The synthetic
+// "Custom..." entry is appended to the preset list; selecting it
+// reveals an InputText for advanced users who need an FFmpeg name
+// not covered by the presets (e.g. yuv420p12le).  The buffer is
+// rewritten to params every frame so typed input is never silently
+// dropped.
+void render_pixel_format_widget(std::string& value) {
+    int idx = find_option_index(kPixelFormats, value);
+    const bool is_custom = (idx < 0);
+    constexpr int kCustomIdx = static_cast<int>(
+        sizeof(kPixelFormats) / sizeof(kPixelFormats[0]));
+
+    const char* preview = is_custom
+        ? "Custom..."
+        : kPixelFormats[idx].label;
+
+    if (ImGui::BeginCombo("Pixel format", preview)) {
+        for (int i = 0; i < kCustomIdx; ++i) {
+            const bool selected = (i == idx);
+            if (ImGui::Selectable(kPixelFormats[i].label, selected)) {
+                value = kPixelFormats[i].value;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::Separator();
+        if (ImGui::Selectable("Custom...", is_custom)) {
+            // Switching into custom mode keeps the existing string so
+            // the user can edit it; if it matched a preset, leave it
+            // as-is and let them rename.
+        }
+        if (is_custom) ImGui::SetItemDefaultFocus();
+        ImGui::EndCombo();
+    }
+
+    if (is_custom) {
+        char buf[64];
+        std::strncpy(buf, value.c_str(), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        if (ImGui::InputText("FFmpeg pixel format name",
+                             buf, sizeof(buf))) {
+            value = buf;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Any FFmpeg pixel format name, e.g. yuv420p12le, "
+                "yuva420p, gbrp10le.");
+        }
+    }
+}
+
+}  // namespace
+
 void render_yuv_params_dialog(YuvDialogState& state,
                               const YuvDialogCallbacks& callbacks) {
     const bool editing = state.editing_entry_idx >= 0;
@@ -51,76 +187,18 @@ void render_yuv_params_dialog(YuvDialogState& state,
 
         auto& params = state.params;
 
-        ImGui::InputInt("Width",  &params.width);
-        ImGui::InputInt("Height", &params.height);
+        // Plain numeric entry; step=0 hides the +/- buttons that are
+        // meaningless for image dimensions.
+        ImGui::InputInt("Width",  &params.width,  0, 0);
+        ImGui::InputInt("Height", &params.height, 0, 0);
 
-        // Pixel format: FFmpeg name text input.
-        char pix_fmt_buf[64];
-        std::strncpy(pix_fmt_buf, params.pixel_format.c_str(),
-                     sizeof(pix_fmt_buf) - 1);
-        pix_fmt_buf[sizeof(pix_fmt_buf) - 1] = '\0';
-        if (ImGui::InputText("Pixel format", pix_fmt_buf, sizeof(pix_fmt_buf),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            params.pixel_format = pix_fmt_buf;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("FFmpeg pixel format name, e.g. yuv420p, yuv420p10le, nv12, p010le, yuv444p12le");
-        }
+        render_pixel_format_widget(params.pixel_format);
+        render_closed_combo("Color range",     kColorRanges,    params.color_range);
+        render_closed_combo("Color matrix",    kColorMatrices,  params.color_matrix);
+        render_closed_combo("Color primaries", kColorPrimaries, params.color_primaries);
+        render_closed_combo("Transfer",        kTransfers,      params.transfer);
 
-        // Color range: FFmpeg name text input.
-        char range_buf[16];
-        std::strncpy(range_buf, params.color_range.c_str(),
-                     sizeof(range_buf) - 1);
-        range_buf[sizeof(range_buf) - 1] = '\0';
-        if (ImGui::InputText("Color range", range_buf, sizeof(range_buf),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            params.color_range = range_buf;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("FFmpeg color range: tv (limited) or pc (full)");
-        }
-
-        // Color matrix: FFmpeg name text input.
-        char matrix_buf[64];
-        std::strncpy(matrix_buf, params.color_matrix.c_str(),
-                     sizeof(matrix_buf) - 1);
-        matrix_buf[sizeof(matrix_buf) - 1] = '\0';
-        if (ImGui::InputText("Color matrix", matrix_buf, sizeof(matrix_buf),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            params.color_matrix = matrix_buf;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("FFmpeg color space name, e.g. bt709, smpte170m, bt2020-nccl");
-        }
-
-        // Color primaries: FFmpeg name text input.
-        char primaries_buf[64];
-        std::strncpy(primaries_buf, params.color_primaries.c_str(),
-                     sizeof(primaries_buf) - 1);
-        primaries_buf[sizeof(primaries_buf) - 1] = '\0';
-        if (ImGui::InputText("Color primaries", primaries_buf,
-                             sizeof(primaries_buf),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            params.color_primaries = primaries_buf;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("FFmpeg color primaries name, e.g. bt709, smpte170m, bt2020");
-        }
-
-        // Transfer: FFmpeg name text input.
-        char transfer_buf[64];
-        std::strncpy(transfer_buf, params.transfer.c_str(),
-                     sizeof(transfer_buf) - 1);
-        transfer_buf[sizeof(transfer_buf) - 1] = '\0';
-        if (ImGui::InputText("Transfer", transfer_buf, sizeof(transfer_buf),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            params.transfer = transfer_buf;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("FFmpeg transfer name, e.g. bt709, smpte2084, arib-std-b67");
-        }
-
-        // Show file info if available.
+        // Show file size when dimensions look usable.
         if (params.width > 0 && params.height > 0) {
             std::error_code ec;
             auto fsize = std::filesystem::file_size(current_path, ec);
