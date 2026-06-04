@@ -42,6 +42,7 @@ if(IDIFF_HAVE_FFMPEG)
         video_decoder.cpp
         video_file_source.cpp
         video_filter_graph.cpp
+        yuv_raw_source.cpp
     )
     target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_FFMPEG)
     if(IDIFF_HAVE_FFMPEG_IMAGE_DECODE)

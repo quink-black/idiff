@@ -2,15 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
-#include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <regex>
 #include <utility>
-
-#include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
 
 #include "core/image.h"
 #include "core/image_impl.h"
@@ -99,9 +93,14 @@ std::unique_ptr<Image> ImageFileSource::read_frame(int index) {
 
 const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept {
     switch (f) {
-        case YuvPixelFormat::YUV420P: return "YUV420P";
-        case YuvPixelFormat::YUV422P: return "YUV422P";
-        case YuvPixelFormat::YUV444P: return "YUV444P";
+        case YuvPixelFormat::YUV420P:   return "YUV420P";
+        case YuvPixelFormat::YUV422P:   return "YUV422P";
+        case YuvPixelFormat::YUV444P:   return "YUV444P";
+        case YuvPixelFormat::YUV420P10: return "YUV420P10";
+        case YuvPixelFormat::YUV422P10: return "YUV422P10";
+        case YuvPixelFormat::YUV444P10: return "YUV444P10";
+        case YuvPixelFormat::P010:      return "P010";
+        case YuvPixelFormat::NV16:      return "NV16";
     }
     return "YUV?";
 }
@@ -114,18 +113,70 @@ const char* yuv_color_range_name(YuvColorRange r) noexcept {
     return "?";
 }
 
+const char* yuv_color_matrix_name(YuvColorMatrix m) noexcept {
+    switch (m) {
+        case YuvColorMatrix::BT601:      return "BT.601";
+        case YuvColorMatrix::BT709:      return "BT.709";
+        case YuvColorMatrix::BT2020_NCL: return "BT.2020 NCL";
+    }
+    return "?";
+}
+
+const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept {
+    switch (p) {
+        case YuvColorPrimaries::BT601:  return "BT.601";
+        case YuvColorPrimaries::BT709:  return "BT.709";
+        case YuvColorPrimaries::BT2020: return "BT.2020";
+    }
+    return "?";
+}
+
+int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept {
+    switch (f) {
+        case YuvPixelFormat::YUV420P:
+        case YuvPixelFormat::YUV422P:
+        case YuvPixelFormat::YUV444P:
+        case YuvPixelFormat::NV16:
+            return 8;
+        case YuvPixelFormat::YUV420P10:
+        case YuvPixelFormat::YUV422P10:
+        case YuvPixelFormat::YUV444P10:
+        case YuvPixelFormat::P010:
+            return 10;
+    }
+    return 0;
+}
+
 std::size_t yuv_frame_size_bytes(const YuvStreamParams& p) noexcept {
     if (p.width <= 0 || p.height <= 0) return 0;
-    // YUV 420P and 422P require even width/height for chroma subsampling.
+    const auto W = static_cast<std::size_t>(p.width);
+    const auto H = static_cast<std::size_t>(p.height);
+
     switch (p.pixel_format) {
         case YuvPixelFormat::YUV420P:
             if ((p.width & 1) || (p.height & 1)) return 0;
-            return static_cast<std::size_t>(p.width) * p.height * 3 / 2;
+            return W * H * 3 / 2;
         case YuvPixelFormat::YUV422P:
             if (p.width & 1) return 0;
-            return static_cast<std::size_t>(p.width) * p.height * 2;
+            return W * H * 2;
         case YuvPixelFormat::YUV444P:
-            return static_cast<std::size_t>(p.width) * p.height * 3;
+            return W * H * 3;
+        case YuvPixelFormat::YUV420P10:
+            if ((p.width & 1) || (p.height & 1)) return 0;
+            return W * H * 2 + (W / 2) * (H / 2) * 2 * 2;
+        case YuvPixelFormat::YUV422P10:
+            if (p.width & 1) return 0;
+            return W * H * 2 + (W / 2) * H * 2 * 2;
+        case YuvPixelFormat::YUV444P10:
+            return W * H * 2 * 3;
+        case YuvPixelFormat::P010:
+            if ((p.width & 1) || (p.height & 1)) return 0;
+            // Y: W*H pixels, 16-bit LE each; UV: (W/2)*(H/2) pairs, 16-bit LE each
+            return W * H * 2 + (W / 2) * (H / 2) * 2 * 2;
+        case YuvPixelFormat::NV16:
+            if (p.width & 1) return 0;
+            // Y: W*H bytes; UV interleaved: W*H bytes (W/2 pairs per row, 2 bytes each)
+            return W * H + W * H;
     }
     return 0;
 }
@@ -153,18 +204,24 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
         }
     }
 
-    // Pixel format keywords.  Longer strings (e.g. "yuv420p") must be
-    // checked before shorter ones (e.g. "yuv420") so i420 and yuv420p
-    // don't accidentally match "yuv422p".
+    // Pixel format keywords.  Longer/more-specific strings must be
+    // checked before shorter ones so "yuv420p10" is not swallowed by
+    // "yuv420p".
     struct FmtKeyword {
         const char* key;
         YuvPixelFormat fmt;
     };
     const FmtKeyword kws[] = {
-        {"yuv420p", YuvPixelFormat::YUV420P},
-        {"yuv422p", YuvPixelFormat::YUV422P},
-        {"yuv444p", YuvPixelFormat::YUV444P},
-        {"i420",    YuvPixelFormat::YUV420P},
+        {"yuv420p10", YuvPixelFormat::YUV420P10},
+        {"yuv422p10", YuvPixelFormat::YUV422P10},
+        {"yuv444p10", YuvPixelFormat::YUV444P10},
+        {"p010le",    YuvPixelFormat::P010},
+        {"p010",      YuvPixelFormat::P010},
+        {"nv16",      YuvPixelFormat::NV16},
+        {"yuv420p",   YuvPixelFormat::YUV420P},
+        {"yuv422p",   YuvPixelFormat::YUV422P},
+        {"yuv444p",   YuvPixelFormat::YUV444P},
+        {"i420",      YuvPixelFormat::YUV420P},
     };
     for (const auto& kw : kws) {
         if (name.find(kw.key) != std::string::npos) {
@@ -175,8 +232,8 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
     }
 
     // Color range hints.
-    if (name.find("full") != std::string::npos ||
-        name.find("fullrange") != std::string::npos) {
+    if (name.find("fullrange") != std::string::npos ||
+        name.find("full") != std::string::npos) {
         out.color_range = YuvColorRange::Full;
         changed = true;
     } else if (name.find("limited") != std::string::npos ||
@@ -185,161 +242,25 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
         changed = true;
     }
 
+    // Color matrix hints.  bt2020 must be checked before bt601/bt709
+    // because "bt2020" contains neither "bt601" nor "bt709" as a
+    // substring, but checking the longer one first is safer.
+    if (name.find("bt2020") != std::string::npos) {
+        out.color_matrix = YuvColorMatrix::BT2020_NCL;
+        out.color_primaries = YuvColorPrimaries::BT2020;
+        changed = true;
+    } else if (name.find("bt709") != std::string::npos) {
+        out.color_matrix = YuvColorMatrix::BT709;
+        out.color_primaries = YuvColorPrimaries::BT709;
+        changed = true;
+    } else if (name.find("bt601") != std::string::npos ||
+               name.find("smpte170m") != std::string::npos) {
+        out.color_matrix = YuvColorMatrix::BT601;
+        out.color_primaries = YuvColorPrimaries::BT601;
+        changed = true;
+    }
+
     return changed;
-}
-
-// -------- YuvRawSource --------
-
-namespace {
-
-// Compute YUV plane sizes.  Returns {y_bytes, u_bytes, v_bytes}.
-struct PlaneSizes { int y_w, y_h, uv_w, uv_h; };
-
-PlaneSizes plane_sizes(const YuvStreamParams& p) {
-    PlaneSizes s{};
-    s.y_w = p.width;
-    s.y_h = p.height;
-    switch (p.pixel_format) {
-        case YuvPixelFormat::YUV420P:
-            s.uv_w = p.width / 2; s.uv_h = p.height / 2; break;
-        case YuvPixelFormat::YUV422P:
-            s.uv_w = p.width / 2; s.uv_h = p.height;     break;
-        case YuvPixelFormat::YUV444P:
-            s.uv_w = p.width;     s.uv_h = p.height;     break;
-    }
-    return s;
-}
-
-// Decode one planar YUV frame (Y/U/V as separate byte pointers) into an
-// RGB8 cv::Mat using BT.601 matrix.  Handles limited vs full range by
-// rescaling the planes before the standard cvtColor() conversion, which
-// assumes BT.601 limited range.  The output is RGB (not BGR) to match
-// the rest of idiff's in-memory convention.
-cv::Mat decode_planar_yuv_to_rgb(const uint8_t* y, const uint8_t* u, const uint8_t* v,
-                                 const YuvStreamParams& p,
-                                 const PlaneSizes& ps) {
-    cv::Mat y_mat(ps.y_h, ps.y_w, CV_8UC1, const_cast<uint8_t*>(y));
-    cv::Mat u_mat(ps.uv_h, ps.uv_w, CV_8UC1, const_cast<uint8_t*>(u));
-    cv::Mat v_mat(ps.uv_h, ps.uv_w, CV_8UC1, const_cast<uint8_t*>(v));
-
-    // Copy since the source pointers live in a temporary byte buffer
-    // that will go out of scope after read_frame() returns.
-    y_mat = y_mat.clone();
-    u_mat = u_mat.clone();
-    v_mat = v_mat.clone();
-
-    // Upsample U/V to full resolution so we can build a 3-channel YUV
-    // mat that cvtColor accepts.  Nearest neighbor is fine for 4:2:2
-    // and 4:2:0 here since displayed pixels go through the normal
-    // scaling path later anyway.
-    if (ps.uv_w != ps.y_w || ps.uv_h != ps.y_h) {
-        cv::resize(u_mat, u_mat, cv::Size(ps.y_w, ps.y_h), 0, 0, cv::INTER_LINEAR);
-        cv::resize(v_mat, v_mat, cv::Size(ps.y_w, ps.y_h), 0, 0, cv::INTER_LINEAR);
-    }
-
-    // For Full-range sources, contract Y [0,255] -> [16,235] and UV
-    // [0,255] -> [16,240] so that the subsequent limited-range cvtColor
-    // produces correct output.  This is a simple per-pixel affine
-    // transform done in-place.
-    if (p.color_range == YuvColorRange::Full) {
-        y_mat.convertTo(y_mat, CV_8U, 219.0 / 255.0, 16.0);
-        u_mat.convertTo(u_mat, CV_8U, 224.0 / 255.0, 16.0);
-        v_mat.convertTo(v_mat, CV_8U, 224.0 / 255.0, 16.0);
-    }
-
-    std::vector<cv::Mat> planes = { y_mat, u_mat, v_mat };
-    cv::Mat yuv;
-    cv::merge(planes, yuv);
-
-    cv::Mat rgb;
-    // OpenCV's YUV2RGB expects BT.601 limited range.  We've already
-    // compensated above for full-range sources.
-    cv::cvtColor(yuv, rgb, cv::COLOR_YUV2RGB);
-    return rgb;
-}
-
-} // namespace
-
-YuvRawSource::YuvRawSource(std::string path, const YuvStreamParams& params)
-    : path_(std::move(path)), params_(params) {
-    frame_bytes_ = yuv_frame_size_bytes(params_);
-    frame_count_ = 0;
-    if (frame_bytes_ > 0) {
-        std::error_code ec;
-        auto size = std::filesystem::file_size(path_, ec);
-        if (!ec && size >= frame_bytes_) {
-            frame_count_ = static_cast<int>(size / frame_bytes_);
-        }
-    }
-
-    format_desc_ = std::string(yuv_pixel_format_name(params_.pixel_format)) + " "
-                 + std::to_string(params_.width) + "x"
-                 + std::to_string(params_.height) + " 8-bit "
-                 + yuv_color_range_name(params_.color_range);
-}
-
-YuvRawSource::~YuvRawSource() = default;
-
-std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
-    if (frame_bytes_ == 0) {
-        last_error_ = "invalid YUV parameters";
-        return nullptr;
-    }
-    if (index < 0 || index >= frame_count_) {
-        last_error_ = "frame index out of range";
-        return nullptr;
-    }
-
-    // Open and seek to the requested frame.  We re-open for every read
-    // to keep the source stateless; a persistent FILE* can be added later
-    // if sequential scrubbing turns out to be a hotspot.
-    std::FILE* fp = std::fopen(path_.c_str(), "rb");
-    if (!fp) {
-        last_error_ = std::string("cannot open YUV file: ") + std::strerror(errno);
-        return nullptr;
-    }
-
-    const std::size_t offset = static_cast<std::size_t>(index) * frame_bytes_;
-    if (std::fseek(fp, static_cast<long>(offset), SEEK_SET) != 0) {
-        std::fclose(fp);
-        last_error_ = "seek failed";
-        return nullptr;
-    }
-
-    std::vector<uint8_t> buf(frame_bytes_);
-    std::size_t got = std::fread(buf.data(), 1, frame_bytes_, fp);
-    std::fclose(fp);
-    if (got != frame_bytes_) {
-        last_error_ = "short read";
-        return nullptr;
-    }
-
-    PlaneSizes ps = plane_sizes(params_);
-    const std::size_t y_bytes = static_cast<std::size_t>(ps.y_w) * ps.y_h;
-    const std::size_t uv_bytes = static_cast<std::size_t>(ps.uv_w) * ps.uv_h;
-    const uint8_t* y = buf.data();
-    const uint8_t* u = y + y_bytes;
-    const uint8_t* v = u + uv_bytes;
-
-    cv::Mat rgb = decode_planar_yuv_to_rgb(y, u, v, params_, ps);
-    if (rgb.empty()) {
-        last_error_ = "decode failed";
-        return nullptr;
-    }
-
-    auto img = std::make_unique<Image>();
-    img->internal().mat = rgb;
-    img->internal().info.width = rgb.cols;
-    img->internal().info.height = rgb.rows;
-    img->internal().info.pixel_format = PixelFormat::RGB8;
-    img->internal().info.source_format = SourceFormat::Unknown;
-    img->internal().info.bit_depth = 8;
-    img->internal().info.has_alpha = false;
-    img->internal().info.color_space = std::string("BT.601 ")
-        + yuv_color_range_name(params_.color_range);
-
-    last_error_.clear();
-    return img;
 }
 
 } // namespace idiff

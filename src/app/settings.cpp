@@ -39,15 +39,34 @@ bool parse_kv_line(const std::string& line, std::string& key, std::string& val) 
 }
 
 YuvPixelFormat parse_yuv_format(const std::string& s, YuvPixelFormat fallback) {
-    if (s == "YUV420P") return YuvPixelFormat::YUV420P;
-    if (s == "YUV422P") return YuvPixelFormat::YUV422P;
-    if (s == "YUV444P") return YuvPixelFormat::YUV444P;
+    if (s == "YUV420P")   return YuvPixelFormat::YUV420P;
+    if (s == "YUV422P")   return YuvPixelFormat::YUV422P;
+    if (s == "YUV444P")   return YuvPixelFormat::YUV444P;
+    if (s == "YUV420P10") return YuvPixelFormat::YUV420P10;
+    if (s == "YUV422P10") return YuvPixelFormat::YUV422P10;
+    if (s == "YUV444P10") return YuvPixelFormat::YUV444P10;
+    if (s == "P010")      return YuvPixelFormat::P010;
+    if (s == "NV16")      return YuvPixelFormat::NV16;
     return fallback;
 }
 
 YuvColorRange parse_yuv_range(const std::string& s, YuvColorRange fallback) {
     if (s == "Limited") return YuvColorRange::Limited;
     if (s == "Full")    return YuvColorRange::Full;
+    return fallback;
+}
+
+YuvColorMatrix parse_yuv_matrix(const std::string& s, YuvColorMatrix fallback) {
+    if (s == "BT.601")      return YuvColorMatrix::BT601;
+    if (s == "BT.709")      return YuvColorMatrix::BT709;
+    if (s == "BT.2020 NCL") return YuvColorMatrix::BT2020_NCL;
+    return fallback;
+}
+
+YuvColorPrimaries parse_yuv_primaries(const std::string& s, YuvColorPrimaries fallback) {
+    if (s == "BT.601")  return YuvColorPrimaries::BT601;
+    if (s == "BT.709")  return YuvColorPrimaries::BT709;
+    if (s == "BT.2020") return YuvColorPrimaries::BT2020;
     return fallback;
 }
 
@@ -119,6 +138,12 @@ AppSettings AppSettings::load(const std::string& path) {
         } else if (key == "yuv.color_range") {
             s.last_yuv_params.color_range =
                 parse_yuv_range(val, s.last_yuv_params.color_range);
+        } else if (key == "yuv.color_matrix") {
+            s.last_yuv_params.color_matrix =
+                parse_yuv_matrix(val, s.last_yuv_params.color_matrix);
+        } else if (key == "yuv.color_primaries") {
+            s.last_yuv_params.color_primaries =
+                parse_yuv_primaries(val, s.last_yuv_params.color_primaries);
         } else if (key == "viewport.show_ruler") {
             s.show_ruler = parse_bool(val, s.show_ruler);
         } else if (key == "viewport.show_grid") {
@@ -175,6 +200,10 @@ bool AppSettings::save(const std::string& path) const {
         << yuv_pixel_format_name(last_yuv_params.pixel_format) << "\n";
     out << "yuv.color_range="
         << yuv_color_range_name(last_yuv_params.color_range) << "\n";
+    out << "yuv.color_matrix="
+        << yuv_color_matrix_name(last_yuv_params.color_matrix) << "\n";
+    out << "yuv.color_primaries="
+        << yuv_color_primaries_name(last_yuv_params.color_primaries) << "\n";
     out << "viewport.show_ruler=" << (show_ruler ? "true" : "false") << "\n";
     out << "viewport.show_grid="  << (show_grid  ? "true" : "false") << "\n";
     out << "viewport.grid_layout=" << grid_layout << "\n";
