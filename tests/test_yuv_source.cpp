@@ -179,45 +179,26 @@ TEST_CASE("guess_yuv_params_from_filename parses size and format hints",
         REQUIRE(q.height == 480);
     }
 
-    SECTION("color metadata keywords use FFmpeg names") {
+    SECTION("colour metadata is left at the caller's defaults") {
+        // Filename heuristics for color_range / matrix / primaries /
+        // transfer are deliberately not implemented; the dialog asks
+        // the user explicitly.  Verify the guesser keeps the incoming
+        // values intact even when the filename mentions those tags.
         YuvStreamParams p;
-        guess_yuv_params_from_filename("clip_bt601_640x480.yuv", p);
-        REQUIRE(p.color_matrix == "smpte170m");
-        REQUIRE(p.color_primaries == "smpte170m");
+        p.color_range = "tv";
+        p.color_matrix = "bt709";
+        p.color_primaries = "bt709";
+        p.transfer = "bt709";
 
-        YuvStreamParams q;
-        guess_yuv_params_from_filename("clip_bt709_1920x1080.yuv", q);
-        REQUIRE(q.color_matrix == "bt709");
-        REQUIRE(q.color_primaries == "bt709");
-
-        YuvStreamParams r;
-        guess_yuv_params_from_filename("clip_bt2020_3840x2160.yuv", r);
-        REQUIRE(r.color_matrix == "bt2020-nccl");
-        REQUIRE(r.color_primaries == "bt2020");
-    }
-
-    SECTION("transfer function keywords use FFmpeg names") {
-        YuvStreamParams p;
-        guess_yuv_params_from_filename("clip_p010_3840x2160_pq.yuv", p);
-        REQUIRE(p.transfer == "smpte2084");
-
-        YuvStreamParams q;
-        guess_yuv_params_from_filename("clip_p010_3840x2160_hlg.yuv", q);
-        REQUIRE(q.transfer == "arib-std-b67");
-
-        YuvStreamParams r;
-        guess_yuv_params_from_filename("clip_smpte2084_3840x2160.yuv", r);
-        REQUIRE(r.transfer == "smpte2084");
-    }
-
-    SECTION("color range keywords use FFmpeg names") {
-        YuvStreamParams p;
-        guess_yuv_params_from_filename("clip_fullrange_640x480.yuv", p);
-        REQUIRE(p.color_range == "pc");
-
-        YuvStreamParams q;
-        guess_yuv_params_from_filename("clip_limited_640x480.yuv", q);
-        REQUIRE(q.color_range == "tv");
+        guess_yuv_params_from_filename(
+            "clip_bt2020_pq_full_3840x2160_p010.yuv", p);
+        REQUIRE(p.width == 3840);
+        REQUIRE(p.height == 2160);
+        REQUIRE(p.pixel_format == "p010le");
+        REQUIRE(p.color_range == "tv");
+        REQUIRE(p.color_matrix == "bt709");
+        REQUIRE(p.color_primaries == "bt709");
+        REQUIRE(p.transfer == "bt709");
     }
 
     SECTION("unrecognized filename leaves the params untouched") {

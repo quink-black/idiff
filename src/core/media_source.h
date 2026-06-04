@@ -101,11 +101,14 @@ struct YuvStreamParams {
     std::string transfer = "bt709";
 };
 
-// Heuristically guess YUV parameters from a file path.  Recognizes
-// patterns like `name_1920x1080_yuv420p.yuv` or `name_nv12_1280x720.yuv`.
-// Unknown fields are left at their existing value in `out`, so callers
-// can prefill `out` with UI defaults and let the guess override what it
-// can recognize.  Returns true if any field was populated.
+// Heuristically guess YUV resolution and pixel format from a file
+// path.  Recognizes patterns like `name_1920x1080_yuv420p.yuv` or
+// `name_nv12_1280x720.yuv`.  Only `width`, `height`, and
+// `pixel_format` are touched; colour-metadata fields are deliberately
+// left at their incoming values because filename hints for those tags
+// are unreliable and silently picking the wrong colour space tends to
+// produce frames that look plausible but are numerically wrong.
+// Returns true if any field was populated.
 bool guess_yuv_params_from_filename(const std::string& path,
                                     YuvStreamParams& out);
 

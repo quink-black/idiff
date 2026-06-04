@@ -142,45 +142,13 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
         }
     }
 
-    // Color range hints.
-    if (name.find("fullrange") != std::string::npos ||
-        name.find("full") != std::string::npos) {
-        out.color_range = "pc";
-        changed = true;
-    } else if (name.find("limited") != std::string::npos ||
-               name.find("tv") != std::string::npos) {
-        out.color_range = "tv";
-        changed = true;
-    }
-
-    // Color metadata as FFmpeg names.  bt2020 checked first because it
-    // is longer and does not contain bt601/bt709 as substrings.
-    if (name.find("bt2020") != std::string::npos) {
-        out.color_matrix = "bt2020-nccl";
-        out.color_primaries = "bt2020";
-        changed = true;
-    } else if (name.find("bt709") != std::string::npos) {
-        out.color_matrix = "bt709";
-        out.color_primaries = "bt709";
-        changed = true;
-    } else if (name.find("bt601") != std::string::npos ||
-               name.find("smpte170m") != std::string::npos) {
-        out.color_matrix = "smpte170m";
-        out.color_primaries = "smpte170m";
-        changed = true;
-    }
-
-    // Transfer function hints as FFmpeg names.
-    if (name.find("smpte2084") != std::string::npos ||
-        name.find("pq") != std::string::npos) {
-        out.transfer = "smpte2084";
-        changed = true;
-    } else if (name.find("hlg") != std::string::npos ||
-               name.find("arib-std-b67") != std::string::npos ||
-               name.find("arib_std-b67") != std::string::npos) {
-        out.transfer = "arib-std-b67";
-        changed = true;
-    }
+    // Color metadata (range, matrix, primaries, transfer) is left
+    // untouched on purpose.  Filename-based heuristics for those tags
+    // are too unreliable -- substrings like "bt709" or "pq" routinely
+    // appear in unrelated filename fragments -- and silently picking
+    // the wrong colour space produces visually plausible but
+    // numerically wrong frames that are hard to diagnose.  The user
+    // configures these explicitly in the dialog instead.
 
     return changed;
 }
