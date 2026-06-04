@@ -88,6 +88,13 @@ void render_yuv_params_dialog(YuvDialogState& state,
             params.color_primaries = static_cast<YuvColorPrimaries>(primaries_idx);
         }
 
+        const char* transfer_items[] = { "BT.709 (SDR)", "PQ / ST 2084 (HDR)", "HLG (HDR)" };
+        int transfer_idx = static_cast<int>(params.transfer);
+        if (ImGui::Combo("Transfer", &transfer_idx, transfer_items,
+                         IM_ARRAYSIZE(transfer_items))) {
+            params.transfer = static_cast<YuvTransfer>(transfer_idx);
+        }
+
         std::size_t frame_bytes = yuv_frame_size_bytes(params);
         if (frame_bytes == 0) {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),

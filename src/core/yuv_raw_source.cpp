@@ -57,6 +57,15 @@ AVColorPrimaries yuv_color_primaries_to_av(YuvColorPrimaries p) noexcept {
     return AVCOL_PRI_UNSPECIFIED;
 }
 
+AVColorTransferCharacteristic yuv_transfer_to_av(YuvTransfer t) noexcept {
+    switch (t) {
+        case YuvTransfer::BT709: return AVCOL_TRC_BT709;
+        case YuvTransfer::PQ:    return AVCOL_TRC_SMPTE2084;
+        case YuvTransfer::HLG:   return AVCOL_TRC_ARIB_STD_B67;
+    }
+    return AVCOL_TRC_UNSPECIFIED;
+}
+
 // ============================================================================
 // YuvRawSource::FfCtx -- FFmpeg demuxer/decoder state
 // ============================================================================
@@ -105,6 +114,7 @@ YuvRawSource::YuvRawSource(std::string path, const YuvStreamParams& params)
                  + std::to_string(yuv_pixel_format_bit_depth(params_.pixel_format))
                  + "-bit "
                  + yuv_color_matrix_name(params_.color_matrix) + " "
+                 + yuv_transfer_name(params_.transfer) + " "
                  + yuv_color_range_name(params_.color_range);
 }
 
@@ -202,7 +212,7 @@ bool YuvRawSource::open_ffmpeg() {
         yuv_color_matrix_to_av(params_.color_matrix);
     ff_->codec_ctx->color_primaries =
         yuv_color_primaries_to_av(params_.color_primaries);
-    ff_->codec_ctx->color_trc = AVCOL_TRC_BT709;
+    ff_->codec_ctx->color_trc = yuv_transfer_to_av(params_.transfer);
 
     ret = avcodec_open2(ff_->codec_ctx, codec, nullptr);
     if (ret < 0) {
@@ -329,7 +339,7 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
                             ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
         in.matrix    = yuv_color_matrix_to_av(params_.color_matrix);
         in.primaries = yuv_color_primaries_to_av(params_.color_primaries);
-        in.transfer  = AVCOL_TRC_BT709;
+        in.transfer  = yuv_transfer_to_av(params_.transfer);
 
         VideoFilterOutputParams out;
         out.width     = 0;  // keep source dimensions
@@ -382,6 +392,7 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
     img->internal().info.has_alpha = false;
     img->internal().info.color_space =
         std::string(yuv_color_matrix_name(params_.color_matrix)) + " "
+        + yuv_transfer_name(params_.transfer) + " "
         + yuv_color_range_name(params_.color_range);
 
     ff_current_idx_ = index;

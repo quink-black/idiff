@@ -109,6 +109,13 @@ enum class YuvColorPrimaries {
     BT2020, // BT.2020
 };
 
+// Transfer characteristic (opto-electronic transfer function).
+enum class YuvTransfer {
+    BT709,  // BT.709 / SMPTE170M (SDR)
+    PQ,     // SMPTE ST 2084 (HDR perceptual quantizer)
+    HLG,    // ARIB STD-B67 (HDR hybrid log-gamma)
+};
+
 // All parameters needed to decode a raw YUV file.  The file itself carries
 // no metadata so the user (or a filename-based guess) must supply these.
 struct YuvStreamParams {
@@ -118,6 +125,7 @@ struct YuvStreamParams {
     YuvColorRange color_range = YuvColorRange::Limited;
     YuvColorMatrix color_matrix = YuvColorMatrix::BT709;
     YuvColorPrimaries color_primaries = YuvColorPrimaries::BT709;
+    YuvTransfer transfer = YuvTransfer::BT709;
 };
 
 // Bytes per frame for the given format, or 0 if params are invalid.
@@ -128,6 +136,7 @@ const char* yuv_pixel_format_name(YuvPixelFormat f) noexcept;
 const char* yuv_color_range_name(YuvColorRange r) noexcept;
 const char* yuv_color_matrix_name(YuvColorMatrix m) noexcept;
 const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept;
+const char* yuv_transfer_name(YuvTransfer t) noexcept;
 
 // Bits per component for the given pixel format (8 or 10).
 int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept;
