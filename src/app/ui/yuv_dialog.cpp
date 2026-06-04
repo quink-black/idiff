@@ -95,39 +95,46 @@ void render_closed_combo(const char* label,
 
 // Pixel format Combo + optional Custom text input.  The synthetic
 // "Custom..." entry is appended to the preset list; selecting it
-// reveals an InputText for advanced users who need an FFmpeg name
-// not covered by the presets (e.g. yuv420p12le).  The buffer is
-// rewritten to params every frame so typed input is never silently
-// dropped.
-void render_pixel_format_widget(std::string& value) {
+// latches `custom_mode` so the InputText stays visible even when the
+// current value happens to match a preset name the user wants to
+// rename.  The buffer is rewritten to params every keystroke so typed
+// input is never silently dropped.
+void render_pixel_format_widget(std::string& value, bool& custom_mode) {
     int idx = find_option_index(kPixelFormats, value);
-    const bool is_custom = (idx < 0);
-    constexpr int kCustomIdx = static_cast<int>(
+    // Treat any value that doesn't match a preset as custom too, so
+    // an unusual name carried in from settings/guessing surfaces the
+    // editable field on first paint without an extra click.
+    if (idx < 0) custom_mode = true;
+    constexpr int kPresetCount = static_cast<int>(
         sizeof(kPixelFormats) / sizeof(kPixelFormats[0]));
 
-    const char* preview = is_custom
-        ? "Custom..."
-        : kPixelFormats[idx].label;
+    const char* preview;
+    if (custom_mode) {
+        preview = "Custom...";
+    } else {
+        preview = kPixelFormats[idx].label;
+    }
 
     if (ImGui::BeginCombo("Pixel format", preview)) {
-        for (int i = 0; i < kCustomIdx; ++i) {
-            const bool selected = (i == idx);
+        for (int i = 0; i < kPresetCount; ++i) {
+            const bool selected = (!custom_mode && i == idx);
             if (ImGui::Selectable(kPixelFormats[i].label, selected)) {
                 value = kPixelFormats[i].value;
+                custom_mode = false;
             }
             if (selected) ImGui::SetItemDefaultFocus();
         }
         ImGui::Separator();
-        if (ImGui::Selectable("Custom...", is_custom)) {
-            // Switching into custom mode keeps the existing string so
-            // the user can edit it; if it matched a preset, leave it
-            // as-is and let them rename.
+        if (ImGui::Selectable("Custom...", custom_mode)) {
+            // Latch into custom mode.  Keep `value` so the user sees
+            // (and can edit) whatever was selected before.
+            custom_mode = true;
         }
-        if (is_custom) ImGui::SetItemDefaultFocus();
+        if (custom_mode) ImGui::SetItemDefaultFocus();
         ImGui::EndCombo();
     }
 
-    if (is_custom) {
+    if (custom_mode) {
         char buf[64];
         std::strncpy(buf, value.c_str(), sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = '\0';
@@ -170,6 +177,10 @@ void render_yuv_params_dialog(YuvDialogState& state,
                 : YuvStreamParams{};
             guess_yuv_params_from_filename(current_path, state.params);
         }
+        // Reset the latched custom flag whenever the dialog is primed;
+        // the widget will re-latch automatically if the incoming pixel
+        // format string does not match a preset.
+        state.custom_pixel_format = false;
         ImGui::OpenPopup("YUV Parameters");
         state.needs_open = false;
     }
@@ -192,7 +203,8 @@ void render_yuv_params_dialog(YuvDialogState& state,
         ImGui::InputInt("Width",  &params.width,  0, 0);
         ImGui::InputInt("Height", &params.height, 0, 0);
 
-        render_pixel_format_widget(params.pixel_format);
+        render_pixel_format_widget(params.pixel_format,
+                                   state.custom_pixel_format);
         render_closed_combo("Color range",     kColorRanges,    params.color_range);
         render_closed_combo("Color matrix",    kColorMatrices,  params.color_matrix);
         render_closed_combo("Color primaries", kColorPrimaries, params.color_primaries);
