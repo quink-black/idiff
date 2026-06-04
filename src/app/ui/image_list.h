@@ -37,6 +37,14 @@ struct ImageListInputs {
     // "Super Resolution..." context-menu item.
     bool sr_enabled;
 
+    // When true, clicking an entry selects all entries sharing its
+    // group key (filename stem before the last extension dot).
+    bool group_by_name = false;
+
+    // Current "anchor" for Shift+click range selection.  -1 means no
+    // anchor.  Owned by App::State; the renderer updates it on click.
+    int* last_clicked_index = nullptr;
+
     // Returns the entries-index currently used as the reference image
     // for overlay / diff (-1 when the selection is empty).  Provided
     // as a callback so the list does not duplicate the selection logic.
@@ -56,8 +64,10 @@ struct ImageListInputs {
     std::function<void(int entry_idx)> on_mark_as_reference;
     std::function<void()> on_select_all;
     std::function<void(int entry_idx)> on_select_only_this;
+    std::function<void(int entry_idx)> on_select_group;
     std::function<void()> on_invert_selection;
     std::function<void()> on_unselect_all;
+    std::function<void(int from, int to)> on_select_range;
     std::function<void(int entry_idx)> on_reload_entry;
     std::function<void()> on_reload_all;
     std::function<void(int entry_idx)> on_remove_entry;
