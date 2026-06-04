@@ -1364,7 +1364,6 @@ void App::render_toolbar() {
     in.viewport = state_->viewport.get();
     in.show_image_list = &state_->show_image_list;
     in.show_inspector = &state_->show_inspector;
-    in.group_by_name = &state_->group_by_name;
     in.upscale_method = &state_->upscale_method;
     in.any_entries_loaded = !entries_view().empty();
     in.get_loader_backend = [this]() { return controller_->loader_backend(); };
@@ -1398,7 +1397,7 @@ void App::render_image_list() {
     in.sr_service = sr_service_;
     in.show_image_list = &state_->show_image_list;
     in.sr_enabled = sr_enabled_;
-    in.group_by_name = state_->group_by_name;
+    in.group_by_name_ptr = &state_->group_by_name;
     in.last_clicked_index = &state_->last_clicked_index;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.entry_is_yuv = [this](int idx) -> bool {

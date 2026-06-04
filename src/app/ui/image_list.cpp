@@ -32,6 +32,11 @@ void render_image_list(const ImageListInputs& in) {
         if (in.on_open_files) in.on_open_files();
     }
 
+    // Group by Name toggle -- directly in the panel for easy access.
+    if (in.group_by_name_ptr) {
+        ImGui::Checkbox("Group by Name", in.group_by_name_ptr);
+    }
+
     // Group selector, only shown when a comparison-config is active.
     // Switching the combo triggers an on-demand download + load of the
     // selected group; only that one group's pixels are kept resident.
@@ -91,9 +96,42 @@ void render_image_list(const ImageListInputs& in) {
         int ref_idx = -1;
         if (in.get_ref_index) in.get_ref_index(ref_idx);
 
+        const bool group_mode = in.group_by_name_ptr &&
+                                *in.group_by_name_ptr;
+
+        // Pre-compute group keys so group boundaries can be drawn
+        // without recomputing keys on every iteration.
+        std::vector<std::string> group_keys;
+        if (group_mode) {
+            group_keys.reserve(entries.size());
+            for (const auto& e : entries)
+                group_keys.push_back(group_key_from_filename(e.filename));
+        }
+
+        int group_color_idx = 0;  // alternates at each group boundary
+
         for (int i = 0; i < static_cast<int>(entries.size()); i++) {
             auto& entry = entries[i];
             ImGui::PushID(i);
+
+            // Group-mode visual indicators: separator between groups
+            // and alternating row tint.
+            if (group_mode) {
+                if (i > 0 && group_keys[i] != group_keys[i - 1]) {
+                    ImGui::Separator();
+                    ++group_color_idx;
+                }
+                // Subtle background tint for alternating groups.
+                if (group_color_idx % 2 == 1) {
+                    ImVec2 p_min = ImGui::GetCursorScreenPos();
+                    float row_h = ImGui::GetTextLineHeightWithSpacing();
+                    ImVec2 p_max(p_min.x + ImGui::GetContentRegionAvail().x,
+                                 p_min.y + row_h);
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    dl->AddRectFilled(p_min, p_max,
+                        IM_COL32(40, 40, 48, 255));
+                }
+            }
 
             bool is_sel = selection.contains(i);
             const char* ref_tag = (i == ref_idx) ? "Ref" : nullptr;
@@ -104,7 +142,7 @@ void render_image_list(const ImageListInputs& in) {
 
             bool checked = is_sel;
             if (ImGui::Checkbox("##sel", &checked)) {
-                if (in.group_by_name && in.on_select_group) {
+                if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
                     if (checked) {
                         in.on_select_group(i);
                     } else {
@@ -166,7 +204,7 @@ void render_image_list(const ImageListInputs& in) {
                     *in.last_clicked_index != i &&
                     in.on_select_range) {
                     in.on_select_range(*in.last_clicked_index, i);
-                } else if (in.group_by_name && in.on_select_group) {
+                } else if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
                     in.on_select_group(i);
                     if (in.last_clicked_index)
                         *in.last_clicked_index = i;
@@ -302,7 +340,7 @@ void render_image_list(const ImageListInputs& in) {
                 if (ImGui::MenuItem("Select Only This")) {
                     if (in.on_select_only_this) in.on_select_only_this(i);
                 }
-                if (in.group_by_name && in.on_select_group) {
+                if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
                     if (ImGui::MenuItem("Select Group")) {
                         in.on_select_group(i);
                     }

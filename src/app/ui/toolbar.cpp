@@ -39,7 +39,6 @@ void render_toolbar(const ToolbarInputs& in) {
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Image List", nullptr, in.show_image_list);
         ImGui::MenuItem("Inspector", nullptr, in.show_inspector);
-        ImGui::MenuItem("Group by Name", nullptr, in.group_by_name);
 
         if (ImGui::BeginMenu("Image Loader")) {
             // The selectable items below set the *preferred backend

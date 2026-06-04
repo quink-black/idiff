@@ -20,7 +20,6 @@ struct ToolbarInputs {
     // item.
     bool* show_image_list;
     bool* show_inspector;
-    bool* group_by_name;
     UpscaleMethod* upscale_method;
 
     // True when at least one image is loaded; gates the "Save
