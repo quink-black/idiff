@@ -362,10 +362,6 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->viewport->set_mode(
         static_cast<ComparisonMode>(state_->settings.comparison_mode));
 
-    // Restore image loader backend.
-    controller_->set_loader_backend(
-        static_cast<LoaderBackend>(state_->settings.loader_backend));
-
     NFD_Init();
 
     // Install IO interfaces backed by the real SDL renderer and the
@@ -396,6 +392,12 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     diff_service_ = &controller_->diff();
     sr_service_ = &controller_->sr_tasks();
     comparison_config_ = &controller_->comparison_config();
+
+    // Restore image loader backend.  Has to happen after controller_
+    // is constructed; the previous location ran before the unique_ptr
+    // was assigned and dereferenced a null controller.
+    controller_->set_loader_backend(
+        static_cast<LoaderBackend>(state_->settings.loader_backend));
 
     state_->file_watcher = std::make_unique<FileWatcher>();
 
