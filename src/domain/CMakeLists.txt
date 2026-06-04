@@ -5,6 +5,7 @@ add_library(idiff_domain
     diff_service.cpp
     sr_task_service.cpp
     comparison_config_service.cpp
+    group_key.cpp
 )
 
 target_include_directories(idiff_domain PUBLIC

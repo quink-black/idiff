@@ -12,6 +12,7 @@
 #endif
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
+#include "domain/group_key.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "domain/sr_task_service.h"
@@ -49,25 +50,14 @@ ComparisonConfigService& AppController::comparison_config() noexcept {
 
 namespace {
 
-// Split a filename into (stem, extension) at the last '.' that is not
-// the leading character.  A name with no extension or a single-char
-// name returns the whole string as the stem and an empty extension.
-std::pair<std::string_view, std::string_view>
-split_stem_ext(std::string_view name) {
-    if (name.size() <= 1) return {name, {}};
-    auto dot = name.find_last_of('.');
-    if (dot == std::string_view::npos || dot == 0) return {name, {}};
-    return {name.substr(0, dot), name.substr(dot + 1)};
-}
-
 // Compare filenames by (stem, extension) so that a "base" name like
 // "kid.jpg" sorts before its derived siblings ("kid-pisa.jpg",
 // "kid-pisa-v0.jpg").  The default std::string operator< puts '-'
 // (0x2D) before '.' (0x2E) which is the wrong answer here: the user
 // expects the shorter root name to come first.
 bool filename_less(const std::string& a, const std::string& b) {
-    auto [a_stem, a_ext] = split_stem_ext(a);
-    auto [b_stem, b_ext] = split_stem_ext(b);
+    auto [a_stem, a_ext] = idiff::split_stem_ext(a);
+    auto [b_stem, b_ext] = idiff::split_stem_ext(b);
     if (a_stem != b_stem) return a_stem < b_stem;
     return a_ext < b_ext;
 }
