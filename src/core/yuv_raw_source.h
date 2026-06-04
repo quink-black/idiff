@@ -24,6 +24,7 @@ AVPixelFormat yuv_pixel_format_to_av(YuvPixelFormat f) noexcept;
 // Map color enums to FFmpeg AVColor* constants.
 AVColorSpace yuv_color_matrix_to_av(YuvColorMatrix m) noexcept;
 AVColorPrimaries yuv_color_primaries_to_av(YuvColorPrimaries p) noexcept;
+AVColorTransferCharacteristic yuv_transfer_to_av(YuvTransfer t) noexcept;
 
 // MediaSource backed by a raw YUV file on disk, decoded via FFmpeg's
 // rawvideo demuxer and converted to sRGB through VideoFilterGraph.

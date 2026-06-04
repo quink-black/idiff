@@ -227,7 +227,7 @@ TEST_CASE("yuv_pixel_format_name and bit_depth helpers", "[yuv]") {
 // yuv_color_matrix_name and yuv_color_primaries_name.
 // -----------------------------------------------------------------------------
 
-TEST_CASE("yuv_color_matrix_name and primaries_name helpers", "[yuv]") {
+TEST_CASE("yuv_color_matrix_name, primaries_name, and transfer_name helpers", "[yuv]") {
     REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT601)) == "BT.601");
     REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT709)) == "BT.709");
     REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT2020_NCL)) == "BT.2020 NCL");
@@ -235,6 +235,10 @@ TEST_CASE("yuv_color_matrix_name and primaries_name helpers", "[yuv]") {
     REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT601)) == "BT.601");
     REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT709)) == "BT.709");
     REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT2020)) == "BT.2020");
+
+    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::BT709)) == "BT.709");
+    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::PQ)) == "PQ");
+    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::HLG)) == "HLG");
 }
 
 // -----------------------------------------------------------------------------
@@ -311,6 +315,20 @@ TEST_CASE("guess_yuv_params_from_filename parses size and format hints",
         guess_yuv_params_from_filename("clip_bt2020_3840x2160.yuv", r);
         REQUIRE(r.color_matrix == YuvColorMatrix::BT2020_NCL);
         REQUIRE(r.color_primaries == YuvColorPrimaries::BT2020);
+    }
+
+    SECTION("transfer function keywords") {
+        YuvStreamParams p;
+        guess_yuv_params_from_filename("clip_p010_3840x2160_pq.yuv", p);
+        REQUIRE(p.transfer == YuvTransfer::PQ);
+
+        YuvStreamParams q;
+        guess_yuv_params_from_filename("clip_p010_3840x2160_hlg.yuv", q);
+        REQUIRE(q.transfer == YuvTransfer::HLG);
+
+        YuvStreamParams r;
+        guess_yuv_params_from_filename("clip_smpte2084_3840x2160.yuv", r);
+        REQUIRE(r.transfer == YuvTransfer::PQ);
     }
 
     SECTION("unrecognized filename leaves the params untouched") {

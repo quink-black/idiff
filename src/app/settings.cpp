@@ -70,6 +70,13 @@ YuvColorPrimaries parse_yuv_primaries(const std::string& s, YuvColorPrimaries fa
     return fallback;
 }
 
+YuvTransfer parse_yuv_transfer(const std::string& s, YuvTransfer fallback) {
+    if (s == "BT.709") return YuvTransfer::BT709;
+    if (s == "PQ")     return YuvTransfer::PQ;
+    if (s == "HLG")    return YuvTransfer::HLG;
+    return fallback;
+}
+
 // Accept a handful of common spellings so hand-edited files still load.
 bool parse_bool(const std::string& s, bool fallback) {
     if (s == "1" || s == "true"  || s == "True"  || s == "TRUE"
@@ -144,6 +151,9 @@ AppSettings AppSettings::load(const std::string& path) {
         } else if (key == "yuv.color_primaries") {
             s.last_yuv_params.color_primaries =
                 parse_yuv_primaries(val, s.last_yuv_params.color_primaries);
+        } else if (key == "yuv.transfer") {
+            s.last_yuv_params.transfer =
+                parse_yuv_transfer(val, s.last_yuv_params.transfer);
         } else if (key == "viewport.show_ruler") {
             s.show_ruler = parse_bool(val, s.show_ruler);
         } else if (key == "viewport.show_grid") {
@@ -204,6 +214,8 @@ bool AppSettings::save(const std::string& path) const {
         << yuv_color_matrix_name(last_yuv_params.color_matrix) << "\n";
     out << "yuv.color_primaries="
         << yuv_color_primaries_name(last_yuv_params.color_primaries) << "\n";
+    out << "yuv.transfer="
+        << yuv_transfer_name(last_yuv_params.transfer) << "\n";
     out << "viewport.show_ruler=" << (show_ruler ? "true" : "false") << "\n";
     out << "viewport.show_grid="  << (show_grid  ? "true" : "false") << "\n";
     out << "viewport.grid_layout=" << grid_layout << "\n";

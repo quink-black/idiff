@@ -131,6 +131,15 @@ const char* yuv_color_primaries_name(YuvColorPrimaries p) noexcept {
     return "?";
 }
 
+const char* yuv_transfer_name(YuvTransfer t) noexcept {
+    switch (t) {
+        case YuvTransfer::BT709: return "BT.709";
+        case YuvTransfer::PQ:    return "PQ";
+        case YuvTransfer::HLG:   return "HLG";
+    }
+    return "?";
+}
+
 int yuv_pixel_format_bit_depth(YuvPixelFormat f) noexcept {
     switch (f) {
         case YuvPixelFormat::YUV420P:
@@ -257,6 +266,17 @@ bool guess_yuv_params_from_filename(const std::string& path, YuvStreamParams& ou
                name.find("smpte170m") != std::string::npos) {
         out.color_matrix = YuvColorMatrix::BT601;
         out.color_primaries = YuvColorPrimaries::BT601;
+        changed = true;
+    }
+
+    // Transfer function hints.
+    if (name.find("smpte2084") != std::string::npos ||
+        name.find("pq") != std::string::npos) {
+        out.transfer = YuvTransfer::PQ;
+        changed = true;
+    } else if (name.find("hlg") != std::string::npos ||
+               name.find("arib_std-b67") != std::string::npos) {
+        out.transfer = YuvTransfer::HLG;
         changed = true;
     }
 
