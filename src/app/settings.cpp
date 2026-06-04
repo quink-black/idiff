@@ -72,6 +72,31 @@ std::filesystem::path settings_dir() {
     return std::filesystem::path(".");
 }
 
+// Closed-set validators for the YUV colour metadata fields.  These
+// must stay in sync with the Combo entries the dialog exposes; any
+// value we won't ever round-trip through the UI is dropped on load
+// so a stale settings file from an earlier build (which used
+// human-readable names like "BT.2020 NCL" or "Full") cannot poison
+// the dialog's initial state.  Pixel format is intentionally not
+// validated here because the dialog allows a "Custom..." escape
+// hatch for FFmpeg names not enumerated in the preset list.
+bool is_valid_color_range(const std::string& v) {
+    return v == "tv" || v == "pc";
+}
+
+bool is_valid_color_matrix(const std::string& v) {
+    return v == "smpte170m" || v == "bt709" || v == "bt2020nc";
+}
+
+bool is_valid_color_primaries(const std::string& v) {
+    return v == "smpte170m" || v == "bt709" || v == "bt2020";
+}
+
+bool is_valid_transfer(const std::string& v) {
+    return v == "bt709" || v == "iec61966-2-1"
+        || v == "smpte2084" || v == "arib-std-b67";
+}
+
 } // namespace
 
 std::string AppSettings::default_path() {
@@ -103,13 +128,21 @@ AppSettings AppSettings::load(const std::string& path) {
         } else if (key == "yuv.pixel_format") {
             s.last_yuv_params.pixel_format = val;
         } else if (key == "yuv.color_range") {
-            s.last_yuv_params.color_range = val;
+            if (is_valid_color_range(val)) {
+                s.last_yuv_params.color_range = val;
+            }
         } else if (key == "yuv.color_matrix") {
-            s.last_yuv_params.color_matrix = val;
+            if (is_valid_color_matrix(val)) {
+                s.last_yuv_params.color_matrix = val;
+            }
         } else if (key == "yuv.color_primaries") {
-            s.last_yuv_params.color_primaries = val;
+            if (is_valid_color_primaries(val)) {
+                s.last_yuv_params.color_primaries = val;
+            }
         } else if (key == "yuv.transfer") {
-            s.last_yuv_params.transfer = val;
+            if (is_valid_transfer(val)) {
+                s.last_yuv_params.transfer = val;
+            }
         } else if (key == "viewport.show_ruler") {
             s.show_ruler = parse_bool(val, s.show_ruler);
         } else if (key == "viewport.show_grid") {
