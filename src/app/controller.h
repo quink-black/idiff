@@ -4,6 +4,7 @@
 #include "core/image_loader.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,23 @@ public:
     // Sort the library by filename and patch the selection model so
     // selected indices follow their entries to the new positions.
     void sort_entries_by_name();
+
+    // Return all entry indices that share the same group key as
+    // `index`.  Group key = filename stem (everything before the
+    // last extension dot).  Returns an empty set when the index is
+    // out of range or no matching entries are found.
+    std::set<int> group_indices(int index) const;
+
+    // Replace the selection with all entries that share `index`'s
+    // group key.  Marks diff dirty and returns true when the
+    // selection actually changed.  No-op for out-of-range indices.
+    bool select_group(int index);
+
+    // Select all entries in the inclusive range [from, to].
+    // Replaces the current selection.  Out-of-range indices are
+    // clamped; from > to is swapped.  Returns true if the selection
+    // changed.
+    bool select_range(int from, int to);
 
     // Move the entry at `from` to position `to` and patch the
     // selection accordingly.  Out-of-range indices are ignored; a
