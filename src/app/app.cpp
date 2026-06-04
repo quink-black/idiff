@@ -135,6 +135,8 @@ struct App::State {
     QuitConfirmDialogState quit_confirm_dialog;
     bool show_inspector = true;
     bool show_image_list = true;
+    bool group_by_name = false;
+    int last_clicked_index = -1;  // anchor for Shift+click range select
     int sidebar_tab = 0;
 
     // Difference-mode options (heatmap color scheme and amplification).
@@ -1362,6 +1364,7 @@ void App::render_toolbar() {
     in.viewport = state_->viewport.get();
     in.show_image_list = &state_->show_image_list;
     in.show_inspector = &state_->show_inspector;
+    in.group_by_name = &state_->group_by_name;
     in.upscale_method = &state_->upscale_method;
     in.any_entries_loaded = !entries_view().empty();
     in.get_loader_backend = [this]() { return controller_->loader_backend(); };
@@ -1395,6 +1398,8 @@ void App::render_image_list() {
     in.sr_service = sr_service_;
     in.show_image_list = &state_->show_image_list;
     in.sr_enabled = sr_enabled_;
+    in.group_by_name = state_->group_by_name;
+    in.last_clicked_index = &state_->last_clicked_index;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.entry_is_yuv = [this](int idx) -> bool {
         if (idx < 0 || idx >= static_cast<int>(entries_view().size())) {
@@ -1463,6 +1468,20 @@ void App::render_image_list() {
             entries_view()[i].texture_dirty = true;
         }
         diff_service_->mark_dirty();
+    };
+    in.on_select_group = [this](int idx) {
+        controller_->select_group(idx);
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < static_cast<int>(entries_view().size()))
+                entries_view()[s].texture_dirty = true;
+        }
+    };
+    in.on_select_range = [this](int from, int to) {
+        controller_->select_range(from, to);
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < static_cast<int>(entries_view().size()))
+                entries_view()[s].texture_dirty = true;
+        }
     };
     in.on_invert_selection = [this]() {
         for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {

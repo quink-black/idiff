@@ -4,11 +4,13 @@
 #include "app/sr_infer_engine.h" // SREngineStatus
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
+#include "domain/group_key.h"
 #include "domain/selection_model.h"
 #include "domain/sr_task_service.h"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -102,10 +104,27 @@ void render_image_list(const ImageListInputs& in) {
 
             bool checked = is_sel;
             if (ImGui::Checkbox("##sel", &checked)) {
-                if (checked) {
-                    selection.insert(i);
+                if (in.group_by_name && in.on_select_group) {
+                    if (checked) {
+                        in.on_select_group(i);
+                    } else {
+                        // Unselect the whole group.
+                        std::string key =
+                            group_key_from_filename(entry.filename);
+                        for (int j = 0;
+                             j < static_cast<int>(entries.size()); ++j) {
+                            if (group_key_from_filename(
+                                    entries[j].filename) == key) {
+                                selection.erase(j);
+                            }
+                        }
+                    }
                 } else {
-                    selection.erase(i);
+                    if (checked) {
+                        selection.insert(i);
+                    } else {
+                        selection.erase(i);
+                    }
                 }
                 // Selection change affects upscale targets for all selected images
                 for (int s : selection.indices()) {
@@ -114,8 +133,6 @@ void render_image_list(const ImageListInputs& in) {
                     }
                 }
                 diff_service.mark_dirty();
-                // Statistics panel cache is pointer-keyed and self-prunes,
-                // so no explicit invalidation is needed on selection change.
             }
 
             ImGui::SameLine();
@@ -137,6 +154,33 @@ void render_image_list(const ImageListInputs& in) {
             // Selectable for the label -- also serves as drag source/target
             ImGui::Selectable(entry.display_label.c_str(), is_sel,
                               ImGuiSelectableFlags_AllowOverlap);
+
+            // Shift+click on the Selectable triggers range selection.
+            // Plain click toggles the entry (or group) and updates the
+            // anchor for future Shift+clicks.
+            if (ImGui::IsItemHovered() &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                ImGuiIO& io = ImGui::GetIO();
+                if (io.KeyShift && in.last_clicked_index &&
+                    *in.last_clicked_index >= 0 &&
+                    *in.last_clicked_index != i &&
+                    in.on_select_range) {
+                    in.on_select_range(*in.last_clicked_index, i);
+                } else if (in.group_by_name && in.on_select_group) {
+                    in.on_select_group(i);
+                    if (in.last_clicked_index)
+                        *in.last_clicked_index = i;
+                } else {
+                    selection.toggle(i);
+                    for (int s : selection.indices()) {
+                        if (s >= 0 && s < static_cast<int>(entries.size()))
+                            entries[s].texture_dirty = true;
+                    }
+                    diff_service.mark_dirty();
+                    if (in.last_clicked_index)
+                        *in.last_clicked_index = i;
+                }
+            }
 
             // Show SR progress indicator if this entry is being processed
             for (const auto& task : sr_service.tasks()) {
@@ -257,6 +301,11 @@ void render_image_list(const ImageListInputs& in) {
                 }
                 if (ImGui::MenuItem("Select Only This")) {
                     if (in.on_select_only_this) in.on_select_only_this(i);
+                }
+                if (in.group_by_name && in.on_select_group) {
+                    if (ImGui::MenuItem("Select Group")) {
+                        in.on_select_group(i);
+                    }
                 }
                 bool already_ref = (i == ref_idx);
                 if (ImGui::MenuItem("Mark as Reference", nullptr, false,
