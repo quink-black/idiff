@@ -27,6 +27,12 @@ struct YuvDialogState {
     YuvStreamParams params{};
     bool needs_open = false;
     int editing_entry_idx = -1;
+
+    // Sticky flag: once the user picks "Custom..." in the pixel-format
+    // combo we keep the InputText visible even while `params.pixel_format`
+    // still matches a preset (so they can edit a preset name).  Reset
+    // whenever the dialog is primed for a new file/edit.
+    bool custom_pixel_format = false;
 };
 
 // Callback bundle the YUV dialog needs from the host.  Kept narrow so
