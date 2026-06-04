@@ -19,6 +19,7 @@ add_executable(idiff_tests
     test_diff_service.cpp
     test_sr_task_service.cpp
     test_comparison_config_service.cpp
+    test_group_key.cpp
     test_app_controller.cpp
     test_controller_integration.cpp
     test_pixel_sampler.cpp
