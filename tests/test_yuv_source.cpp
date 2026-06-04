@@ -24,6 +24,83 @@ using namespace idiff;
 
 namespace {
 
+// Build a synthetic planar 8-bit YUV frame and write `frame_count`
+// copies to a temp file.  Returns the path.
+std::string write_tmp_yuv(const std::string& tag, int width, int height,
+                          int frame_count,
+                          const std::string& pixel_format,
+                          std::size_t frame_bytes) {
+    auto dir = std::filesystem::temp_directory_path();
+    auto path = dir / (std::string("idiff_yuv_") + tag + ".yuv");
+
+    std::vector<uint8_t> frame(frame_bytes);
+    std::fill(frame.begin(), frame.end(), static_cast<uint8_t>(128));
+
+    std::ofstream out(path, std::ios::binary);
+    REQUIRE(out.is_open());
+    for (int i = 0; i < frame_count; i++) {
+        // First byte of each frame = frame index mod 256.
+        frame[0] = static_cast<uint8_t>(i & 0xFF);
+        out.write(reinterpret_cast<const char*>(frame.data()), frame.size());
+    }
+    out.close();
+    return path.string();
+}
+
+// Build a synthetic 10-bit planar YUV frame (16-bit LE samples) and
+// write `frame_count` copies to a temp file.
+std::string write_tmp_yuv_10bit(const std::string& tag, int width, int height,
+                                int frame_count, uint16_t value10,
+                                const std::string& pixel_format,
+                                std::size_t frame_bytes) {
+    auto dir = std::filesystem::temp_directory_path();
+    auto path = dir / (std::string("idiff_yuv10_") + tag + ".yuv");
+
+    // value10 in the lower 10 bits, stored as 16-bit LE.
+    uint16_t val = value10 & 0x3FF;
+    uint8_t lo = static_cast<uint8_t>(val & 0xFF);
+    uint8_t hi = static_cast<uint8_t>((val >> 8) & 0xFF);
+
+    std::vector<uint8_t> frame(frame_bytes);
+    for (std::size_t i = 0; i + 1 < frame_bytes; i += 2) {
+        frame[i] = lo;
+        frame[i + 1] = hi;
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.is_open());
+    for (int i = 0; i < frame_count; i++) {
+        frame[0] = static_cast<uint8_t>(i & 0xFF);
+        out.write(reinterpret_cast<const char*>(frame.data()), frame.size());
+    }
+    out.close();
+    return path.string();
+}
+
+// Compute frame size for common formats (used by test helpers only;
+// production code uses FFmpeg's av_image_get_buffer_size).
+std::size_t test_frame_size(const std::string& fmt, int w, int h) {
+    // 8-bit planar
+    if (fmt == "yuv420p") return static_cast<std::size_t>(w * h * 3 / 2);
+    if (fmt == "yuv422p") return static_cast<std::size_t>(w * h * 2);
+    if (fmt == "yuv444p") return static_cast<std::size_t>(w * h * 3);
+    if (fmt == "nv12")    return static_cast<std::size_t>(w * h + (w / 2) * (h / 2) * 2);
+    // 10-bit planar (16-bit LE per sample)
+    if (fmt == "yuv420p10le") return static_cast<std::size_t>(w * h * 2 + (w / 2) * (h / 2) * 2 * 2);
+    if (fmt == "yuv422p10le") return static_cast<std::size_t>(w * h * 2 + (w / 2) * h * 2 * 2);
+    if (fmt == "yuv444p10le") return static_cast<std::size_t>(w * h * 2 * 3);
+    if (fmt == "p010le")     return static_cast<std::size_t>(w * h * 2 + (w / 2) * (h / 2) * 2 * 2);
+    return 0;
+}
+
+// Helper to make a YuvStreamParams.
+YuvStreamParams make_params(int w, int h, const std::string& fmt) {
+    YuvStreamParams p;
+    p.width = w;
+    p.height = h;
+    p.pixel_format = fmt;
+    return p;
+}
+
 // RAII helper to remove a temp file.  On Windows, FFmpeg may still
 // hold the file handle when std::filesystem::remove() is first called.
 // This helper retries a few times before giving up.
@@ -41,205 +118,7 @@ struct TempFile {
     TempFile& operator=(const TempFile&) = delete;
 };
 
-// Build a synthetic planar 8-bit YUV frame with distinct per-plane constants
-// and write `frame_count` copies to a temp file.  Returns the path and
-// sets frame_bytes to the size of one frame.
-std::string write_tmp_yuv(const std::string& tag, const YuvStreamParams& p,
-                          int frame_count, std::size_t& frame_bytes_out) {
-    frame_bytes_out = yuv_frame_size_bytes(p);
-    REQUIRE(frame_bytes_out > 0);
-
-    auto dir = std::filesystem::temp_directory_path();
-    auto path = dir / (std::string("idiff_yuv_") + tag + ".yuv");
-
-    std::vector<uint8_t> frame(frame_bytes_out);
-    std::fill(frame.begin(), frame.end(), static_cast<uint8_t>(128));
-
-    std::ofstream out(path, std::ios::binary);
-    REQUIRE(out.is_open());
-    for (int i = 0; i < frame_count; i++) {
-        // First byte of each frame = frame index mod 256, so decoded
-        // top-left pixel encodes the frame index.
-        frame[0] = static_cast<uint8_t>(i & 0xFF);
-        out.write(reinterpret_cast<const char*>(frame.data()), frame.size());
-    }
-    out.close();
-    return path.string();
-}
-
-// Build a synthetic 10-bit planar YUV frame (16-bit LE samples) and write
-// `frame_count` copies to a temp file.  Each sample is set to `value10`
-// (stored in the lower 10 bits of a 16-bit LE word).
-std::string write_tmp_yuv_10bit(const std::string& tag, const YuvStreamParams& p,
-                                int frame_count, uint16_t value10,
-                                std::size_t& frame_bytes_out) {
-    frame_bytes_out = yuv_frame_size_bytes(p);
-    REQUIRE(frame_bytes_out > 0);
-
-    auto dir = std::filesystem::temp_directory_path();
-    auto path = dir / (std::string("idiff_yuv10_") + tag + ".yuv");
-
-    // value10 in the lower 10 bits, stored as 16-bit LE.
-    uint16_t val = value10 & 0x3FF;
-    uint8_t lo = static_cast<uint8_t>(val & 0xFF);
-    uint8_t hi = static_cast<uint8_t>((val >> 8) & 0xFF);
-
-    // Alternate lo/hi bytes for the entire frame.
-    std::vector<uint8_t> frame(frame_bytes_out);
-    for (std::size_t i = 0; i + 1 < frame_bytes_out; i += 2) {
-        frame[i] = lo;
-        frame[i + 1] = hi;
-    }
-    // First two bytes encode frame index in the low byte.
-    for (int i = 0; i < frame_count; i++) {
-        frame[0] = static_cast<uint8_t>(i & 0xFF);
-        std::ofstream out(path, std::ios::binary | std::ios::app);
-        REQUIRE(out.is_open());
-        out.write(reinterpret_cast<const char*>(frame.data()), frame.size());
-        out.close();
-    }
-    return path.string();
-}
-
-// Build a synthetic P010 frame (Y plane + interleaved UV plane, all 16-bit LE).
-std::string write_tmp_p010(const std::string& tag, const YuvStreamParams& p,
-                           int frame_count, uint16_t value10,
-                           std::size_t& frame_bytes_out) {
-    return write_tmp_yuv_10bit(tag, p, frame_count, value10, frame_bytes_out);
-}
-
-// Build a synthetic NV16 frame (Y plane + interleaved UV plane, 8-bit).
-std::string write_tmp_nv16(const std::string& tag, const YuvStreamParams& p,
-                           int frame_count, std::size_t& frame_bytes_out) {
-    return write_tmp_yuv(tag, p, frame_count, frame_bytes_out);
-}
-
 }  // namespace
-
-// -----------------------------------------------------------------------------
-// yuv_frame_size_bytes.
-// -----------------------------------------------------------------------------
-
-TEST_CASE("yuv_frame_size_bytes computes sizes and rejects bad shapes",
-          "[yuv]") {
-    YuvStreamParams p;
-
-    SECTION("8-bit planar formats produce expected byte totals") {
-        p.width = 1920;
-        p.height = 1080;
-        p.pixel_format = YuvPixelFormat::YUV420P;
-        REQUIRE(yuv_frame_size_bytes(p) == 1920ULL * 1080 * 3 / 2);
-        p.pixel_format = YuvPixelFormat::YUV422P;
-        REQUIRE(yuv_frame_size_bytes(p) == 1920ULL * 1080 * 2);
-        p.pixel_format = YuvPixelFormat::YUV444P;
-        REQUIRE(yuv_frame_size_bytes(p) == 1920ULL * 1080 * 3);
-    }
-
-    SECTION("10-bit planar formats produce expected byte totals") {
-        p.width = 16;
-        p.height = 16;
-        p.pixel_format = YuvPixelFormat::YUV420P10;
-        // Y: 16*16*2 = 512, U: 8*8*2 = 128, V: 8*8*2 = 128 => 768
-        REQUIRE(yuv_frame_size_bytes(p) == 768);
-        p.pixel_format = YuvPixelFormat::YUV422P10;
-        // Y: 16*16*2 = 512, U: 8*16*2 = 256, V: 8*16*2 = 256 => 1024
-        REQUIRE(yuv_frame_size_bytes(p) == 1024);
-        p.pixel_format = YuvPixelFormat::YUV444P10;
-        // Y+U+V: 16*16*2*3 = 1536
-        REQUIRE(yuv_frame_size_bytes(p) == 1536);
-    }
-
-    SECTION("semi-planar formats produce expected byte totals") {
-        p.width = 16;
-        p.height = 16;
-        p.pixel_format = YuvPixelFormat::P010;
-        // Same as YUV420P10: Y*2 + UV*2 = 16*16*2 + 8*8*2*2 = 768
-        REQUIRE(yuv_frame_size_bytes(p) == 768);
-        p.pixel_format = YuvPixelFormat::NV16;
-        // Y + UV interleaved = 16*16 + 16*16 = 512
-        REQUIRE(yuv_frame_size_bytes(p) == 512);
-    }
-
-    SECTION("zero-dimension input is rejected") {
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-    }
-
-    SECTION("420P and P010 reject odd height or width") {
-        p.width = 64;
-        p.height = 63;
-        p.pixel_format = YuvPixelFormat::YUV420P;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-        p.pixel_format = YuvPixelFormat::P010;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-
-        p.width = 63;
-        p.height = 64;
-        p.pixel_format = YuvPixelFormat::YUV420P;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-        p.pixel_format = YuvPixelFormat::P010;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-    }
-
-    SECTION("422P and NV16 reject odd width") {
-        p.width = 63;
-        p.height = 64;
-        p.pixel_format = YuvPixelFormat::YUV422P;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-        p.pixel_format = YuvPixelFormat::NV16;
-        REQUIRE(yuv_frame_size_bytes(p) == 0);
-    }
-
-    SECTION("444P and 444P10 accept any positive size") {
-        p.width = 63;
-        p.height = 64;
-        p.pixel_format = YuvPixelFormat::YUV444P;
-        REQUIRE(yuv_frame_size_bytes(p) == 63ULL * 64 * 3);
-        p.pixel_format = YuvPixelFormat::YUV444P10;
-        REQUIRE(yuv_frame_size_bytes(p) == 63ULL * 64 * 2 * 3);
-    }
-}
-
-// -----------------------------------------------------------------------------
-// yuv_pixel_format_name and yuv_pixel_format_bit_depth.
-// -----------------------------------------------------------------------------
-
-TEST_CASE("yuv_pixel_format_name and bit_depth helpers", "[yuv]") {
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV420P)) == "YUV420P");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV422P)) == "YUV422P");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV444P)) == "YUV444P");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV420P10)) == "YUV420P10");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV422P10)) == "YUV422P10");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::YUV444P10)) == "YUV444P10");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::P010)) == "P010");
-    REQUIRE(std::string(yuv_pixel_format_name(YuvPixelFormat::NV16)) == "NV16");
-
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV420P) == 8);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV422P) == 8);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV444P) == 8);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::NV16) == 8);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV420P10) == 10);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV422P10) == 10);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::YUV444P10) == 10);
-    REQUIRE(yuv_pixel_format_bit_depth(YuvPixelFormat::P010) == 10);
-}
-
-// -----------------------------------------------------------------------------
-// yuv_color_matrix_name and yuv_color_primaries_name.
-// -----------------------------------------------------------------------------
-
-TEST_CASE("yuv_color_matrix_name, primaries_name, and transfer_name helpers", "[yuv]") {
-    REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT601)) == "BT.601");
-    REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT709)) == "BT.709");
-    REQUIRE(std::string(yuv_color_matrix_name(YuvColorMatrix::BT2020_NCL)) == "BT.2020 NCL");
-
-    REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT601)) == "BT.601");
-    REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT709)) == "BT.709");
-    REQUIRE(std::string(yuv_color_primaries_name(YuvColorPrimaries::BT2020)) == "BT.2020");
-
-    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::BT709)) == "BT.709");
-    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::PQ)) == "PQ");
-    REQUIRE(std::string(yuv_transfer_name(YuvTransfer::HLG)) == "HLG");
-}
 
 // -----------------------------------------------------------------------------
 // guess_yuv_params_from_filename.
@@ -257,78 +136,88 @@ TEST_CASE("guess_yuv_params_from_filename parses size and format hints",
     SECTION("8-bit planar format keywords") {
         YuvStreamParams p;
         guess_yuv_params_from_filename("clip_yuv422p_640x480.yuv", p);
-        REQUIRE(p.pixel_format == YuvPixelFormat::YUV422P);
+        REQUIRE(p.pixel_format == "yuv422p");
         REQUIRE(p.width == 640);
         REQUIRE(p.height == 480);
 
         YuvStreamParams q;
         guess_yuv_params_from_filename("clip_yuv444p_640x480.yuv", q);
-        REQUIRE(q.pixel_format == YuvPixelFormat::YUV444P);
+        REQUIRE(q.pixel_format == "yuv444p");
 
         YuvStreamParams r;
         guess_yuv_params_from_filename("something_i420.yuv", r);
-        REQUIRE(r.pixel_format == YuvPixelFormat::YUV420P);
+        REQUIRE(r.pixel_format == "yuv420p");
     }
 
     SECTION("10-bit planar format keywords") {
         YuvStreamParams p;
         guess_yuv_params_from_filename("clip_yuv420p10_1920x1080.yuv", p);
-        REQUIRE(p.pixel_format == YuvPixelFormat::YUV420P10);
+        REQUIRE(p.pixel_format == "yuv420p10le");
         REQUIRE(p.width == 1920);
         REQUIRE(p.height == 1080);
 
         YuvStreamParams q;
         guess_yuv_params_from_filename("clip_yuv422p10_640x480.yuv", q);
-        REQUIRE(q.pixel_format == YuvPixelFormat::YUV422P10);
+        REQUIRE(q.pixel_format == "yuv422p10le");
 
         YuvStreamParams r;
         guess_yuv_params_from_filename("clip_yuv444p10_640x480.yuv", r);
-        REQUIRE(r.pixel_format == YuvPixelFormat::YUV444P10);
+        REQUIRE(r.pixel_format == "yuv444p10le");
     }
 
     SECTION("semi-planar format keywords") {
         YuvStreamParams p;
         guess_yuv_params_from_filename("clip_p010_1920x1080.yuv", p);
-        REQUIRE(p.pixel_format == YuvPixelFormat::P010);
+        REQUIRE(p.pixel_format == "p010le");
         REQUIRE(p.width == 1920);
         REQUIRE(p.height == 1080);
 
         YuvStreamParams q;
-        guess_yuv_params_from_filename("clip_nv16_640x480.yuv", q);
-        REQUIRE(q.pixel_format == YuvPixelFormat::NV16);
+        guess_yuv_params_from_filename("clip_nv12_640x480.yuv", q);
+        REQUIRE(q.pixel_format == "nv12");
         REQUIRE(q.width == 640);
         REQUIRE(q.height == 480);
     }
 
-    SECTION("color matrix keywords") {
+    SECTION("color metadata keywords use FFmpeg names") {
         YuvStreamParams p;
         guess_yuv_params_from_filename("clip_bt601_640x480.yuv", p);
-        REQUIRE(p.color_matrix == YuvColorMatrix::BT601);
-        REQUIRE(p.color_primaries == YuvColorPrimaries::BT601);
+        REQUIRE(p.color_matrix == "smpte170m");
+        REQUIRE(p.color_primaries == "smpte170m");
 
         YuvStreamParams q;
         guess_yuv_params_from_filename("clip_bt709_1920x1080.yuv", q);
-        REQUIRE(q.color_matrix == YuvColorMatrix::BT709);
-        REQUIRE(q.color_primaries == YuvColorPrimaries::BT709);
+        REQUIRE(q.color_matrix == "bt709");
+        REQUIRE(q.color_primaries == "bt709");
 
         YuvStreamParams r;
         guess_yuv_params_from_filename("clip_bt2020_3840x2160.yuv", r);
-        REQUIRE(r.color_matrix == YuvColorMatrix::BT2020_NCL);
-        REQUIRE(r.color_primaries == YuvColorPrimaries::BT2020);
+        REQUIRE(r.color_matrix == "bt2020-nccl");
+        REQUIRE(r.color_primaries == "bt2020");
     }
 
-    SECTION("transfer function keywords") {
+    SECTION("transfer function keywords use FFmpeg names") {
         YuvStreamParams p;
         guess_yuv_params_from_filename("clip_p010_3840x2160_pq.yuv", p);
-        REQUIRE(p.transfer == YuvTransfer::PQ);
+        REQUIRE(p.transfer == "smpte2084");
 
         YuvStreamParams q;
         guess_yuv_params_from_filename("clip_p010_3840x2160_hlg.yuv", q);
-        REQUIRE(q.transfer == YuvTransfer::HLG);
+        REQUIRE(q.transfer == "arib-std-b67");
 
         YuvStreamParams r;
         guess_yuv_params_from_filename("clip_smpte2084_3840x2160.yuv", r);
-        REQUIRE(r.transfer == YuvTransfer::PQ);
+        REQUIRE(r.transfer == "smpte2084");
+    }
+
+    SECTION("color range keywords use FFmpeg names") {
+        YuvStreamParams p;
+        guess_yuv_params_from_filename("clip_fullrange_640x480.yuv", p);
+        REQUIRE(p.color_range == "pc");
+
+        YuvStreamParams q;
+        guess_yuv_params_from_filename("clip_limited_640x480.yuv", q);
+        REQUIRE(q.color_range == "tv");
     }
 
     SECTION("unrecognized filename leaves the params untouched") {
@@ -339,6 +228,15 @@ TEST_CASE("guess_yuv_params_from_filename parses size and format hints",
         REQUIRE(p.width == 0);
         REQUIRE(p.height == 0);
     }
+
+    SECTION("defaults are sensible FFmpeg names") {
+        YuvStreamParams p;
+        REQUIRE(p.pixel_format == "yuv420p");
+        REQUIRE(p.color_range == "tv");
+        REQUIRE(p.color_matrix == "bt709");
+        REQUIRE(p.color_primaries == "bt709");
+        REQUIRE(p.transfer == "bt709");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -348,16 +246,13 @@ TEST_CASE("guess_yuv_params_from_filename parses size and format hints",
 #ifdef IDIFF_HAVE_FFMPEG
 
 TEST_CASE("YuvRawSource decodes every 8-bit planar format", "[yuv][ffmpeg]") {
-    auto fmt = GENERATE(YuvPixelFormat::YUV420P, YuvPixelFormat::YUV422P,
-                        YuvPixelFormat::YUV444P);
-    CAPTURE(static_cast<int>(fmt));
+    auto fmt = GENERATE("yuv420p", "yuv422p", "yuv444p");
+    CAPTURE(fmt);
 
-    YuvStreamParams p;
-    p.width = 16;
-    p.height = 16;
-    p.pixel_format = fmt;
-    std::size_t fb = 0;
-    std::string path_str = write_tmp_yuv("fmt8", p, 5, fb);
+    auto p = make_params(16, 16, fmt);
+    auto fb = test_frame_size(fmt, 16, 16);
+    REQUIRE(fb > 0);
+    std::string path_str = write_tmp_yuv("fmt8", 16, 16, 5, fmt, fb);
     TempFile cleanup{std::filesystem::path(path_str)};
 
     // Scope the source so FFmpeg releases the file handle before
@@ -380,17 +275,13 @@ TEST_CASE("YuvRawSource decodes every 8-bit planar format", "[yuv][ffmpeg]") {
 }
 
 TEST_CASE("YuvRawSource decodes 10-bit planar formats", "[yuv][ffmpeg]") {
-    auto fmt = GENERATE(YuvPixelFormat::YUV420P10, YuvPixelFormat::YUV422P10,
-                        YuvPixelFormat::YUV444P10);
-    CAPTURE(static_cast<int>(fmt));
+    auto fmt = GENERATE("yuv420p10le", "yuv422p10le", "yuv444p10le");
+    CAPTURE(fmt);
 
-    YuvStreamParams p;
-    p.width = 16;
-    p.height = 16;
-    p.pixel_format = fmt;
-    std::size_t fb = 0;
-    // 10-bit mid-gray = 512
-    std::string path_str = write_tmp_yuv_10bit("fmt10", p, 3, 512, fb);
+    auto p = make_params(16, 16, fmt);
+    auto fb = test_frame_size(fmt, 16, 16);
+    REQUIRE(fb > 0);
+    std::string path_str = write_tmp_yuv_10bit("fmt10", 16, 16, 3, 512, fmt, fb);
     TempFile cleanup{std::filesystem::path(path_str)};
 
     {
@@ -410,12 +301,10 @@ TEST_CASE("YuvRawSource decodes 10-bit planar formats", "[yuv][ffmpeg]") {
 }
 
 TEST_CASE("YuvRawSource decodes P010 format", "[yuv][ffmpeg]") {
-    YuvStreamParams p;
-    p.width = 16;
-    p.height = 16;
-    p.pixel_format = YuvPixelFormat::P010;
-    std::size_t fb = 0;
-    std::string path_str = write_tmp_p010("p010", p, 3, 512, fb);
+    auto p = make_params(16, 16, "p010le");
+    auto fb = test_frame_size("p010le", 16, 16);
+    REQUIRE(fb > 0);
+    std::string path_str = write_tmp_yuv_10bit("p010", 16, 16, 3, 512, "p010le", fb);
     TempFile cleanup{std::filesystem::path(path_str)};
 
     {
@@ -432,13 +321,11 @@ TEST_CASE("YuvRawSource decodes P010 format", "[yuv][ffmpeg]") {
     }
 }
 
-TEST_CASE("YuvRawSource decodes NV16 format", "[yuv][ffmpeg]") {
-    YuvStreamParams p;
-    p.width = 16;
-    p.height = 16;
-    p.pixel_format = YuvPixelFormat::NV16;
-    std::size_t fb = 0;
-    std::string path_str = write_tmp_nv16("nv16", p, 3, fb);
+TEST_CASE("YuvRawSource decodes NV12 format", "[yuv][ffmpeg]") {
+    auto p = make_params(16, 16, "nv12");
+    auto fb = test_frame_size("nv12", 16, 16);
+    REQUIRE(fb > 0);
+    std::string path_str = write_tmp_yuv("nv12", 16, 16, 3, "nv12", fb);
     TempFile cleanup{std::filesystem::path(path_str)};
 
     {
@@ -455,22 +342,33 @@ TEST_CASE("YuvRawSource decodes NV16 format", "[yuv][ffmpeg]") {
     }
 }
 
+TEST_CASE("YuvRawSource decodes arbitrary FFmpeg format name",
+          "[yuv][ffmpeg]") {
+    auto p = make_params(16, 16, "yuv444p");
+    auto fb = test_frame_size("yuv444p", 16, 16);
+    std::string path_str = write_tmp_yuv("arb", 16, 16, 2, "yuv444p", fb);
+    TempFile cleanup{std::filesystem::path(path_str)};
+
+    {
+        YuvRawSource src(path_str, p);
+        REQUIRE(src.frame_count() == 2);
+        auto img = src.read_frame(0);
+        REQUIRE(img != nullptr);
+        REQUIRE(img->info().source_bit_depth == 8);
+    }
+}
+
 TEST_CASE("YuvRawSource populates src_av_frame for pixel inspector",
           "[yuv][ffmpeg]") {
-    YuvStreamParams p;
-    p.width = 16;
-    p.height = 16;
-    p.pixel_format = YuvPixelFormat::YUV420P;
-    std::size_t fb = 0;
-    std::string path_str = write_tmp_yuv("avframe", p, 2, fb);
+    auto p = make_params(16, 16, "yuv420p");
+    auto fb = test_frame_size("yuv420p", 16, 16);
+    std::string path_str = write_tmp_yuv("avframe", 16, 16, 2, "yuv420p", fb);
     TempFile cleanup{std::filesystem::path(path_str)};
 
     {
         YuvRawSource src(path_str, p);
         auto img = src.read_frame(0);
         REQUIRE(img != nullptr);
-        // The FFmpeg path should populate src_av_frame so the pixel
-        // inspector can read native YUV values.
         REQUIRE(img->internal().src_av_frame != nullptr);
     }
 }
@@ -478,31 +376,24 @@ TEST_CASE("YuvRawSource populates src_av_frame for pixel inspector",
 TEST_CASE("YuvRawSource: rejects invalid frame indices and invalid params",
           "[yuv][ffmpeg]") {
     SECTION("out-of-range and negative frame indices") {
-        YuvStreamParams p;
-        p.width = 16;
-        p.height = 16;
-        p.pixel_format = YuvPixelFormat::YUV420P;
-        std::size_t fb = 0;
-        std::string path_str = write_tmp_yuv("oob", p, 2, fb);
+        auto p = make_params(16, 16, "yuv420p");
+        auto fb = test_frame_size("yuv420p", 16, 16);
+        std::string path_str = write_tmp_yuv("oob", 16, 16, 2, "yuv420p", fb);
         TempFile cleanup{std::filesystem::path(path_str)};
 
         {
             YuvRawSource src(path_str, p);
-            REQUIRE(src.read_frame(2) == nullptr);   // index == count
-            REQUIRE(src.read_frame(-1) == nullptr);  // negative
+            REQUIRE(src.read_frame(2) == nullptr);
+            REQUIRE(src.read_frame(-1) == nullptr);
             REQUIRE_FALSE(src.last_error().empty());
         }
     }
 
-    SECTION("invalid params surface as frame_count == 0") {
-        YuvStreamParams p;
-        p.width = 0;
-        p.height = 0;
-        p.pixel_format = YuvPixelFormat::YUV420P;
-
+    SECTION("invalid pixel format surfaces as open failure") {
+        auto p = make_params(16, 16, "nonexistent_pixfmt_xyz");
         YuvRawSource src("/tmp/does_not_matter.yuv", p);
-        REQUIRE(src.frame_count() == 0);
         REQUIRE(src.read_frame(0) == nullptr);
+        REQUIRE_FALSE(src.last_error().empty());
     }
 }
 
@@ -510,15 +401,11 @@ TEST_CASE("YuvRawSource color metadata affects decode", "[yuv][ffmpeg]") {
     YuvStreamParams p;
     p.width = 16;
     p.height = 16;
-    p.pixel_format = YuvPixelFormat::YUV420P;
-    p.color_range = YuvColorRange::Limited;
-    p.color_matrix = YuvColorMatrix::BT601;
+    p.pixel_format = "yuv420p";
+    p.color_range = "tv";
+    p.color_matrix = "smpte170m";
 
-    // Create a YUV file with a non-neutral value so the matrix
-    // difference is visible.  Y=82, U=90, V=240 is an intense
-    // blue that lands at different RGB values under BT.601 vs
-    // BT.709 matrices.
-    auto fb = yuv_frame_size_bytes(p);
+    auto fb = test_frame_size("yuv420p", 16, 16);
     auto dir = std::filesystem::temp_directory_path();
     auto path = dir / "idiff_yuv_color.yuv";
     TempFile cleanup{path};
@@ -545,7 +432,7 @@ TEST_CASE("YuvRawSource color metadata affects decode", "[yuv][ffmpeg]") {
         m601 = img_601->mat().clone();
     }
 
-    p.color_matrix = YuvColorMatrix::BT709;
+    p.color_matrix = "bt709";
     {
         YuvRawSource src_709(path.string(), p);
         auto img_709 = src_709.read_frame(0);
@@ -562,6 +449,19 @@ TEST_CASE("YuvRawSource color metadata affects decode", "[yuv][ffmpeg]") {
         }
     }
     REQUIRE(any_diff);
+}
+
+TEST_CASE("YuvRawSource rejects unknown pixel format name",
+          "[yuv][ffmpeg]") {
+    auto p = make_params(16, 16, "not_a_real_format");
+    auto fb = test_frame_size("yuv420p", 16, 16);
+    std::string path_str = write_tmp_yuv("badfmt", 16, 16, 1, "yuv420p", fb);
+    TempFile cleanup{std::filesystem::path(path_str)};
+
+    YuvRawSource src(path_str, p);
+    auto img = src.read_frame(0);
+    REQUIRE(img == nullptr);
+    REQUIRE_FALSE(src.last_error().empty());
 }
 
 #endif // IDIFF_HAVE_FFMPEG

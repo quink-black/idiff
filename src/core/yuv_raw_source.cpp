@@ -22,51 +22,6 @@ extern "C" {
 namespace idiff {
 
 // ============================================================================
-// FFmpeg AVPixelFormat / AVColorSpace / AVColorPrimaries mapping
-// ============================================================================
-
-AVPixelFormat yuv_pixel_format_to_av(YuvPixelFormat f) noexcept {
-    switch (f) {
-        case YuvPixelFormat::YUV420P:   return AV_PIX_FMT_YUV420P;
-        case YuvPixelFormat::YUV422P:   return AV_PIX_FMT_YUV422P;
-        case YuvPixelFormat::YUV444P:   return AV_PIX_FMT_YUV444P;
-        case YuvPixelFormat::YUV420P10: return AV_PIX_FMT_YUV420P10LE;
-        case YuvPixelFormat::YUV422P10: return AV_PIX_FMT_YUV422P10LE;
-        case YuvPixelFormat::YUV444P10: return AV_PIX_FMT_YUV444P10LE;
-        case YuvPixelFormat::P010:      return AV_PIX_FMT_P010LE;
-        case YuvPixelFormat::NV16:      return AV_PIX_FMT_NV16;
-    }
-    return AV_PIX_FMT_NONE;
-}
-
-AVColorSpace yuv_color_matrix_to_av(YuvColorMatrix m) noexcept {
-    switch (m) {
-        case YuvColorMatrix::BT601:      return AVCOL_SPC_SMPTE170M;
-        case YuvColorMatrix::BT709:      return AVCOL_SPC_BT709;
-        case YuvColorMatrix::BT2020_NCL: return AVCOL_SPC_BT2020_NCL;
-    }
-    return AVCOL_SPC_UNSPECIFIED;
-}
-
-AVColorPrimaries yuv_color_primaries_to_av(YuvColorPrimaries p) noexcept {
-    switch (p) {
-        case YuvColorPrimaries::BT601:  return AVCOL_PRI_SMPTE170M;
-        case YuvColorPrimaries::BT709:  return AVCOL_PRI_BT709;
-        case YuvColorPrimaries::BT2020: return AVCOL_PRI_BT2020;
-    }
-    return AVCOL_PRI_UNSPECIFIED;
-}
-
-AVColorTransferCharacteristic yuv_transfer_to_av(YuvTransfer t) noexcept {
-    switch (t) {
-        case YuvTransfer::BT709: return AVCOL_TRC_BT709;
-        case YuvTransfer::PQ:    return AVCOL_TRC_SMPTE2084;
-        case YuvTransfer::HLG:   return AVCOL_TRC_ARIB_STD_B67;
-    }
-    return AVCOL_TRC_UNSPECIFIED;
-}
-
-// ============================================================================
 // YuvRawSource::FfCtx -- FFmpeg demuxer/decoder state
 // ============================================================================
 
@@ -98,24 +53,27 @@ struct YuvRawSource::FfCtx {
 
 YuvRawSource::YuvRawSource(std::string path, const YuvStreamParams& params)
     : path_(std::move(path)), params_(params) {
-    frame_bytes_ = yuv_frame_size_bytes(params_);
-    frame_count_ = 0;
-    if (frame_bytes_ > 0) {
-        std::error_code ec;
-        auto size = std::filesystem::file_size(path_, ec);
-        if (!ec && size >= frame_bytes_) {
-            frame_count_ = static_cast<int>(size / frame_bytes_);
+    // Compute frame count from file size and per-frame byte count.
+    AVPixelFormat av_fmt = av_get_pix_fmt(params_.pixel_format.c_str());
+    if (av_fmt != AV_PIX_FMT_NONE && params_.width > 0 && params_.height > 0) {
+        auto frame_sz = av_image_get_buffer_size(av_fmt, params_.width,
+                                                  params_.height, 1);
+        if (frame_sz > 0) {
+            frame_bytes_ = static_cast<std::size_t>(frame_sz);
+            std::error_code ec;
+            auto file_sz = std::filesystem::file_size(path_, ec);
+            if (!ec && file_sz >= frame_bytes_) {
+                frame_count_ = static_cast<int>(file_sz / frame_bytes_);
+            }
         }
     }
 
-    format_desc_ = std::string(yuv_pixel_format_name(params_.pixel_format)) + " "
+    format_desc_ = params_.pixel_format + " "
                  + std::to_string(params_.width) + "x"
                  + std::to_string(params_.height) + " "
-                 + std::to_string(yuv_pixel_format_bit_depth(params_.pixel_format))
-                 + "-bit "
-                 + yuv_color_matrix_name(params_.color_matrix) + " "
-                 + yuv_transfer_name(params_.transfer) + " "
-                 + yuv_color_range_name(params_.color_range);
+                 + params_.color_matrix + " "
+                 + params_.transfer + " "
+                 + params_.color_range;
 }
 
 YuvRawSource::~YuvRawSource() {
@@ -132,6 +90,13 @@ bool YuvRawSource::open_ffmpeg() {
         return false;
     }
 
+    // Resolve the FFmpeg pixel format from the string name.
+    AVPixelFormat av_fmt = av_get_pix_fmt(params_.pixel_format.c_str());
+    if (av_fmt == AV_PIX_FMT_NONE) {
+        last_error_ = "unknown pixel format: " + params_.pixel_format;
+        return false;
+    }
+
     // Build format options for the rawvideo demuxer.
     AVDictionary* opts = nullptr;
     char size_str[32];
@@ -139,8 +104,7 @@ bool YuvRawSource::open_ffmpeg() {
                   params_.width, params_.height);
     av_dict_set(&opts, "video_size", size_str, 0);
 
-    const char* pix_fmt_name = av_get_pix_fmt_name(
-        yuv_pixel_format_to_av(params_.pixel_format));
+    const char* pix_fmt_name = av_get_pix_fmt_name(av_fmt);
     if (pix_fmt_name) {
         av_dict_set(&opts, "pixel_format", pix_fmt_name, 0);
     }
@@ -205,14 +169,45 @@ bool YuvRawSource::open_ffmpeg() {
 
     // Inject the user-specified color metadata so the decoded frames
     // carry the correct tags for VideoFilterGraph.
-    ff_->codec_ctx->color_range =
-        (params_.color_range == YuvColorRange::Full)
-            ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    AVColorRange av_range =
+        static_cast<AVColorRange>(av_color_range_from_name(
+            params_.color_range.c_str()));
+    if (av_range != AVCOL_RANGE_JPEG && av_range != AVCOL_RANGE_MPEG) {
+        LOG_WARN("YuvRawSource: unknown color_range '%s', using tv",
+                 params_.color_range.c_str());
+        av_range = AVCOL_RANGE_MPEG;
+    }
+    ff_->codec_ctx->color_range = av_range;
+
     ff_->codec_ctx->colorspace =
-        yuv_color_matrix_to_av(params_.color_matrix);
+        static_cast<AVColorSpace>(
+            av_color_space_from_name(params_.color_matrix.c_str()));
+    if (ff_->codec_ctx->colorspace == AVCOL_SPC_UNSPECIFIED &&
+        params_.color_matrix != "unspecified" &&
+        !params_.color_matrix.empty()) {
+        LOG_WARN("YuvRawSource: unknown color_matrix '%s', using unspecified",
+                 params_.color_matrix.c_str());
+    }
+
     ff_->codec_ctx->color_primaries =
-        yuv_color_primaries_to_av(params_.color_primaries);
-    ff_->codec_ctx->color_trc = yuv_transfer_to_av(params_.transfer);
+        static_cast<AVColorPrimaries>(
+            av_color_primaries_from_name(params_.color_primaries.c_str()));
+    if (ff_->codec_ctx->color_primaries == AVCOL_PRI_UNSPECIFIED &&
+        params_.color_primaries != "unspecified" &&
+        !params_.color_primaries.empty()) {
+        LOG_WARN("YuvRawSource: unknown color_primaries '%s', using unspecified",
+                 params_.color_primaries.c_str());
+    }
+
+    ff_->codec_ctx->color_trc =
+        static_cast<AVColorTransferCharacteristic>(
+            av_color_transfer_from_name(params_.transfer.c_str()));
+    if (ff_->codec_ctx->color_trc == AVCOL_TRC_UNSPECIFIED &&
+        params_.transfer != "unspecified" &&
+        !params_.transfer.empty()) {
+        LOG_WARN("YuvRawSource: unknown transfer '%s', using unspecified",
+                 params_.transfer.c_str());
+    }
 
     ret = avcodec_open2(ff_->codec_ctx, codec, nullptr);
     if (ret < 0) {
@@ -232,6 +227,7 @@ bool YuvRawSource::open_ffmpeg() {
     }
 
     ff_->current_frame_idx = -1;
+
     last_error_.clear();
     return true;
 }
@@ -279,10 +275,6 @@ bool YuvRawSource::decode_next_frame() {
 }
 
 std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
-    if (frame_bytes_ == 0) {
-        last_error_ = "invalid YUV parameters";
-        return nullptr;
-    }
     if (index < 0 || index >= frame_count_) {
         last_error_ = "frame index out of range";
         return nullptr;
@@ -325,9 +317,6 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
     if (ff_->display_graph.needs_reconfigure(ff_->frame)) {
         const AVPixFmtDescriptor* pix_desc =
             av_pix_fmt_desc_get(static_cast<AVPixelFormat>(ff_->frame->format));
-        int src_bit_depth = (pix_desc && pix_desc->nb_components > 0)
-                                ? pix_desc->comp[0].depth
-                                : 8;
 
         VideoFilterInputParams in;
         in.width     = ff_->frame->width;
@@ -335,11 +324,17 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
         in.pix_fmt   = static_cast<AVPixelFormat>(ff_->frame->format);
         in.sar       = AVRational{1, 1};
         in.time_base = AVRational{1, 25};
-        in.range     = (params_.color_range == YuvColorRange::Full)
-                            ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
-        in.matrix    = yuv_color_matrix_to_av(params_.color_matrix);
-        in.primaries = yuv_color_primaries_to_av(params_.color_primaries);
-        in.transfer  = yuv_transfer_to_av(params_.transfer);
+        in.range     = static_cast<AVColorRange>(
+            av_color_range_from_name(params_.color_range.c_str()));
+        if (in.range != AVCOL_RANGE_JPEG && in.range != AVCOL_RANGE_MPEG) {
+            in.range = AVCOL_RANGE_MPEG;
+        }
+        in.matrix    = static_cast<AVColorSpace>(
+            av_color_space_from_name(params_.color_matrix.c_str()));
+        in.primaries = static_cast<AVColorPrimaries>(
+            av_color_primaries_from_name(params_.color_primaries.c_str()));
+        in.transfer  = static_cast<AVColorTransferCharacteristic>(
+            av_color_transfer_from_name(params_.transfer.c_str()));
 
         VideoFilterOutputParams out;
         out.width     = 0;  // keep source dimensions
@@ -379,6 +374,11 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
     // Clone the native AVFrame for the pixel inspector.
     AVFrame* src_frame = av_frame_clone(ff_->frame);
 
+    // Determine source bit depth from the decoded frame.
+    const AVPixFmtDescriptor* desc =
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(ff_->frame->format));
+    int src_depth = (desc && desc->nb_components > 0) ? desc->comp[0].depth : 8;
+
     auto img = std::make_unique<Image>();
     img->internal().mat = mat;
     img->internal().src_av_frame = src_frame;
@@ -387,13 +387,11 @@ std::unique_ptr<Image> YuvRawSource::read_frame(int index) {
     img->internal().info.pixel_format = PixelFormat::RGB8;
     img->internal().info.source_format = SourceFormat::Unknown;
     img->internal().info.bit_depth = 8;
-    img->internal().info.source_bit_depth =
-        yuv_pixel_format_bit_depth(params_.pixel_format);
+    img->internal().info.source_bit_depth = src_depth;
     img->internal().info.has_alpha = false;
     img->internal().info.color_space =
-        std::string(yuv_color_matrix_name(params_.color_matrix)) + " "
-        + yuv_transfer_name(params_.transfer) + " "
-        + yuv_color_range_name(params_.color_range);
+        params_.color_matrix + " " + params_.transfer + " "
+        + params_.color_range;
 
     ff_current_idx_ = index;
     last_error_.clear();
