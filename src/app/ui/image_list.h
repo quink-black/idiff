@@ -67,6 +67,12 @@ struct ImageListInputs {
     std::function<void()> on_select_all;
     std::function<void(int entry_idx)> on_select_only_this;
     std::function<void(int entry_idx)> on_select_group;
+    // Group-aware Selectable click handler.  When set, the renderer
+    // calls this for plain clicks in group-by-name mode instead of
+    // mutating the selection itself: clicking an entry of a foreign
+    // group switches and selects the whole new group; clicking an
+    // entry of the active group toggles just that single entry.
+    std::function<void(int entry_idx)> on_click_in_group;
     std::function<void()> on_invert_selection;
     std::function<void()> on_unselect_all;
     std::function<void(int from, int to)> on_select_range;

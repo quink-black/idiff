@@ -1530,6 +1530,13 @@ void App::render_image_list() {
                 entries_view()[s].texture_dirty = true;
         }
     };
+    in.on_click_in_group = [this](int idx) {
+        controller_->click_in_group(idx);
+        for (int s : selection_->indices()) {
+            if (s >= 0 && s < static_cast<int>(entries_view().size()))
+                entries_view()[s].texture_dirty = true;
+        }
+    };
     in.on_select_range = [this](int from, int to) {
         controller_->select_range(from, to);
         for (int s : selection_->indices()) {

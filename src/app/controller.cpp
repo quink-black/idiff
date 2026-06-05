@@ -128,6 +128,41 @@ bool AppController::select_group(int index) {
     return changed;
 }
 
+AppController::GroupClickAction AppController::click_in_group(int index) {
+    auto group = group_indices(index);
+    if (group.empty()) return GroupClickAction::Noop;
+
+    // Decide whether the click stays inside the currently selected
+    // group or crosses over.  "Inside" means every selected index
+    // already belongs to the clicked entry's group (and there is at
+    // least one selected entry to anchor the comparison; an empty
+    // selection is treated as "no active group" and therefore counts
+    // as crossing over so the user gets a useful initial selection).
+    const auto& sel = selection_->indices();
+    bool inside = !sel.empty();
+    for (int s : sel) {
+        if (group.find(s) == group.end()) {
+            inside = false;
+            break;
+        }
+    }
+
+    if (inside) {
+        // Same group: toggle just this single entry so the user can
+        // narrow / widen the comparison within the active group.
+        selection_->toggle(index);
+        diff_->mark_dirty();
+        return GroupClickAction::Toggled;
+    }
+
+    // Crossing groups: replace the selection with every member of
+    // the new group, matching the "click another group switches and
+    // selects all" UX.
+    bool changed = selection_->replace(std::move(group));
+    if (changed) diff_->mark_dirty();
+    return GroupClickAction::Switched;
+}
+
 bool AppController::select_range(int from, int to) {
     const int n = static_cast<int>(library_->all().size());
     if (n == 0) return false;

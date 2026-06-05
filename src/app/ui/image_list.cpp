@@ -148,21 +148,21 @@ void render_image_list(const ImageListInputs& in) {
 
             bool checked = is_sel;
             if (ImGui::Checkbox("##sel", &checked)) {
-                if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
-                    if (checked) {
-                        in.on_select_group(i);
-                    } else {
-                        // Unselect the whole group.
-                        std::string key =
-                            group_key_from_filename(entry.filename);
-                        for (int j = 0;
-                             j < static_cast<int>(entries.size()); ++j) {
-                            if (group_key_from_filename(
-                                    entries[j].filename) == key) {
-                                selection.erase(j);
-                            }
-                        }
-                    }
+                if (in.group_by_name_ptr && *in.group_by_name_ptr &&
+                    in.on_click_in_group) {
+                    // Group mode: route the checkbox through the same
+                    // group-aware policy as a Selectable click.  The
+                    // user thinks of the whole row -- checkbox plus
+                    // label -- as a single "click this image" gesture,
+                    // so a click on a foreign group's checkbox must
+                    // switch and select the new group, and a click
+                    // inside the active group must toggle just this
+                    // entry.  Letting the checkbox stay a plain
+                    // single-entry toggle leaves selected entries
+                    // scattered across multiple visual groups, which
+                    // is exactly the bug users hit when ticking a
+                    // second group's checkbox.
+                    in.on_click_in_group(i);
                 } else {
                     if (checked) {
                         selection.insert(i);
@@ -210,8 +210,18 @@ void render_image_list(const ImageListInputs& in) {
                     *in.last_clicked_index != i &&
                     in.on_select_range) {
                     in.on_select_range(*in.last_clicked_index, i);
-                } else if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
-                    in.on_select_group(i);
+                } else if (in.group_by_name_ptr && *in.group_by_name_ptr &&
+                           in.on_click_in_group) {
+                    // Group mode: defer the same-group / cross-group
+                    // decision to the controller so the policy stays
+                    // testable.  The controller handles diff dirty;
+                    // we still need to refresh textures because the
+                    // selection set may have grown.
+                    in.on_click_in_group(i);
+                    for (int s : selection.indices()) {
+                        if (s >= 0 && s < static_cast<int>(entries.size()))
+                            entries[s].texture_dirty = true;
+                    }
                     if (in.last_clicked_index)
                         *in.last_clicked_index = i;
                 } else {

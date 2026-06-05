@@ -86,6 +86,31 @@ public:
     // selection actually changed.  No-op for out-of-range indices.
     bool select_group(int index);
 
+    // Outcome of click_in_group.  Lets the caller distinguish "we
+    // crossed into a different group" from "we toggled a single
+    // entry inside the active group" so the UI can update its
+    // anchor / texture-dirty bookkeeping accordingly.
+    enum class GroupClickAction {
+        Noop,      // Out-of-range index; nothing happened.
+        Switched,  // Selection was replaced with the clicked group.
+        Toggled,   // The single clicked entry was added / removed.
+    };
+
+    // Group-aware click handler used by the Image-List panel when
+    // "Group by Name" is on.
+    //
+    //   * If the current selection is empty, or contains any entry
+    //     outside `index`'s group, the selection is replaced with
+    //     all entries of that group (group switch -- "select all
+    //     in the new group").
+    //   * Otherwise (every selected entry already belongs to the
+    //     same group as `index`) the entry at `index` is toggled
+    //     inside the selection so the user can cherry-pick which
+    //     images of the active group to compare.
+    //
+    // Marks diff dirty whenever the selection actually changes.
+    GroupClickAction click_in_group(int index);
+
     // Select all entries in the inclusive range [from, to].
     // Replaces the current selection.  Out-of-range indices are
     // clamped; from > to is swapped.  Returns true if the selection

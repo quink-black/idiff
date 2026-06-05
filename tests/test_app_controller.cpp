@@ -816,6 +816,115 @@ TEST_CASE("AppController::select_group no-op when already selected",
     REQUIRE_FALSE(changed);
 }
 
+TEST_CASE("AppController::click_in_group switches and selects all when "
+          "selection is empty",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/other.png", "other.png"));
+
+    auto action = controller.click_in_group(0);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Switched);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::click_in_group switches when clicking a foreign "
+          "group",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/other.jpg", "other.jpg"));
+    controller.library().add(make_entry("/d/other.png", "other.png"));
+
+    // Active selection is the "kid" group; clicking inside the
+    // "other" group must switch and select the whole new group.
+    controller.selection().insert(0);
+    controller.selection().insert(1);
+
+    auto action = controller.click_in_group(2);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Switched);
+    REQUIRE(controller.selection().indices() == std::set<int>{2, 3});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::click_in_group toggles a single entry within the "
+          "active group",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // Four images in the "kid" group plus one outsider.
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/kid.bmp", "kid.bmp"));
+    controller.library().add(make_entry("/d/kid.tif", "kid.tif"));
+    controller.library().add(make_entry("/e/other.png", "other.png"));
+
+    // Start with the entire "kid" group selected.
+    controller.selection().insert(0);
+    controller.selection().insert(1);
+    controller.selection().insert(2);
+    controller.selection().insert(3);
+
+    // Clicking the third image must remove just that one, not the
+    // whole group.
+    auto action = controller.click_in_group(2);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Toggled);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1, 3});
+    REQUIRE(controller.diff().is_dirty());
+
+    // Clicking it again brings it back without affecting the others.
+    action = controller.click_in_group(2);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Toggled);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1, 2, 3});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::click_in_group toggles within a partially "
+          "selected active group",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.library().add(make_entry("/b/kid.png", "kid.png"));
+    controller.library().add(make_entry("/c/kid.bmp", "kid.bmp"));
+
+    // Only one image of the group is selected; another image in the
+    // same group should still be treated as "inside" and toggle.
+    controller.selection().insert(0);
+
+    auto action = controller.click_in_group(2);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Toggled);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 2});
+    REQUIRE(controller.diff().is_dirty());
+}
+
+TEST_CASE("AppController::click_in_group is a no-op for out-of-range",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/kid.jpg", "kid.jpg"));
+    controller.selection().insert(0);
+
+    auto action = controller.click_in_group(99);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Noop);
+    REQUIRE(controller.selection().indices() == std::set<int>{0});
+}
+
 TEST_CASE("AppController::select_range replaces selection",
           "[controller]") {
     CountingUploader uploader;
