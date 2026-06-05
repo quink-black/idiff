@@ -41,10 +41,33 @@ TEST_CASE("split_stem_ext") {
 }
 
 TEST_CASE("group keys match for same-stem files from different directories") {
-    // The function only looks at the filename, not the path.
-    // Caller is responsible for passing just the filename portion.
+    // Same stem, different extensions still group together.
     REQUIRE(group_key_from_filename("foo.jpg") ==
             group_key_from_filename("foo.png"));
     REQUIRE(group_key_from_filename("foo.jpg") !=
             group_key_from_filename("bar.jpg"));
+}
+
+TEST_CASE("group_key_from_filename strips path separators") {
+    // Comparison-config flow can override ImageEntry::filename with
+    // a path-style display label (e.g. "seedvr2_1x/role1.png" and
+    // "4k/role1.png").  Both must hash to the same group key so the
+    // image-list "Group by Name" view buckets them together.
+    REQUIRE(group_key_from_filename("seedvr2_1x/role1.png") == "role1");
+    REQUIRE(group_key_from_filename("4k/role1.png") == "role1");
+    REQUIRE(group_key_from_filename("seedvr2_1x/role1.png") ==
+            group_key_from_filename("4k/role1.png"));
+
+    // Different stems within the same directory remain distinct.
+    REQUIRE(group_key_from_filename("4k/role1.png") !=
+            group_key_from_filename("4k/role2.png"));
+
+    // Trailing separator collapses to an empty key (degenerate input).
+    REQUIRE(group_key_from_filename("dir/").empty());
+
+    // Backslash separators (Windows-style paths) are also stripped.
+    REQUIRE(group_key_from_filename("a\\b\\role1.png") == "role1");
+
+    // Mixed separators work too.
+    REQUIRE(group_key_from_filename("a/b\\role1.png") == "role1");
 }

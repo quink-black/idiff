@@ -20,9 +20,11 @@ namespace idiff {
 std::pair<std::string_view, std::string_view>
 split_stem_ext(std::string_view name);
 
-// Extract the group key from a filename.  Returns everything before
-// the last extension dot, or the whole string when there is no
-// extension.
+// Extract the group key from a filename.  Path separators ('/' and
+// '\\') are stripped before splitting, so values like
+// "subdir/name.ext" and "name.ext" produce the same key.  Returns
+// everything after the last separator and before the last
+// extension dot, or the whole string when there is no extension.
 std::string group_key_from_filename(const std::string& filename);
 
 } // namespace idiff

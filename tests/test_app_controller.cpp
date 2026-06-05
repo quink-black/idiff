@@ -925,6 +925,44 @@ TEST_CASE("AppController::click_in_group is a no-op for out-of-range",
     REQUIRE(controller.selection().indices() == std::set<int>{0});
 }
 
+TEST_CASE("AppController::click_in_group groups path-style filenames "
+          "by basename stem",
+          "[controller]") {
+    // Reproduces the comparison-config flow where ImageEntry::filename
+    // is overridden with a "subdir/name.ext" display label.  The two
+    // variants of "role1" (one per subdir) must group together so the
+    // user can switch between groups by clicking any image.
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(
+        make_entry("/cache/a", "seedvr2_1x/role1.png"));
+    controller.library().add(make_entry("/cache/b", "4k/role1.png"));
+    controller.library().add(
+        make_entry("/cache/c", "seedvr2_1x/role2.png"));
+    controller.library().add(make_entry("/cache/d", "4k/role2.png"));
+
+    // Both role1 variants should belong to the same group.
+    REQUIRE(controller.group_indices(0) == std::set<int>{0, 1});
+    REQUIRE(controller.group_indices(1) == std::set<int>{0, 1});
+    REQUIRE(controller.group_indices(2) == std::set<int>{2, 3});
+
+    // Active selection: one variant of role1.  Clicking any role2
+    // entry must replace the selection with both role2 variants
+    // (cross-group switch), not append to the existing selection.
+    controller.selection().insert(0);
+    auto action = controller.click_in_group(2);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Switched);
+    REQUIRE(controller.selection().indices() == std::set<int>{2, 3});
+
+    // Clicking the other role2 variant stays in the same group, so
+    // we get a single-entry toggle instead of a fresh switch.
+    action = controller.click_in_group(3);
+    REQUIRE(action == idiff::AppController::GroupClickAction::Toggled);
+    REQUIRE(controller.selection().indices() == std::set<int>{2});
+}
+
 TEST_CASE("AppController::select_range replaces selection",
           "[controller]") {
     CountingUploader uploader;
