@@ -670,8 +670,16 @@ void App::load_images(const std::vector<std::string>& paths) {
     // The viewport's comparison mode is owned by the UI layer; the
     // controller just tells us when its first-load auto-select fired
     // so we can put the new selection on screen immediately.
-    if (result.did_first_load_select && state_->viewport) {
-        state_->viewport->set_mode(ComparisonMode::Overlay);
+    if (result.did_first_load_select) {
+        // In group mode the default "first two entries" selection may
+        // span two groups.  Replace it with the first group so the
+        // initial view is consistent with the grouped UI.
+        if (state_->group_by_name) {
+            controller_->select_group(0);
+        }
+        if (state_->viewport) {
+            state_->viewport->set_mode(ComparisonMode::Overlay);
+        }
     }
 }
 
