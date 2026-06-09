@@ -87,3 +87,24 @@ if(IDIFF_BUILD_NFD)
     FetchContent_MakeAvailable(nativefiledialog-extended)
     # nfd's CMakeLists.txt creates the nfd::nfd target automatically.
 endif()
+
+# ---- Asio (standalone, header-only) ----
+#
+# Used by idiff_rpc.  Header-only; we only need the include directory and
+# the ASIO_STANDALONE compile definition (so Asio doesn't try to pull in
+# Boost).  We pin a tagged release rather than tracking master to keep
+# builds reproducible.
+if(IDIFF_BUILD_ASIO)
+    FetchContent_Declare(
+        asio
+        GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+        GIT_TAG        asio-1-30-2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(asio)
+    add_library(asio_asio INTERFACE)
+    target_include_directories(asio_asio INTERFACE
+        "${asio_SOURCE_DIR}/asio/include")
+    target_compile_definitions(asio_asio INTERFACE ASIO_STANDALONE)
+    add_library(asio::asio ALIAS asio_asio)
+endif()

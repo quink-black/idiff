@@ -23,6 +23,12 @@ add_executable(idiff
     ui/yuv_dialog.cpp
 )
 
+# JSON-RPC server (Phase 1, POSIX-only).  IDIFF_HAVE_RPC is set in the
+# top-level CMakeLists.txt based on platform.
+if(IDIFF_HAVE_RPC)
+    add_subdirectory(rpc)
+endif()
+
 if(APPLE)
     target_sources(idiff PRIVATE platform/platform_macos.mm)
     set(IDIFF_ICON "${CMAKE_SOURCE_DIR}/resource/idiff.icns")
@@ -64,6 +70,11 @@ target_link_libraries(idiff PRIVATE
     SDL2::SDL2main
     nfd::nfd
 )
+
+if(IDIFF_HAVE_RPC)
+    target_link_libraries(idiff PRIVATE idiff_rpc)
+    target_compile_definitions(idiff PRIVATE IDIFF_HAVE_RPC=1)
+endif()
 
 # macOS frameworks (needed by platform_macos.mm)
 if(APPLE)
