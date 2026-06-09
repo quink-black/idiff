@@ -153,6 +153,7 @@ if(IDIFF_HAVE_FFMPEG)
         message(WARNING "ffmpeg CLI not found -- video decoder tests will be skipped at runtime")
         target_compile_definitions(idiff_tests PRIVATE
             IDIFF_TEST_VIDEO_PATH=""
+            IDIFF_TEST_SAR_VIDEO_PATH=""
         )
     endif()
 endif()
