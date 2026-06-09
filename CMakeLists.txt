@@ -235,6 +235,43 @@ else()
     set(IDIFF_BUILD_JSON OFF)
 endif()
 
+# Asio (standalone, header-only) -- transport library for the in-process
+# JSON-RPC server (idiff_rpc).  Used to drive the Unix Domain Socket
+# acceptor on a private I/O thread.  POSIX-only in Phase 1; Windows
+# Named Pipe support is deferred.  Resolved at top level (mirroring the
+# nlohmann_json pattern) so the IMPORTED `asio::asio` target is visible
+# from every subdirectory.
+#
+# Detection order:
+#   1. find_path(asio.hpp) in common system / Homebrew / vcpkg locations.
+#   2. Fall back to FetchContent (third_party/CMakeLists.txt) when absent.
+#
+# IDIFF_HAVE_RPC is defined for the rest of the build to gate the
+# idiff_rpc subdirectory and the executable's RPC integration.
+if(NOT WIN32)
+    find_path(ASIO_INCLUDE_DIR asio.hpp
+        HINTS
+            /opt/homebrew/include
+            /usr/local/include
+            /usr/include
+        DOC "Path to standalone Asio headers (asio.hpp)")
+    if(ASIO_INCLUDE_DIR)
+        message(STATUS "Found system Asio: ${ASIO_INCLUDE_DIR}")
+        add_library(asio_asio INTERFACE)
+        target_include_directories(asio_asio INTERFACE "${ASIO_INCLUDE_DIR}")
+        target_compile_definitions(asio_asio INTERFACE ASIO_STANDALONE)
+        add_library(asio::asio ALIAS asio_asio)
+        set(IDIFF_BUILD_ASIO OFF)
+    else()
+        message(STATUS "Asio not found on system -- will fetch from source")
+        set(IDIFF_BUILD_ASIO ON)
+    endif()
+    set(IDIFF_HAVE_RPC ON)
+else()
+    set(IDIFF_HAVE_RPC OFF)
+    message(STATUS "JSON-RPC server disabled on Windows (Phase 1 POSIX-only)")
+endif()
+
 # LibRaw -- optional, controlled by IDIFF_WITH_LIBRAW.  Detected via
 # find_package (CONFIG mode for vcpkg) first, then pkg-config.  Source
 # builds were dropped because LibRaw has its own non-trivial dependencies
