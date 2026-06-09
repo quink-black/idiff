@@ -683,6 +683,24 @@ double VideoDecoder::fps() const noexcept { return impl_->fps; }
 double VideoDecoder::duration() const noexcept { return impl_->duration; }
 const std::string& VideoDecoder::codec_name() const noexcept { return impl_->codec_name; }
 int VideoDecoder::bit_depth() const noexcept { return impl_->bit_depth; }
+
+VideoDecoder::SAR VideoDecoder::sar() const noexcept {
+    if (!impl_->fmt_ctx || impl_->video_stream_idx < 0) return {0, 0};
+    AVStream* st = impl_->fmt_ctx->streams[impl_->video_stream_idx];
+    if (st->codecpar->sample_aspect_ratio.num && st->codecpar->sample_aspect_ratio.den) {
+        return {st->codecpar->sample_aspect_ratio.num,
+                st->codecpar->sample_aspect_ratio.den};
+    }
+    // Fall back to codec context SAR.
+    if (impl_->codec_ctx &&
+        impl_->codec_ctx->sample_aspect_ratio.num &&
+        impl_->codec_ctx->sample_aspect_ratio.den) {
+        return {impl_->codec_ctx->sample_aspect_ratio.num,
+                impl_->codec_ctx->sample_aspect_ratio.den};
+    }
+    return {0, 0};
+}
+
 int VideoDecoder::current_frame_index() const noexcept { return impl_->current_frame_idx; }
 const std::string& VideoDecoder::last_error() const noexcept { return impl_->last_error; }
 

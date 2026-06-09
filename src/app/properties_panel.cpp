@@ -68,7 +68,14 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextUnformatted("Resolution");
-            ImGui::TableNextColumn(); ImGui::Text("%d x %d", info.width, info.height);
+            if (info.sar_num > 0 && info.sar_den > 0 && (info.sar_num != 1 || info.sar_den != 1)) {
+                // Anamorphic: show coded resolution and display resolution
+                ImGui::TableNextColumn(); ImGui::Text("%d x %d (display %d x %d)",
+                    info.width, info.height,
+                    info.display_width(), info.display_height());
+            } else {
+                ImGui::TableNextColumn(); ImGui::Text("%d x %d", info.width, info.height);
+            }
 
             // Show display (upscaled) resolution if different from original
             if (display_img && display_img != img) {
@@ -113,6 +120,12 @@ void PropertiesPanel::render_image_props(const char* slot_label, const char* nam
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn(); ImGui::TextUnformatted("Color space");
                 ImGui::TableNextColumn(); ImGui::Text("%s", info.color_space.c_str());
+            }
+
+            if (info.sar_num > 0 && info.sar_den > 0 && (info.sar_num != 1 || info.sar_den != 1)) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted("SAR");
+                ImGui::TableNextColumn(); ImGui::Text("%d:%d", info.sar_num, info.sar_den);
             }
 
             ImGui::EndTable();

@@ -1327,21 +1327,24 @@ void App::update_display_image(int index) {
     auto& entry = entries_view()[index];
     if (!entry.image) return;
 
-    int target_w = entry.image->info().width;
-    int target_h = entry.image->info().height;
+    // Use display dimensions (SAR-adjusted) so that images with
+    // non-square pixels are upscaled to the correct visual size for
+    // comparison.
+    int target_w = entry.image->info().display_width();
+    int target_h = entry.image->info().display_height();
 
     for (int s : selection_->indices()) {
         if (s == index) continue;
         if (s < 0 || s >= static_cast<int>(entries_view().size())) continue;
         const auto& other = entries_view()[s];
         if (other.image) {
-            target_w = std::max(target_w, other.image->info().width);
-            target_h = std::max(target_h, other.image->info().height);
+            target_w = std::max(target_w, other.image->info().display_width());
+            target_h = std::max(target_h, other.image->info().display_height());
         }
     }
 
-    bool needs_upscale = entry.image->info().width < target_w ||
-                         entry.image->info().height < target_h;
+    bool needs_upscale = entry.image->info().width != target_w ||
+                         entry.image->info().height != target_h;
 
     if (needs_upscale) {
         ImageProcessor proc;

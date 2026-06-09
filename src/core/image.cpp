@@ -40,4 +40,16 @@ const cv::Mat& Image::mat() const noexcept {
     return impl_->mat;
 }
 
+int ImageInfo::display_width() const noexcept {
+    if (sar_num > 0 && sar_den > 0 && (sar_num != 1 || sar_den != 1)) {
+        // Round to nearest integer to avoid fractional display sizes.
+        return (width * sar_num + sar_den / 2) / sar_den;
+    }
+    return width;
+}
+
+int ImageInfo::display_height() const noexcept {
+    return height;
+}
+
 } // namespace idiff
