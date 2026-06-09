@@ -220,7 +220,7 @@ TEST_CASE("AppController::move_entry rejects no-op and bad indices",
     REQUIRE(controller.selection().indices() == std::set<int>{2});
 }
 
-TEST_CASE("AppController::mark_as_reference moves entry to top and selects it",
+TEST_CASE("AppController::mark_as_reference sets reference without moving entry",
           "[controller]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
@@ -234,20 +234,18 @@ TEST_CASE("AppController::mark_as_reference moves entry to top and selects it",
 
     controller.mark_as_reference(2);
 
-    // c.png moved to the top; the previous entries shift down.
-    REQUIRE(controller.library().all()[0].filename == "c.png");
-    REQUIRE(controller.library().all()[1].filename == "a.png");
-    REQUIRE(controller.library().all()[2].filename == "b.png");
+    // Library order is unchanged -- entries stay where they are.
+    REQUIRE(controller.library().all()[0].filename == "a.png");
+    REQUIRE(controller.library().all()[1].filename == "b.png");
+    REQUIRE(controller.library().all()[2].filename == "c.png");
 
-    // The previously-selected indices were {0, 1} (a.png, b.png);
-    // they shift to {1, 2}, and index 0 (the new c.png) is added.
+    // The entry is added to the selection and designated as reference.
     REQUIRE(controller.selection().indices() == std::set<int>{0, 1, 2});
+    REQUIRE(controller.selection().has_explicit_reference());
 
-    // The new index 0 is the smallest selected index, so the
-    // reference now points at c.png.
     int ref = -1;
     controller.get_ref_index(ref);
-    REQUIRE(ref == 0);
+    REQUIRE(ref == 2);
     REQUIRE(controller.library().all()[ref].filename == "c.png");
 
     // Diff cache must be dirty so the next render recomputes against
@@ -255,7 +253,7 @@ TEST_CASE("AppController::mark_as_reference moves entry to top and selects it",
     REQUIRE(controller.diff().is_dirty());
 }
 
-TEST_CASE("AppController::mark_as_reference on the top entry just selects it",
+TEST_CASE("AppController::mark_as_reference on an already-selected entry",
           "[controller]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
@@ -264,14 +262,15 @@ TEST_CASE("AppController::mark_as_reference on the top entry just selects it",
     controller.library().add(make_entry("/p/a.png", "a.png"));
     controller.library().add(make_entry("/p/b.png", "b.png"));
 
-    // a.png is at index 0 already and not yet selected.
+    // a.png is at index 0, not yet selected.
     controller.mark_as_reference(0);
 
-    // Library order is unchanged; a.png is now selected and acts as
-    // the reference.
+    // Library order is unchanged; a.png is now selected and the
+    // explicit reference.
     REQUIRE(controller.library().all()[0].filename == "a.png");
     REQUIRE(controller.library().all()[1].filename == "b.png");
     REQUIRE(controller.selection().indices() == std::set<int>{0});
+    REQUIRE(controller.selection().has_explicit_reference());
 
     int ref = -1;
     controller.get_ref_index(ref);

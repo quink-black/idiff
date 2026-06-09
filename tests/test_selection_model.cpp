@@ -6,7 +6,10 @@
 //     return values (which callers use to decide cache invalidation)
 //   * apply_remap correctness against ImageLibrary::kRemoved and
 //     out-of-range indices, including the membership-changed signal
-//   * get_ref_index returns the smallest selected index (or -1)
+//   * get_ref_index returns the smallest selected index (or -1) when
+//     no explicit reference is set, and the explicit reference when set
+//   * set_reference / clear / replace / erase / apply_remap interaction
+//     with the explicit reference index
 //
 // SelectionModel has no SDL/ImGui dependencies, so the tests exercise
 // it directly with no fakes.
@@ -152,4 +155,122 @@ TEST_CASE("SelectionModel: get_ref_index returns the smallest selected index",
     int ref = -1;
     sel.get_ref_index(ref);
     REQUIRE(ref == 1);
+}
+
+TEST_CASE("SelectionModel: set_reference overrides smallest index",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(1);
+    sel.insert(3);
+    sel.insert(5);
+
+    // Without explicit reference, smallest index is returned.
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 1);
+
+    // With explicit reference, that index is returned instead.
+    sel.set_reference(5);
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 5);
+    REQUIRE(sel.has_explicit_reference());
+}
+
+TEST_CASE("SelectionModel: set_reference with -1 resets to implicit",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(1);
+    sel.insert(3);
+    sel.set_reference(3);
+    REQUIRE(sel.has_explicit_reference());
+
+    sel.set_reference(-1);
+    REQUIRE_FALSE(sel.has_explicit_reference());
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 1);
+}
+
+TEST_CASE("SelectionModel: clear resets explicit reference",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(3);
+    sel.set_reference(3);
+    REQUIRE(sel.has_explicit_reference());
+    sel.clear();
+    REQUIRE_FALSE(sel.has_explicit_reference());
+}
+
+TEST_CASE("SelectionModel: replace resets explicit reference",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(3);
+    sel.set_reference(3);
+    REQUIRE(sel.has_explicit_reference());
+    sel.replace(std::set<int>{1, 2});
+    REQUIRE_FALSE(sel.has_explicit_reference());
+}
+
+TEST_CASE("SelectionModel: erase clears reference when erased",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(1);
+    sel.insert(3);
+    sel.set_reference(3);
+    REQUIRE(sel.has_explicit_reference());
+
+    sel.erase(3);
+    REQUIRE_FALSE(sel.has_explicit_reference());
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 1);
+}
+
+TEST_CASE("SelectionModel: erase of non-reference keeps reference",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(1);
+    sel.insert(3);
+    sel.set_reference(3);
+
+    sel.erase(1);
+    REQUIRE(sel.has_explicit_reference());
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 3);
+}
+
+TEST_CASE("SelectionModel: apply_remap remaps explicit reference",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(0);
+    sel.insert(2);
+    sel.set_reference(2);
+
+    // Sort that swaps positions 0 and 2 (1 stays put).
+    std::vector<int> remap = {2, 1, 0};
+    sel.apply_remap(remap);
+
+    // Reference was at old index 2, which maps to new index 0.
+    REQUIRE(sel.has_explicit_reference());
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 0);
+}
+
+TEST_CASE("SelectionModel: apply_remap clears reference when removed",
+          "[selection_model]") {
+    SelectionModel sel;
+    sel.insert(0);
+    sel.insert(1);
+    sel.set_reference(1);
+
+    // Remove old index 1.
+    std::vector<int> remap = {0, ImageLibrary::kRemoved};
+    sel.apply_remap(remap);
+
+    REQUIRE_FALSE(sel.has_explicit_reference());
+    int ref = -1;
+    sel.get_ref_index(ref);
+    REQUIRE(ref == 0);
 }

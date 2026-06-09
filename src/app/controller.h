@@ -56,10 +56,11 @@ public:
     // at every site) so the same flow can be exercised from headless
     // tests without bringing up the SDL / ImGui front-end.
 
-    // Returns the reference entry index used by overlay / diff.  The
-    // reference is the smallest selected index, or -1 when nothing is
-    // selected.  Every other selected entry is a partner compared
-    // against the reference.
+    // Returns the reference entry index used by overlay / diff.  When
+    // an explicit reference has been set (via mark_as_reference), that
+    // index is returned.  Otherwise the smallest selected index is
+    // used.  Returns -1 when nothing is selected.  Every other
+    // selected entry is a partner compared against the reference.
     void get_ref_index(int& ref_idx) const;
 
     // Length of the shared timeline, i.e. the maximum number of frames
@@ -122,10 +123,11 @@ public:
     // no-op move (from == to) returns immediately.
     void move_entry(int from, int to);
 
-    // Mark the entry at `index` as the reference image: move it to
-    // the top of the library so it becomes the smallest selected
-    // index, and ensure it is part of the selection so overlay / diff
-    // actually use it.  Out-of-range indices are ignored.
+    // Mark the entry at `index` as the reference image: add it to
+    // the selection and designate it as the reference so overlay /
+    // diff use it as the "A" side.  The entry stays at its current
+    // position in the library (no reordering).  Out-of-range indices
+    // are ignored.
     void mark_as_reference(int index);
 
     // Remove the entry at `index` (destroying its texture via the
