@@ -4,9 +4,15 @@
 // Selection model.
 //
 // Owns the set of selected entry indices.  Membership is stored as
-// std::set<int> so iteration is always in increasing index order, which
-// the comparison code relies on to decide which selected entry is the
-// reference image (the smallest index).
+// std::set<int> so iteration is always in increasing index order.
+//
+// The reference index is the entry used as the "A" side in A/B
+// comparisons.  It can be set explicitly via set_reference() (e.g.
+// when the user right-clicks "Mark as Reference"), or derived
+// implicitly as the smallest selected index when no explicit reference
+// is set.  This allows the reference to be independent of entry
+// position, which matters in grouped views where moving an entry to
+// position 0 would break group membership.
 //
 // Threading: not thread-safe.  All operations must run on the main
 // thread (the one driving ImGui).
@@ -16,6 +22,7 @@
 // changed; it does not call back into them.
 
 #include <cstddef>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -43,7 +50,8 @@ public:
     // ImageLibrary::remove / move / sort_with.  Indices mapped to
     // ImageLibrary::kRemoved (== -1) are dropped; out-of-range indices
     // are dropped.  Returns true iff membership changed.  An empty
-    // remap is a no-op (returns false).
+    // remap is a no-op (returns false).  Also remaps the explicit
+    // reference index when one is set.
     bool apply_remap(const std::vector<int>& remap);
 
     // Read-only views.
@@ -53,13 +61,26 @@ public:
     bool contains(int idx) const noexcept { return indices_.count(idx) > 0; }
 
     // Compute the reference entry index used by the comparison views.
-    // The reference is the smallest selected index, or -1 when the
-    // selection is empty.  Every other selected entry is a partner
-    // compared against the reference (in natural index order).
+    // Returns the explicitly-set reference when one exists, otherwise
+    // the smallest selected index, or -1 when the selection is empty.
+    // Every other selected entry is a partner compared against the
+    // reference (in natural index order).
     void get_ref_index(int& ref_idx) const noexcept;
+
+    // Explicitly set which selected entry is the reference.  The index
+    // must be a member of the selection (callers should insert first).
+    // Pass -1 or std::nullopt to revert to the implicit rule (smallest
+    // selected index).
+    void set_reference(int idx);
+    void set_reference(std::optional<int> idx);
+
+    // Returns true when an explicit reference has been set via
+    // set_reference().
+    bool has_explicit_reference() const noexcept;
 
 private:
     std::set<int> indices_;
+    std::optional<int> reference_index_;
 };
 
 } // namespace idiff
