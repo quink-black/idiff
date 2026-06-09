@@ -117,6 +117,11 @@ public:
     // Bits per component of the decoded video (typically 8 or 10)
     int bit_depth() const noexcept;
 
+    // Sample aspect ratio from the video stream's codec parameters.
+    // Returns {0, 0} when not signaled (treated as 1:1 by callers).
+    struct SAR { int num; int den; };
+    SAR sar() const noexcept;
+
     // Color tags read from the most recently decoded AVFrame.  Returned
     // by value because the underlying values are frame-level: a single
     // file may carry frames with different color descriptions (e.g.

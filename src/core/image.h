@@ -41,6 +41,17 @@ struct ImageInfo {
     std::string icc_profile_name;
     std::string color_space;
     bool has_alpha = false;
+
+    // Sample aspect ratio (SAR).  When both are non-zero, display
+    // dimensions are width * sar_num / sar_den x height.
+    // A value of (0, 0) means unspecified (treated as 1:1).
+    int sar_num = 0;
+    int sar_den = 0;
+
+    // Display dimensions: pixel size adjusted by SAR.
+    // Equal to width/height when SAR is 1:1 or unset.
+    int display_width() const noexcept;
+    int display_height() const noexcept;
 };
 
 class Image {

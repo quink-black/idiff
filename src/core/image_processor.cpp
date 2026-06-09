@@ -43,6 +43,9 @@ std::unique_ptr<Image> ImageProcessor::upscale(const Image& src, const UpscaleOp
     result->internal().info = src.info();
     result->internal().info.width = options.target_width;
     result->internal().info.height = options.target_height;
+    // After resampling, pixels are square — clear SAR.
+    result->internal().info.sar_num = 0;
+    result->internal().info.sar_den = 0;
 
     return result;
 }

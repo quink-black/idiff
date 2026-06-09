@@ -77,16 +77,16 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         if (s < 0 || s >= static_cast<int>(entries.size())) return;
         const auto& e = entries[s];
         tex_ptrs.push_back(e.texture);
-        // Report the source image's native pixel dimensions, not the SDL
-        // texture size.  When two selected images differ in resolution,
-        // update_display_image upscales the smaller one to max(W, H) for
-        // pixel-aligned diffing, which inflates entry.tex_w/tex_h.  Using
-        // those inflated values would make rulers and measurements report
-        // sizes in the upscaled coordinate system (e.g. a 110 px feature
-        // on a 2520-wide image would read as 220 px when the partner is
-        // 5040-wide).  The source image keeps the original dimensions.
-        int src_w = e.image ? e.image->info().width  : e.tex_w;
-        int src_h = e.image ? e.image->info().height : e.tex_h;
+        // Report the source image's display dimensions (SAR-adjusted),
+        // not the SDL texture size.  When two selected images differ in
+        // resolution, update_display_image upscales the smaller one to
+        // max(display_w, display_h) for pixel-aligned diffing, which
+        // inflates entry.tex_w/tex_h.  Using those inflated values would
+        // make rulers and measurements report sizes in the upscaled
+        // coordinate system.  Display dimensions give the correct visual
+        // size for aspect-ratio-correct rendering.
+        int src_w = e.image ? e.image->info().display_width()  : e.tex_w;
+        int src_h = e.image ? e.image->info().display_height() : e.tex_h;
         tex_ws.push_back(src_w);
         tex_hs.push_back(src_h);
         std::string lbl = prefix

@@ -55,6 +55,11 @@ VideoFileSource::VideoFileSource(std::string path)
                  + std::to_string(decoder_->width()) + "x"
                  + std::to_string(decoder_->height()) + " "
                  + std::to_string(decoder_->bit_depth()) + "-bit";
+    auto sar = decoder_->sar();
+    if (sar.num > 0 && sar.den > 0 && (sar.num != 1 || sar.den != 1)) {
+        format_desc_ += " SAR " + std::to_string(sar.num) + ":"
+                      + std::to_string(sar.den);
+    }
     if (decoder_->detected_rotation() != VideoRotation::None) {
         format_desc_ += " (rotated "
                      + std::to_string(static_cast<int>(decoder_->detected_rotation()))
@@ -127,6 +132,10 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
     img->internal().info.has_alpha = false;
     img->internal().info.color_space = "BT.709";
 
+    auto sar = decoder_->sar();
+    img->internal().info.sar_num = sar.num;
+    img->internal().info.sar_den = sar.den;
+
     last_error_.clear();
     return img;
 }
@@ -158,6 +167,10 @@ std::unique_ptr<Image> VideoFileSource::read_keyframe(int index) {
     img->internal().info.source_bit_depth = decoder_->bit_depth();
     img->internal().info.has_alpha = false;
     img->internal().info.color_space = "BT.709";
+
+    auto sar = decoder_->sar();
+    img->internal().info.sar_num = sar.num;
+    img->internal().info.sar_den = sar.den;
 
     last_error_.clear();
     return img;

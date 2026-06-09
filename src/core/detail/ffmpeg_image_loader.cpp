@@ -342,6 +342,12 @@ bool avframe_to_image(AVFrame* frame,
         impl.info.icc_profile_name = "Embedded ICC";
     }
 
+    // Propagate SAR from the source frame.
+    if (frame->sample_aspect_ratio.num && frame->sample_aspect_ratio.den) {
+        impl.info.sar_num = frame->sample_aspect_ratio.num;
+        impl.info.sar_den = frame->sample_aspect_ratio.den;
+    }
+
     impl.mat = std::move(mat);
     return true;
 }
