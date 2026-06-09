@@ -8,7 +8,7 @@
 # incrementally over Phase 1 steps 2-7.
 
 add_library(idiff_rpc STATIC
-    rpc_placeholder.cpp
+    rpc_dispatcher.cpp
 )
 
 target_include_directories(idiff_rpc PUBLIC
