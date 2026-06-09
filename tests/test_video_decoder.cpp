@@ -264,6 +264,31 @@ TEST_CASE("VideoFileSource: opens, exposes metadata, reads consecutive frames",
         CHECK(info.bit_depth == 8);
         CHECK(info.source_bit_depth == 8);
     }
+
+    SECTION("read_frame after read_keyframe returns correct frame") {
+        // Regression: read_keyframe corrupted the decoder state so
+        // a subsequent read_frame at the same index would return the
+        // wrong pixels.  The testsrc source produces visually distinct
+        // frames (frame counter overlay), so pixel comparison catches
+        // mismatches reliably.
+        auto exact_first = source.read_frame(5);
+        REQUIRE(exact_first != nullptr);
+
+        // Interleave a keyframe scrub at a different position.
+        auto kf = source.read_keyframe(8);
+        REQUIRE(kf != nullptr);
+
+        // Now re-read the same exact frame.
+        auto exact_second = source.read_frame(5);
+        REQUIRE(exact_second != nullptr);
+
+        const cv::Mat& m1 = exact_first->internal().mat;
+        const cv::Mat& m2 = exact_second->internal().mat;
+        REQUIRE(m1.size() == m2.size());
+        const size_t bytes =
+            static_cast<size_t>(m1.total() * m1.elemSize());
+        CHECK(std::memcmp(m1.data, m2.data, bytes) == 0);
+    }
 }
 
 TEST_CASE("VideoFileSource: rejects bad path and bad frame indices",
