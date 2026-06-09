@@ -212,7 +212,8 @@ bool VideoDecoder::Impl::seek_to_frame(int target) {
 
 // Seek to the nearest keyframe at or before the estimated PTS of
 // frame `index`, decode only that keyframe, and return it.
-// Does not update current_frame_idx -- this is a preview-only path.
+// Invalidates the decode position so the next decode_frame() call
+// will perform a full seek rather than assuming sequential state.
 cv::Mat VideoDecoder::Impl::seek_keyframe(int index) {
     if (index < 0 || index >= frame_count || !fmt_ctx || !codec_ctx)
         return {};
@@ -234,6 +235,14 @@ cv::Mat VideoDecoder::Impl::seek_keyframe(int index) {
     }
 
     avcodec_flush_buffers(codec_ctx);
+
+    // Invalidate decode position: the format context and codec are now
+    // at an unknown frame.  The next decode_frame() must perform a full
+    // seek rather than assuming it can decode forward from the cached
+    // position.
+    current_frame_idx = -1;
+    cached_frame = cv::Mat();
+    cached_rotation = VideoRotation::None;
 
     // Decode packets until we get the first video frame (the keyframe).
     // Limit attempts to avoid runaway reads on corrupt streams.
@@ -803,8 +812,11 @@ cv::Mat VideoDecoder::decode_frame(int index) {
     // Forward-decode optimization: if the target is ahead of current position
     // and within a reasonable distance, just decode forward without seeking.
     // This avoids the expensive seek-to-beginning for small forward jumps.
+    // Skip when current_frame_idx is -1 (invalidated state) -- the stream
+    // position is unknown and forward-decode would read from the wrong spot.
     static constexpr int kMaxForwardDecode = 30;  // ~1 second at 30fps
-    if (index > impl_->current_frame_idx &&
+    if (impl_->current_frame_idx >= 0 &&
+        index > impl_->current_frame_idx &&
         index - impl_->current_frame_idx <= kMaxForwardDecode) {
         while (impl_->current_frame_idx < index) {
             if (!impl_->decode_next_frame()) {
