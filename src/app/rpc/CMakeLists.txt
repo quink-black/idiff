@@ -9,6 +9,7 @@
 
 add_library(idiff_rpc STATIC
     rpc_dispatcher.cpp
+    rpc_server.cpp
 )
 
 target_include_directories(idiff_rpc PUBLIC

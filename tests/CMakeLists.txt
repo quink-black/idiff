@@ -50,16 +50,15 @@ if(IDIFF_HAVE_FFMPEG)
     )
 endif()
 
-# RPC tests.  We compile the rpc sources directly into the test binary
-# rather than linking idiff_rpc, mirroring the existing controller.cpp
-# pattern above.  This keeps the unit-test process free of Asio symbols
-# (rpc_dispatcher.cpp itself has no Asio dependency).  Sources that DO
-# need Asio (rpc_server.cpp) will not be added here.
+# RPC tests.  The dispatcher is pure protocol code; the server adds the
+# Asio UDS transport.  Link the idiff_rpc static library so tests cover
+# the same artifact the executable consumes.
 if(IDIFF_HAVE_RPC)
     target_sources(idiff_tests PRIVATE
         test_rpc_dispatcher.cpp
-        ${CMAKE_SOURCE_DIR}/src/app/rpc/rpc_dispatcher.cpp
+        test_rpc_server.cpp
     )
+    target_link_libraries(idiff_tests PRIVATE idiff_rpc)
     target_compile_definitions(idiff_tests PRIVATE IDIFF_HAVE_RPC=1)
 endif()
 
