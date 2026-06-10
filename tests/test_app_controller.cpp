@@ -417,6 +417,59 @@ TEST_CASE("AppController::set_comparison_reference rejects empty key",
     REQUIRE(controller.comparison_references().empty());
 }
 
+TEST_CASE("AppController::mark_as_reference narrows cross-comparison selection",
+          "[controller][comparison_reference]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // Two comparisons (stems "a" and "b") spread across two
+    // directories.  Mimics the AI-driven workflow where an agent
+    // calls library.set_reference once per file in a target
+    // directory: each call lands in a different comparison.
+    controller.library().add(make_entry("/Foo/a.png", "a.png"));
+    controller.library().add(make_entry("/Bar/a.png", "a.png"));
+    controller.library().add(make_entry("/Foo/b.png", "b.png"));
+    controller.library().add(make_entry("/Bar/b.png", "b.png"));
+
+    // Activate comparison "a" first (mimicking GUI / first-load
+    // selection).
+    REQUIRE(controller.select_group(0));
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+
+    // Mark /Foo/a.png as reference for comparison "a".  Selection
+    // stays in comparison "a" -- same comparison, just a reference
+    // pin within the active set.
+    controller.mark_as_reference(0);
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+    int ref = -1;
+    controller.get_ref_index(ref);
+    REQUIRE(ref == 0);
+
+    // Now mark /Foo/b.png (in comparison "b") as reference.  The
+    // selection must narrow to comparison "b" rather than spilling
+    // across both comparisons -- otherwise the viewport ends up
+    // diffing /Foo/a.png against /Bar/b.png, which is meaningless.
+    controller.mark_as_reference(2);
+    REQUIRE(controller.selection().indices() == std::set<int>{2, 3});
+    controller.get_ref_index(ref);
+    REQUIRE(ref == 2);
+
+    // Both per-comparison references were recorded so revisiting
+    // either comparison restores its pin.
+    REQUIRE(controller.comparison_references().at("file:a")
+            == "/Foo/a.png");
+    REQUIRE(controller.comparison_references().at("file:b")
+            == "/Foo/b.png");
+
+    // Switching back to comparison "a" via select_group restores
+    // its pinned reference.
+    REQUIRE(controller.select_group(0));
+    REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
+    controller.get_ref_index(ref);
+    REQUIRE(ref == 0);
+}
+
 TEST_CASE("AppController per-comparison reference survives entry removal",
           "[controller][comparison_reference]") {
     CountingUploader uploader;
