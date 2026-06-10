@@ -21,14 +21,16 @@ silences the multi-instance prompt.
 
 Tool surface (mirrors idiff RPC, with friendlier names)
 -------------------------------------------------------
-  list_instances  -- show every live idiff window
-  get_state       -- snapshot of the active instance (entries, view, ...)
-  load_images     -- load files into the GUI library
-  set_reference   -- pin one entry as the comparison "A"
-  remove_image    -- delete an entry from the library
-  set_selection   -- replace the selection
-  set_view_mode   -- split | overlay | difference, optional slider
-  screenshot      -- compose what the viewport currently shows to a file
+  list_instances       -- show every live idiff window
+  get_state            -- snapshot of the active instance (entries, view, ...)
+  load_images          -- load files into the GUI library
+  set_reference        -- pin one entry as the comparison "A"
+  remove_image         -- delete an entry from the library
+  set_selection        -- replace the selection
+  set_view_mode        -- split | overlay | difference, optional slider
+  screenshot           -- compose what the viewport currently shows to a file
+  list_groups          -- enumerate file/config groups visible to the library
+  set_group_reference  -- record a per-group reference path
 """
 from __future__ import annotations
 
@@ -209,7 +211,10 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Mark the entry at the given index as the comparison "
                 "reference ('A' side). Adds it to the selection if not "
-                "already there. Indices come from get_state.entries[].index."
+                "already there. Indices come from get_state.entries[].index. "
+                "Also records the choice in the per-group reference map "
+                "(keyed by the entry's group) so switching away and back "
+                "to that group keeps this reference."
             ),
             inputSchema={
                 "type": "object",
@@ -217,6 +222,55 @@ async def list_tools() -> list[Tool]:
                     "index": {"type": "integer", "minimum": 0},
                 },
                 "required": ["index"],
+            },
+        ),
+        Tool(
+            name="list_groups",
+            description=(
+                "Enumerate the groups visible to the current library. "
+                "Each group has a stable 'key' (e.g. 'file:role1' or "
+                "'config:My Group'), a human-readable 'name', a "
+                "'current' flag (entries are loaded), and 'entries' "
+                "with index, path, filename, directory, and "
+                "is_reference. Use this to inspect file structure "
+                "before deciding which entry should be reference per "
+                "group, then call set_group_reference per group. Only "
+                "the currently-resident comparison-config group has "
+                "its entries populated; other config groups list key "
+                "+ name only."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_group_reference",
+            description=(
+                "Pin a specific image path as the reference for one "
+                "group, keyed by group 'key' from list_groups. The "
+                "mapping persists across group switches: when the "
+                "group becomes active (selection changes to its "
+                "members), the entry at this path is auto-marked as "
+                "reference. Path is matched exactly against entry "
+                "paths; pass an empty path to clear the mapping. "
+                "This is the primitive idiff exposes -- callers "
+                "implement any rule (by directory, prefix, regex, "
+                "ML, ...) and call this per group."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Group key from list_groups[].key",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Entry path to pin as reference, or empty "
+                            "to clear the mapping for `key`"
+                        ),
+                    },
+                },
+                "required": ["key", "path"],
             },
         ),
         Tool(
@@ -359,6 +413,14 @@ async def call_tool(
         if name == "set_reference":
             return _ok(_call(instance, "library.set_reference",
                              {"index": int(arguments["index"])}))
+
+        if name == "list_groups":
+            return _ok(_call(instance, "library.list_groups"))
+
+        if name == "set_group_reference":
+            return _ok(_call(instance, "library.set_group_reference",
+                             {"key":  str(arguments["key"]),
+                              "path": str(arguments.get("path", ""))}))
 
         if name == "remove_image":
             return _ok(_call(instance, "library.remove",

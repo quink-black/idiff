@@ -6,6 +6,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace idiff {
@@ -127,8 +128,67 @@ public:
     // the selection and designate it as the reference so overlay /
     // diff use it as the "A" side.  The entry stays at its current
     // position in the library (no reordering).  Out-of-range indices
-    // are ignored.
+    // are ignored.  Also records the choice in the per-group
+    // reference map so switching away and back to this group keeps
+    // the same reference (see set_group_reference / apply_group_reference).
     void mark_as_reference(int index);
+
+    // ---- Per-group reference --------------------------------------
+    //
+    // idiff exposes the primitive of "remember which entry is the
+    // reference for each group" so external clients (the MCP shim,
+    // AI agents, scripts) can implement any rule they want -- by
+    // directory, by filename pattern, by ML, ... -- and call back
+    // with set_group_reference() per group.  idiff itself owns no
+    // rule logic, only the per-group state.
+    //
+    // A group key is one of:
+    //   "config:<name>"  when a comparison config is active.  <name>
+    //                    is the ComparisonGroup::name, or "#<idx>"
+    //                    when the config did not provide a name.
+    //   "file:<stem>"    otherwise.  <stem> is group_key_from_filename
+    //                    of the entry's filename (the same key the
+    //                    "Group by Name" UI uses).
+
+    // One group as seen by external clients.
+    struct GroupView {
+        std::string key;
+        std::string name;            // human-readable; same as key body
+        bool current = false;        // entry indices belong to this group
+        std::vector<int> entries;    // indices into library_->all()
+    };
+
+    // Compute the group key for an entry.  Returns an empty string
+    // for out-of-range indices.
+    std::string group_key_of(int index) const;
+
+    // Enumerate the groups visible to the current library.  When a
+    // comparison config is active, returns one GroupView per config
+    // group (only the currently-resident one has its entries
+    // populated; the rest are empty because their pixels are not
+    // loaded).  Otherwise returns one GroupView per filename-stem
+    // group.
+    std::vector<GroupView> list_groups() const;
+
+    // Read-only access to the per-group reference map.  Keys are
+    // group keys as above; values are entry paths.
+    const std::unordered_map<std::string, std::string>&
+    group_references() const noexcept { return group_reference_; }
+
+    // Pin `path` as the reference for the group identified by `key`.
+    // The path is not validated against the current library (the
+    // group may not be resident); the mapping is consulted lazily
+    // by apply_group_reference() when the group becomes active.
+    // Returns false when key is empty.  Pass an empty path to clear
+    // the mapping for `key`.
+    bool set_group_reference(const std::string& key,
+                             const std::string& path);
+
+    // If a per-group reference is recorded for the currently active
+    // group, and a selected entry has that path, mark it as the
+    // selection's explicit reference.  No-op otherwise.  Called
+    // automatically after group switches; exposed for tests.
+    void apply_group_reference();
 
     // Remove the entry at `index` (destroying its texture via the
     // injected ITextureUploader), patch the selection, refresh
@@ -243,6 +303,12 @@ private:
     std::unique_ptr<ComparisonConfigService> comparison_config_;
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();
+
+    // Per-group reference map.  Keys are group keys (see GroupView
+    // doc above); values are entry paths.  Persisted across group
+    // switches but not across full sessions.  Cleared when a fresh
+    // comparison config is loaded.
+    std::unordered_map<std::string, std::string> group_reference_;
 };
 
 } // namespace idiff

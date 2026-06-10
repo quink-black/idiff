@@ -125,6 +125,7 @@ bool AppController::select_group(int index) {
     if (group.empty()) return false;
     bool changed = selection_->replace(std::move(group));
     if (changed) diff_->mark_dirty();
+    apply_group_reference();
     return changed;
 }
 
@@ -160,6 +161,7 @@ AppController::GroupClickAction AppController::click_in_group(int index) {
     // selects all" UX.
     bool changed = selection_->replace(std::move(group));
     if (changed) diff_->mark_dirty();
+    apply_group_reference();
     return GroupClickAction::Switched;
 }
 
@@ -207,7 +209,139 @@ void AppController::mark_as_reference(int index) {
     selection_->insert(index);
     selection_->set_reference(index);
 
+    // Persist the choice per group so switching away and back keeps
+    // the same reference.  The key for an entry depends on whether a
+    // comparison config is active or not (see group_key_of).
+    std::string key = group_key_of(index);
+    if (!key.empty()) {
+        group_reference_[key] = library_->all()[index].path;
+    }
+
     diff_->mark_dirty();
+}
+
+namespace {
+
+// Build the group key for an entry given the current comparison
+// config state.  Two namespaces ("config:" / "file:") so a session
+// that mixes a config load with a later flat load never collides.
+std::string compute_group_key(const idiff::ImageEntry& entry,
+                              const idiff::ComparisonConfigService& cfg) {
+    if (cfg.has_config()) {
+        int idx = cfg.current_index();
+        if (idx < 0) return {};
+        const auto& groups = cfg.config().groups;
+        if (idx >= static_cast<int>(groups.size())) return {};
+        const auto& name = groups[idx].name;
+        if (!name.empty()) return "config:" + name;
+        return "config:#" + std::to_string(idx);
+    }
+    return "file:" + idiff::group_key_from_filename(entry.filename);
+}
+
+} // namespace
+
+std::string AppController::group_key_of(int index) const {
+    const int n = static_cast<int>(library_->all().size());
+    if (index < 0 || index >= n) return {};
+    return compute_group_key(library_->all()[index], *comparison_config_);
+}
+
+std::vector<AppController::GroupView> AppController::list_groups() const {
+    std::vector<GroupView> result;
+    const auto& entries = library_->all();
+
+    if (comparison_config_->has_config()) {
+        const auto& groups = comparison_config_->config().groups;
+        const int current = comparison_config_->current_index();
+        result.reserve(groups.size());
+        for (std::size_t i = 0; i < groups.size(); ++i) {
+            GroupView gv;
+            const auto& name = groups[i].name;
+            if (!name.empty()) {
+                gv.key = "config:" + name;
+                gv.name = name;
+            } else {
+                gv.key = "config:#" + std::to_string(i);
+                gv.name = "Group " + std::to_string(i + 1);
+            }
+            gv.current = (static_cast<int>(i) == current);
+            // Only the resident group has loaded entries.  The rest
+            // stay empty -- callers can still set_group_reference()
+            // for them by key, the mapping is applied on next switch.
+            if (gv.current) {
+                for (int j = 0; j < static_cast<int>(entries.size()); ++j) {
+                    gv.entries.push_back(j);
+                }
+            }
+            result.push_back(std::move(gv));
+        }
+        return result;
+    }
+
+    // Filename-stem grouping.  Build groups in insertion order so
+    // the output is stable across calls.
+    std::unordered_map<std::string, std::size_t> key_to_idx;
+    for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+        std::string stem = group_key_from_filename(entries[i].filename);
+        std::string key = "file:" + stem;
+        auto it = key_to_idx.find(key);
+        if (it == key_to_idx.end()) {
+            key_to_idx[key] = result.size();
+            GroupView gv;
+            gv.key = std::move(key);
+            gv.name = std::move(stem);
+            gv.current = true;
+            gv.entries.push_back(i);
+            result.push_back(std::move(gv));
+        } else {
+            result[it->second].entries.push_back(i);
+        }
+    }
+    return result;
+}
+
+bool AppController::set_group_reference(const std::string& key,
+                                        const std::string& path) {
+    if (key.empty()) return false;
+    if (path.empty()) {
+        group_reference_.erase(key);
+    } else {
+        group_reference_[key] = path;
+    }
+    // If the modified key matches the currently active group, apply
+    // immediately so the GUI reflects the new reference without
+    // waiting for a group switch.
+    apply_group_reference();
+    return true;
+}
+
+void AppController::apply_group_reference() {
+    const auto& sel = selection_->indices();
+    if (sel.empty()) return;
+
+    const auto& entries = library_->all();
+    // Use any selected entry to determine the active group key.
+    int probe = *sel.begin();
+    if (probe < 0 || probe >= static_cast<int>(entries.size())) return;
+    std::string key = compute_group_key(entries[probe], *comparison_config_);
+    if (key.empty()) return;
+
+    auto it = group_reference_.find(key);
+    if (it == group_reference_.end()) return;
+    const std::string& path = it->second;
+
+    for (int idx : sel) {
+        if (idx < 0 || idx >= static_cast<int>(entries.size())) continue;
+        if (entries[idx].path == path) {
+            selection_->set_reference(idx);
+            diff_->mark_dirty();
+            return;
+        }
+    }
+    // Path not present in current selection.  Leave the implicit
+    // reference (smallest index) in place; the recorded mapping is
+    // kept for the next group switch.
 }
 
 void AppController::remove_entry(int index) {
@@ -575,6 +709,12 @@ AppController::load_images(const std::vector<std::string>& paths) {
         result.did_first_load_select = true;
     }
 
+    // Whenever the selection changed (first-load auto-select OR an
+    // append-style call that didn't change selection at all), make
+    // sure the active group's recorded reference is honoured.  Cheap
+    // when no rule is recorded for the active group.
+    apply_group_reference();
+
     return result;
 }
 
@@ -595,6 +735,9 @@ AppController::load_comparison_config(const std::string& path) {
     selection_->clear();
     diff_->clear();
     diff_->mark_dirty();
+    // A fresh config is a new world.  Per-group references recorded
+    // for the previous session would just be confusing dead entries.
+    group_reference_.clear();
 
     status_reporter_->set_status(load_result.status_message);
 
@@ -658,6 +801,9 @@ AppController::switch_to_comparison_group(int group_idx) {
     }
 
     status_reporter_->set_status(switch_result.status_message);
+    // After load_images() has populated library + selection, apply
+    // the per-group reference recorded for this config group (if any).
+    apply_group_reference();
     return result;
 }
 
