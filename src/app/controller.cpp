@@ -202,6 +202,46 @@ void AppController::mark_as_reference(int index) {
     const int n = static_cast<int>(library_->all().size());
     if (index < 0 || index >= n) return;
 
+    std::string key = comparison_key_of(index);
+
+    // Preserve the "selection lives in one comparison" invariant
+    // that the GUI's Group-by-Name UI relies on.  When the current
+    // selection is a coherent single-comparison set AND the new
+    // entry belongs to a different comparison, narrow the selection
+    // to the new comparison before inserting -- the same behaviour
+    // as click_in_group()'s group-switch branch.
+    //
+    // Heterogeneous / empty selections (flat-mode usage) fall
+    // through to the legacy insert path so cross-comparison flat
+    // selections still work.
+    //
+    // This matters most for RPC sweeps that mark a reference per
+    // comparison: without the narrowing, each call would grow the
+    // selection across comparison boundaries and leave the viewport
+    // diffing unrelated images.  With the narrowing, only the
+    // last-marked entry's comparison stays resident in selection;
+    // every previous mark is recorded in comparison_reference_ for
+    // use when its comparison is revisited.
+    const auto& sel = selection_->indices();
+    if (!sel.empty() && !key.empty()) {
+        std::string active = comparison_key_of(*sel.begin());
+        if (active != key && !active.empty()) {
+            bool coherent = true;
+            for (int s : sel) {
+                if (comparison_key_of(s) != active) {
+                    coherent = false;
+                    break;
+                }
+            }
+            if (coherent) {
+                auto members = group_indices(index);
+                if (!members.empty()) {
+                    selection_->replace(std::move(members));
+                }
+            }
+        }
+    }
+
     // Ensure the entry is part of the selection so overlay / diff
     // actually use it, then designate it as the reference.  No
     // library reordering needed -- the explicit reference decouples
@@ -213,7 +253,6 @@ void AppController::mark_as_reference(int index) {
     // keeps the same reference.  The key for an entry depends on
     // whether a comparison config is active or not (see
     // comparison_key_of).
-    std::string key = comparison_key_of(index);
     if (!key.empty()) {
         comparison_reference_[key] = library_->all()[index].path;
     }
