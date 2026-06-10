@@ -24,6 +24,7 @@
 #include "app/sr_dialog.h"
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
+#include "app/screenshot_composer.h"
 #ifdef IDIFF_HAVE_RPC
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/rpc_server.h"
@@ -1092,219 +1093,24 @@ void App::save_settings() {
 
 void App::save_viewport_dialog() {
     auto& vport = *state_->viewport;
-    ComparisonMode mode = vport.mode();
 
-    // --- Collect the input images that feed the viewport ---
     int ref_idx = -1;
     get_ref_index(ref_idx);
 
-    auto entry_display_mat = [&](int idx) -> cv::Mat {
-        if (idx < 0 || idx >= static_cast<int>(entries_view().size())) return {};
-        const auto& e = entries_view()[idx];
-        const Image* img = e.display_image ? e.display_image.get()
-                                           : e.image.get();
-        if (!img) return {};
-        return img->mat();
-    };
+    ComposeViewportInput in;
+    in.mode = vport.mode();
+    in.ref_idx = ref_idx;
+    in.selection = &selection_->indices();
+    in.entries = &entries_view();
+    in.diff = diff_service_;
+    in.overlay_slider_pos = vport.overlay_slider_pos();
+    in.grid_layout = vport.grid_layout();
+    in.grid_cols = vport.grid_cols();
 
-    // Gather the ordered list of mats in the same order push_entry()
-    // populates for the viewport (Ref first, then the remaining
-    // selected entries in natural order).
-    std::vector<cv::Mat> slot_mats;
-    std::vector<std::string> slot_labels;
-    auto push_slot = [&](int idx, const char* tag) {
-        cv::Mat m = entry_display_mat(idx);
-        if (m.empty()) return;
-        slot_mats.push_back(m);
-        slot_labels.push_back(
-            tag ? (std::string("[") + tag + "] " + entries_view()[idx].display_label)
-                : entries_view()[idx].display_label);
-    };
-    if (ref_idx >= 0) push_slot(ref_idx, "Ref");
-    for (int s : selection_->indices()) {
-        if (s == ref_idx) continue;
-        push_slot(s, nullptr);
-    }
-
-    if (slot_mats.empty() &&
-        !(mode == ComparisonMode::Difference && !diff_service_->empty())) {
-        state_->status_text = "Save: nothing to save (no images selected)";
-        return;
-    }
-
-    // Normalize every mat to BGRA-8 so we can compose freely without per-cell
-    // depth/channel branching.  Saving in 8-bit is fine here because the
-    // viewport itself renders via 8-bit SDL textures.
-    auto to_bgra8 = [](const cv::Mat& src) -> cv::Mat {
-        cv::Mat s = src;
-        if (s.depth() != CV_8U) {
-            // Map [0, typeMax] -> [0, 255] so the saved image matches what
-            // the user sees on screen (textures are uploaded 8-bit).
-            double scale = (s.depth() == CV_16U) ? (1.0 / 257.0) : 1.0;
-            s.convertTo(s, CV_8U, scale);
-        }
-        cv::Mat out;
-        switch (s.channels()) {
-            case 1: cv::cvtColor(s, out, cv::COLOR_GRAY2BGRA); break;
-            // In-memory image mats are RGB/RGBA; convert to BGR/BGRA so
-            // cv::imwrite produces a correct file.
-            case 3: cv::cvtColor(s, out, cv::COLOR_RGB2BGRA); break;
-            case 4: cv::cvtColor(s, out, cv::COLOR_RGBA2BGRA); break;
-            default: return {};
-        }
-        return out;
-    };
-
-    cv::Mat composed;  // final image to write (BGRA-8)
-
-    if (mode == ComparisonMode::Difference) {
-        // Compose every diff heatmap (A vs partner_i) onto one canvas
-        // using the same grid layout Viewport::render_difference draws
-        // on screen, so the saved PNG matches what the user sees.
-        if (diff_service_->empty()) {
-            state_->status_text = "Save: no diff map available "
-                                  "(select at least 2 images first)";
-            return;
-        }
-
-        int n = static_cast<int>(diff_service_->size());
-        int cols, rows;
-        Viewport::compute_grid(n, vport.grid_layout(), vport.grid_cols(),
-                               cols, rows);
-
-        int cell_w = 0, cell_h = 0;
-        for (const auto& slot : diff_service_->slots()) {
-            if (!slot.image) continue;
-            cell_w = std::max(cell_w, slot.image->mat().cols);
-            cell_h = std::max(cell_h, slot.image->mat().rows);
-        }
-        if (cell_w <= 0 || cell_h <= 0) {
-            state_->status_text = "Save: diff image has zero dimensions";
-            return;
-        }
-
-        int out_w = cell_w * cols;
-        int out_h = cell_h * rows;
-        cv::Mat canvas = cv::Mat::zeros(out_h, out_w, CV_8UC4);
-
-        for (int i = 0; i < n; i++) {
-            if (!diff_service_->slots()[i].image) continue;
-            cv::Mat m = to_bgra8(diff_service_->slots()[i].image->mat());
-            if (m.empty()) continue;
-            int col = i % cols;
-            int row = i / cols;
-            int x = col * cell_w + (cell_w - m.cols) / 2;
-            int y = row * cell_h + (cell_h - m.rows) / 2;
-            m.copyTo(canvas(cv::Rect(x, y, m.cols, m.rows)));
-        }
-
-        cv::Scalar divider(255, 255, 255, 80);
-        for (int c = 1; c < cols; c++) {
-            cv::line(canvas, {c * cell_w, 0},
-                     {c * cell_w, out_h - 1}, divider, 1);
-        }
-        for (int r = 1; r < rows; r++) {
-            cv::line(canvas, {0, r * cell_h},
-                     {out_w - 1, r * cell_h}, divider, 1);
-        }
-        composed = canvas;
-    } else if (mode == ComparisonMode::Overlay) {
-        // Reproduce the viewport's A/B slider.  The slider is anchored to
-        // the viewport, so in image-pixel space the split column is just
-        // slider_pos * composite_width.
-        cv::Mat a = slot_mats.size() >= 1 ? to_bgra8(slot_mats[0]) : cv::Mat();
-        cv::Mat b = slot_mats.size() >= 2 ? to_bgra8(slot_mats[1]) : cv::Mat();
-        if (a.empty() && b.empty()) {
-            state_->status_text = "Save: no images for overlay";
-            return;
-        }
-        if (b.empty()) {
-            composed = a;  // only A selected
-        } else {
-            int w = std::max(a.cols, b.cols);
-            int h = std::max(a.rows, b.rows);
-            cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC4);
-
-            float slider = vport.overlay_slider_pos();
-            int split = std::clamp(static_cast<int>(std::round(slider * w)),
-                                   0, w);
-
-            // Left half from A, right half from B.  display_image is already
-            // upscaled to the common size, but guard just in case.
-            auto blit = [](const cv::Mat& src, cv::Mat& dst,
-                           int x0, int x1) {
-                if (src.empty() || x1 <= x0) return;
-                int sw = std::min(src.cols, x1) - x0;
-                if (sw <= 0) return;
-                int sh = std::min(src.rows, dst.rows);
-                cv::Rect src_roi(x0, 0, sw, sh);
-                cv::Rect dst_roi(x0, 0, sw, sh);
-                if (x0 >= src.cols) return;
-                src(src_roi).copyTo(dst(dst_roi));
-            };
-            blit(a, canvas, 0, split);
-            blit(b, canvas, split, w);
-
-            // Draw a thin vertical divider so the split is obvious in the
-            // saved image.
-            if (split > 0 && split < w) {
-                cv::line(canvas, {split, 0}, {split, h - 1},
-                         cv::Scalar(255, 255, 255, 255), 1);
-            }
-            composed = canvas;
-        }
-    } else {  // Split
-        // Match the grid layout Viewport::render_split uses.
-        int n = static_cast<int>(slot_mats.size());
-        if (n == 0) {
-            state_->status_text = "Save: no images to save";
-            return;
-        }
-        int cols, rows;
-        Viewport::compute_grid(n, vport.grid_layout(), vport.grid_cols(),
-                               cols, rows);
-
-        // Use the largest image size as the per-cell size so cells stay
-        // uniform; smaller images are centered with transparent padding.
-        int cell_w = 0, cell_h = 0;
-        for (const auto& m : slot_mats) {
-            cell_w = std::max(cell_w, m.cols);
-            cell_h = std::max(cell_h, m.rows);
-        }
-        if (cell_w <= 0 || cell_h <= 0) {
-            state_->status_text = "Save: image has zero dimensions";
-            return;
-        }
-
-        int out_w = cell_w * cols;
-        int out_h = cell_h * rows;
-        cv::Mat canvas = cv::Mat::zeros(out_h, out_w, CV_8UC4);
-
-        for (int i = 0; i < n; i++) {
-            int col = i % cols;
-            int row = i / cols;
-            cv::Mat m = to_bgra8(slot_mats[i]);
-            if (m.empty()) continue;
-            int x = col * cell_w + (cell_w - m.cols) / 2;
-            int y = row * cell_h + (cell_h - m.rows) / 2;
-            m.copyTo(canvas(cv::Rect(x, y, m.cols, m.rows)));
-        }
-
-        // Draw cell dividers (matching the white-translucent look on screen).
-        cv::Scalar divider(255, 255, 255, 80);
-        for (int c = 1; c < cols; c++) {
-            cv::line(canvas, {c * cell_w, 0},
-                     {c * cell_w, out_h - 1}, divider, 1);
-        }
-        for (int r = 1; r < rows; r++) {
-            cv::line(canvas, {0, r * cell_h},
-                     {out_w - 1, r * cell_h}, divider, 1);
-        }
-        composed = canvas;
-    }
-
+    std::string err;
+    cv::Mat composed = compose_viewport(in, &err);
     if (composed.empty()) {
-        state_->status_text = "Save: failed to compose viewport image";
+        state_->status_text = "Save: " + err;
         return;
     }
 

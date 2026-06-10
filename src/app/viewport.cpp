@@ -21,6 +21,10 @@ void Viewport::set_zoom(float z) {
     zoom_ = std::clamp(z, 0.05f, 64.0f);
 }
 
+void Viewport::set_overlay_slider_pos(float v) {
+    slider_pos_ = std::clamp(v, 0.0f, 1.0f);
+}
+
 void Viewport::zoom_around(float new_zoom, ImVec2 anchor) {
     new_zoom = std::clamp(new_zoom, 0.05f, 64.0f);
     if (new_zoom == zoom_) return;
