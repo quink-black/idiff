@@ -230,6 +230,19 @@ private:
     // Start SR inference for the given task parameters.
     void start_sr_task(const struct SRTaskParams& params);
 
+#ifdef IDIFF_HAVE_RPC
+    // Wire the 7 Phase-1 method handlers into rpc_dispatcher_.  Defined
+    // in app_rpc_methods.cpp so the RPC method bodies can be developed
+    // independently of the rest of App without bloating app.cpp.
+    // Called from init() right after the dispatcher is constructed.
+    void register_rpc_methods();
+
+    // Accessor for the methods file -- viewport_ lives inside the
+    // private State struct and app_rpc_methods.cpp does not see State's
+    // definition.  Defined in app.cpp.
+    Viewport& rpc_viewport() noexcept;
+#endif
+
     struct State;
     std::unique_ptr<State> state_;
 

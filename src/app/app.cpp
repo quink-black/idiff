@@ -191,6 +191,12 @@ App::App()
 
 App::~App() = default;
 
+#ifdef IDIFF_HAVE_RPC
+Viewport& App::rpc_viewport() noexcept {
+    return *state_->viewport;
+}
+#endif
+
 const std::vector<ImageEntry>& App::entries() const noexcept {
     return library_->all();
 }
@@ -426,16 +432,17 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
 
 #ifdef IDIFF_HAVE_RPC
     // Start the JSON-RPC server.  Bound to /tmp/idiff-<pid>.sock so
-    // multiple idiff instances on the same machine don't collide.  No
-    // method handlers are registered yet -- they'll be wired in a
-    // follow-up commit.  Even with zero methods the server is useful:
-    // an external client can connect and send a request, get a
-    // well-formed MethodNotFound back, confirming the transport works.
+    // multiple idiff instances on the same machine don't collide.  The
+    // 7 Phase-1 method handlers are wired in register_rpc_methods()
+    // below; even without them the server is useful for an external
+    // client to exercise the transport (a misnamed method gets a
+    // well-formed MethodNotFound back).
     //
     // Failure to start is logged but does NOT fail App::init().  The
     // GUI is the primary interface; an unusable RPC port is a
     // recoverable downgrade.
     rpc_dispatcher_ = std::make_unique<rpc::Dispatcher>();
+    register_rpc_methods();
     const std::string sock_path =
         "/tmp/idiff-" + std::to_string(::getpid()) + ".sock";
     rpc_server_ = std::make_unique<rpc::RpcServer>(
