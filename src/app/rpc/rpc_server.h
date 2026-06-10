@@ -1,6 +1,6 @@
-// JSON-RPC 2.0 transport: Unix Domain Socket server.
+// JSON-RPC 2.0 transport: UDS server (POSIX) or Named Pipe server (Windows).
 //
-// Phase 1 architecture (single-state multi-channel):
+// Architecture (single-state multi-channel):
 //
 //   GUI thread (main)                      Asio I/O thread
 //   ----------------                       ---------------
@@ -12,9 +12,12 @@
 //   Dispatcher::handle_request                 |  await future
 //   set promise value -----future----------->  | write framed response
 //
+// On Windows, a separate accept thread issues ConnectNamedPipe and
+// posts connected HANDLEs to the I/O thread.
+//
 // Invariants:
-//   * The Asio thread NEVER touches App / AppController / SDL / OpenCV.
-//     It only owns sockets, framing buffers, and the request queue.
+//   * The Asio/accept threads NEVER touch App / AppController / SDL / OpenCV.
+//     They only own sockets/pipes, framing buffers, and the request queue.
 //   * drain() is the ONLY place Dispatcher handlers run, and it is
 //     called from the main thread.  Therefore handlers may freely
 //     access App state without further synchronisation.
@@ -61,9 +64,10 @@ public:
     RpcServer(const RpcServer&) = delete;
     RpcServer& operator=(const RpcServer&) = delete;
 
-    // Bind, listen, and spawn the I/O thread.  If the socket path
-    // already exists it is unlinked first (typical for a stale path
-    // from a previous crashed instance).
+    // Bind, listen, and spawn the I/O thread (and accept thread on
+    // Windows).  On POSIX, if the socket path already exists it is
+    // unlinked first (typical for a stale path from a previous crashed
+    // instance).  On Windows, named pipes auto-cleanup.
     //
     // Throws std::system_error on bind/listen failure.  Idempotent if
     // already running (no-op).

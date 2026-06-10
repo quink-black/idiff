@@ -2,7 +2,7 @@
 
 > **Audience:** future contributors and AI agents resuming this work,
 > potentially on a different machine (notably Windows).
-> **Last updated:** 2026-06-10, branch `feature/rpc-phase1`.
+> **Last updated:** 2026-06-10, branch `feature/rpc-phase1`, Phase 2 complete.
 
 This document is the load-bearing reference for the RPC subsystem.
 When you (human or agent) sit down to continue this work — especially
@@ -56,17 +56,22 @@ Two motivating user scenarios (the original "why"):
                   │              │  drain() called every    │
                   │              │  frame() on main thread  │
                   │      ┌───────┴───────┐                  │
-                  │      │ rpc::RpcServer │  (Asio I/O thread)
-                  │      └───────▲───────┘                  │
+                  │      │ rpc::RpcServer │  (Asio I/O      │
+                  │      └───────▲───────┘   thread)        │
                   │              │ promise/future per req   │
                   └──────────────┼──────────────────────────┘
-                                 │ AF_UNIX SOCK_STREAM
-                                 │ 4-byte BE length + JSON
-                  ┌──────────────┴──────────────┐
+                                 │
+                    ┌────────────┴────────────┐
+                    │ POSIX                    │ Windows                │
+                    │ AF_UNIX SOCK_STREAM      │ Named Pipe             │
+                    │ /tmp/idiff-<pid>.sock    │ \\.\pipe\idiff-<pid>   │
+                    │ 4-byte BE length + JSON  │ 4-byte BE length + JSON│
+                    └──────────────────────────┴───────────────────────┘
+                  ┌──────────────┐
                   │  External clients           │
                   │  - tools/idiff-mcp/         │
                   │    (Python, MCP shim)       │
-                  │  - any AF_UNIX client       │
+                  │  - any socket/pipe client   │
                   └─────────────────────────────┘
 ```
 
@@ -79,25 +84,31 @@ Two motivating user scenarios (the original "why"):
   every queued handler synchronously on the main thread.
   See `src/app/rpc/rpc_server.{h,cpp}` for the full picture.
 
-- **Wire format.** Plain JSON-RPC 2.0 over a Unix Domain Socket,
-  framed with a 4-byte big-endian length prefix followed by UTF-8
-  JSON. Frames above **64 MiB** are rejected before allocation. The
-  framing is self-contained in `rpc_server.cpp`; the dispatcher in
-  `rpc_dispatcher.{h,cpp}` is pure protocol logic with no socket
-  awareness, which is what makes it cheap to unit-test.
+- **Wire format.** Plain JSON-RPC 2.0 over a transport (UDS on POSIX,
+  named pipe on Windows), framed with a 4-byte big-endian length
+  prefix followed by UTF-8 JSON. Frames above **64 MiB** are rejected
+  before allocation. The framing is self-contained in
+  `rpc_server.cpp`; the dispatcher in `rpc_dispatcher.{h,cpp}` is
+  pure protocol logic with no socket awareness, which is what makes it
+  cheap to unit-test.
 
-- **Identity.** Each instance binds `/tmp/idiff-<pid>.sock`. The same
-  `<pid>` is shown to the user as `idiff:<pid>` in three places:
-  the OS window title, a status-bar chip on the far left, and (via
-  cell-label prefixes) on every viewport panel as `[N] filename`.
-  Path / label composition lives in
-  `src/app/rpc/socket_paths.{h,cpp}`.
+- **Identity.** Each instance binds a transport path:
+  POSIX: `/tmp/idiff-<pid>.sock`; Windows: `\\.\pipe\idiff-<pid>`.
+  The same `<pid>` is shown to the user as `idiff:<pid>` in three
+  places: the OS window title, a status-bar chip on the far left, and
+  (via cell-label prefixes) on every viewport panel as
+  `[N] filename`.  Path / label composition lives in
+  `src/app/rpc/socket_paths.{h,cpp}` (POSIX) and
+  `src/app/rpc/socket_paths_win32.cpp` (Windows).
 
-- **Stale-socket sweep.** On `App::init()`, we walk `/tmp/idiff-*.sock`
-  and probe each via `connect(2)`. Anything that returns
-  `ECONNREFUSED` is unlinked (a leftover from a hard kill). Anything
-  alive is left alone. This keeps `ls /tmp/idiff-*.sock` an honest
-  list of running idiff windows — which the MCP server's
+- **Stale-socket sweep.** On `App::init()`, we enumerate existing
+  transport paths. On POSIX, we walk `/tmp/idiff-*.sock` and probe
+  each via `connect(2)`. Anything that returns `ECONNREFUSED` is
+  unlinked (a leftover from a hard kill). Anything alive is left
+  alone. On Windows, named pipes are kernel objects that vanish when
+  the server process exits, so `FindFirstFileW` enumeration alone is
+  sufficient — no probe or unlink is needed. This keeps discovery an
+  honest list of running idiff windows — which the MCP server's
   auto-discovery depends on.
 
 - **Why standalone-asio + nlohmann/json.** The user explicitly
@@ -119,20 +130,23 @@ Two motivating user scenarios (the original "why"):
 | Path | Role |
 |---|---|
 | `src/app/rpc/rpc_dispatcher.{h,cpp}` | Pure JSON-RPC 2.0 protocol layer (parse, route, error envelopes). Zero socket / threading dependencies. |
-| `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed AF_UNIX transport. Owns the I/O thread and the request queue. |
-| `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep. POSIX-only today. |
+| `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. |
+| `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). |
+| `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
 | `src/app/app_rpc_methods.cpp` | All 9 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
-| `tests/test_rpc_server.cpp` | 4 integration tests (raw AF_UNIX client, no Asio). |
+| `tests/test_rpc_server.cpp` | 4 integration tests (platform-abstracted transport client). |
 | `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
-| `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet. |
+| `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
+| `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
 | `tools/idiff-mcp/README.md` | User-facing setup / usage docs. |
 
-CMake gates: `IDIFF_HAVE_RPC` is set in the top-level `CMakeLists.txt`
-when standalone-asio is found. Today this is **POSIX only** by
-explicit guard — Windows will need work, see below.
+CMake gates: `IDIFF_HAVE_RPC` is set unconditionally in the top-level
+`CMakeLists.txt` (both POSIX and Windows). On Windows, `ws2_32` is
+linked and `_WIN32_WINNT=0x0601` is set as a PUBLIC compile definition
+on `idiff_rpc`.
 
 ---
 
@@ -221,47 +235,40 @@ the user always knows which window the agent is talking to.
 **Total:** 8 commits, 303/303 tests green, end-to-end MCP smoke test
 passing.
 
-### Phase 2 — Windows support (NEXT, planned for Windows host)
+### Phase 2 — Windows support (✅ DONE on `feature/rpc-phase1`)
 
-See "Resuming Work" at the bottom for the actual handoff. Expected
-shape:
-
-- [ ] **Transport switch on Windows.** Two options, pick one:
-  - **(A) Named pipes via Asio.** Asio supports
-    `windows::stream_handle` over named pipes; framing stays the
-    same (4-byte BE length + JSON), only the listener / accept
-    changes. Path: `\\.\pipe\idiff-<pid>`. Most idiomatic on
-    Windows; the user does not need WSL.
-  - **(B) AF_UNIX on Windows.** Win10 1803+ supports AF_UNIX
-    (`SOCK_STREAM` only). Less code change. Path:
-    `%TEMP%\idiff-<pid>.sock`. Limited to recent Windows builds.
-  - Recommendation: **(A) named pipes** — wider compatibility,
-    `\\.\pipe\` namespace is the canonical Windows IPC location.
-    Adds ~150 LoC under `#ifdef _WIN32` in `rpc_server.cpp`.
-- [ ] **Stale-server sweep on Windows.** No `/tmp` glob. Use
-  `WaitNamedPipe` with a 0 timeout to probe candidate pipes; or
-  enumerate via `\\.\pipe\` listing (`FindFirstFileW("\\.\\pipe\\idiff-*")`)
-  and `CreateFile` probe. Lives in `socket_paths_win32.cpp`
-  paralleling `socket_paths.cpp`.
-- [ ] **MCP client.** `idiff_client.py` currently uses
-  `socket.AF_UNIX`. On Windows, switch to opening the named pipe
-  via `open(path, 'rb+', buffering=0)` (or `pywin32`'s
-  `CreateFile`) when `sys.platform == 'win32'`. Discovery uses
-  `os.listdir(r'\\.\pipe')` filtered by prefix.
-- [ ] **Identity tag.** Window title + status-bar chip already
-  cross-platform (no change needed); just confirm the tag survives
-  on Windows builds.
-- [ ] **Top-level CMake.** Today `IDIFF_HAVE_RPC` is gated on
-  `find_path(asio.hpp)` succeeding. On Windows, additionally pull
-  in `ws2_32` (for AF_UNIX) or rely on Asio's named-pipe support.
-  `target_link_libraries(idiff_rpc PRIVATE ws2_32)` on Windows.
-- [ ] **Tests.** Existing `test_rpc_server.cpp` uses `sys/un.h` and
-  `connect(2)` directly; either factor a small helper for the
-  test client per platform, or skip the integration test on
-  Windows and rely on the dispatcher unit tests + manual smoke.
-- [ ] **MCP setup script.** `tools/idiff-mcp/setup.sh` is bash-only.
-  Add `setup.ps1` mirroring it. Or document
-  "use Git Bash / WSL to run setup.sh".
+- [x] **Transport switch on Windows.** Option (A): Named pipes via Asio.
+  `asio::windows::stream_handle` wraps connected pipe HANDLEs.
+  Framing is identical (4-byte BE length + JSON). Path:
+  `\\.\pipe\idiff-<pid>`. Accept thread issues `ConnectNamedPipe`
+  with OVERLAPPED + `WaitForMultipleObjects` on (pipe-event,
+  shutdown-event); posts connected HANDLE to I/O thread which wraps
+  it in `stream_handle` and starts the session. Adds +1 background
+  thread on Windows (accept thread + Asio I/O thread = 2; POSIX has
+  1).
+- [x] **Stale-server sweep on Windows.** Named pipes are kernel objects
+  that vanish when the server exits. `sweep_stale_sockets()` on
+  Windows uses `FindFirstFileW("\\.\pipe\idiff-*")` enumeration;
+  `alive` is always `true` for enumerated pipes, `removed` is always
+  `false`. No probe or unlink step is needed. Lives in
+  `socket_paths_win32.cpp`.
+- [x] **MCP client.** `idiff_client.py` uses `ctypes` to call
+  `kernel32.CreateFileW` / `ReadFile` / `WriteFile` / `CloseHandle`
+  for deterministic byte-mode named-pipe I/O on Windows (Python's
+  `open()` on `\\.\pipe\*` has version-dependent quirks). Discovery
+  uses `FindFirstFileW` enumeration via `ctypes`. No pywin32
+  dependency.
+- [x] **Identity tag.** Window title + status-bar chip already
+  cross-platform; `::getpid()` replaced with
+  `::GetCurrentProcessId()` on Windows.
+- [x] **Top-level CMake.** `IDIFF_HAVE_RPC` is now set unconditionally.
+  On Windows, `ws2_32` is linked and `_WIN32_WINNT=0x0601` is set
+  as a PUBLIC compile definition on `idiff_rpc`.
+- [x] **Tests.** `test_rpc_server.cpp` refactored with platform-abstracted
+  transport helpers (`connect_transport`, `send_frame`, `recv_frame`,
+  etc.) — same test logic on both platforms.
+- [x] **MCP setup script.** `tools/idiff-mcp/setup.ps1` mirrors
+  `setup.sh` for Windows.
 
 ### Phase 3 — Async / events (deferred, no design yet)
 
@@ -286,14 +293,14 @@ shape:
 **You are an agent or human resuming this initiative on a new
 machine.** Read this section in order.
 
-### 1. Confirm where Phase 1 left off
+### 1. Confirm where Phase 1+2 left off
 
 ```bash
 cd /path/to/idiff
 git log --oneline | head -10
 ```
 
-You should see commits `5acb213 .. 766de41` on a branch like
+You should see the Phase 1 and Phase 2 commits on a branch like
 `feature/rpc-phase1`. If they are missing, you are on the wrong
 branch — `git fetch && git checkout feature/rpc-phase1`.
 
@@ -301,21 +308,22 @@ branch — `git fetch && git checkout feature/rpc-phase1`.
 cmake -B build && cmake --build build -j && ctest --test-dir build
 ```
 
-Expect 303/303 passing on POSIX. On Windows this will not build
-yet — that's exactly Phase 2.
+Expect 303/303 passing on POSIX. On Windows the RPC tests should
+also pass now.
 
 ### 2. Read the code in this order
 
 1. `docs/rpc-design.md` (this file) — paradigm, status, decisions.
 2. `src/app/rpc/rpc_dispatcher.{h,cpp}` — protocol layer, easiest to grok.
-3. `src/app/rpc/rpc_server.cpp` — threading model and framing.
-4. `src/app/rpc/socket_paths.{h,cpp}` — the place that *will* need
-   a Windows companion.
-5. `src/app/app_rpc_methods.cpp` — the public API surface.
-6. `tools/idiff-mcp/idiff_client.py` — same Windows split applies
-   on the Python side.
+3. `src/app/rpc/rpc_server.cpp` — threading model and framing (POSIX + Windows).
+4. `src/app/rpc/socket_paths.{h,cpp}` — POSIX path/label/sweep.
+5. `src/app/rpc/socket_paths_win32.cpp` — Windows named-pipe path/label/enumeration.
+6. `src/app/app_rpc_methods.cpp` — the public API surface.
+7. `tools/idiff-mcp/idiff_client.py` — Python client (UDS + named pipe).
 
-### 3. Verify the live wire still works (POSIX only today)
+### 3. Verify the live wire still works
+
+**POSIX:**
 
 ```bash
 ./build/src/app/idiff.app/Contents/MacOS/idiff &  # or platform equivalent
@@ -332,30 +340,19 @@ n = struct.unpack('>I', s.recv(4))[0]; print(s.recv(n).decode())
 "
 ```
 
-### 4. Phase 2 starting point
+**Windows:**
 
-Recommended path for Windows support:
+```powershell
+# Start idiff.exe, then in PowerShell:
+python -c "
+from idiff_client import IdiffClient
+c = IdiffClient(r'\\.\pipe\idiff-<pid>')  # fill in pid
+print(c.call('app.identity'))
+c.close()
+"
+```
 
-1. **Pick the transport** (named pipes are the recommendation).
-2. **Add a transport seam.** Right now `rpc_server.cpp` assumes
-   `asio::local::stream_protocol` (AF_UNIX). The cleanest split is
-   to introduce a typedef / using directive at the top of
-   `rpc_server.cpp` and platform-fork the listener / acceptor /
-   per-session reads.
-3. **Mirror `socket_paths.cpp` as `socket_paths_win32.cpp`.** Same
-   public API (`compose_socket_path`, `compose_identity_label`,
-   `sweep_stale_sockets`); `compose_socket_path` returns
-   `\\.\pipe\idiff-<pid>` on Windows.
-4. **Mirror `idiff_client.py`'s `_probe_socket` / discovery for
-   Windows.** Conditional on `sys.platform == 'win32'`.
-5. **Test.** The existing `test_rpc_dispatcher.cpp` is portable as
-   long as the dispatcher itself stays portable — it should. The
-   integration tests in `test_rpc_server.cpp` will need a parallel
-   Windows version using `CreateFile` against the pipe.
-6. **Smoke run.** Same script as section 3, with the transport
-   adjusted.
-
-### 5. Memory / context notes
+### 4. Phase 3 starting point
 
 The user values:
 

@@ -1,5 +1,5 @@
-// Implementation of socket_paths.h.  POSIX-only -- the whole RPC
-// subsystem is POSIX-only in Phase 1.
+// POSIX implementation of socket_paths.h.
+// Uses Unix Domain Sockets under /tmp.
 
 #include "app/rpc/socket_paths.h"
 

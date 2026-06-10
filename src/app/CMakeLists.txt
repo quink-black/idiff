@@ -24,8 +24,7 @@ add_executable(idiff
     ui/yuv_dialog.cpp
 )
 
-# JSON-RPC server (Phase 1, POSIX-only).  IDIFF_HAVE_RPC is set in the
-# top-level CMakeLists.txt based on platform.
+# JSON-RPC server.  IDIFF_HAVE_RPC is set in the top-level CMakeLists.txt.
 if(IDIFF_HAVE_RPC)
     add_subdirectory(rpc)
     target_sources(idiff PRIVATE app_rpc_methods.cpp)
