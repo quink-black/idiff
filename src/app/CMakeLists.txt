@@ -28,6 +28,7 @@ add_executable(idiff
 # top-level CMakeLists.txt based on platform.
 if(IDIFF_HAVE_RPC)
     add_subdirectory(rpc)
+    target_sources(idiff PRIVATE app_rpc_methods.cpp)
 endif()
 
 if(APPLE)
