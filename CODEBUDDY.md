@@ -46,9 +46,21 @@ idiff_core   -> Image, ImageLoader, ImageComparator, MediaSource,
                 DepthUtils
 idiff_domain -> ImageLibrary, SelectionModel, TimelineModel, DiffService,
                 SrTaskService, ComparisonConfigService
+idiff_rpc    -> JSON-RPC 2.0 dispatcher + Asio UDS transport (POSIX only,
+                gated on IDIFF_HAVE_RPC). See docs/rpc-design.md.
 idiff        -> GUI executable (App, Viewport, ImGui panels)
 idiff_tests  -> Catch2 test suite
 ```
+
+### RPC + MCP
+
+idiff exposes a JSON-RPC 2.0 server on `/tmp/idiff-<pid>.sock` so
+external clients (CLI, AI agents, the bundled MCP shim in
+`tools/idiff-mcp/`) can drive the same `App` state the GUI does.
+**Read `docs/rpc-design.md` before touching anything under `src/app/rpc/`,
+`src/app/app_rpc_methods.cpp`, or `tools/idiff-mcp/`.** That document
+covers the paradigm, threading model, current status, and the
+Phase 2 (Windows) handoff.
 
 ### Domain/UI Separation
 
