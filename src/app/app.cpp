@@ -24,6 +24,10 @@
 #include "app/sr_dialog.h"
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
+#ifdef IDIFF_HAVE_RPC
+#include "app/rpc/rpc_dispatcher.h"
+#include "app/rpc/rpc_server.h"
+#endif
 #include "core/file_watcher.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
@@ -53,6 +57,10 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+
+#ifdef IDIFF_HAVE_RPC
+#include <unistd.h>  // getpid for the per-PID socket path
+#endif
 
 #include "core/channel_view.h"
 #include "core/depth_utils.h"
@@ -415,11 +423,50 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
             });
     }
 
+#ifdef IDIFF_HAVE_RPC
+    // Start the JSON-RPC server.  Bound to /tmp/idiff-<pid>.sock so
+    // multiple idiff instances on the same machine don't collide.  No
+    // method handlers are registered yet -- they'll be wired in a
+    // follow-up commit.  Even with zero methods the server is useful:
+    // an external client can connect and send a request, get a
+    // well-formed MethodNotFound back, confirming the transport works.
+    //
+    // Failure to start is logged but does NOT fail App::init().  The
+    // GUI is the primary interface; an unusable RPC port is a
+    // recoverable downgrade.
+    rpc_dispatcher_ = std::make_unique<rpc::Dispatcher>();
+    const std::string sock_path =
+        "/tmp/idiff-" + std::to_string(::getpid()) + ".sock";
+    rpc_server_ = std::make_unique<rpc::RpcServer>(
+        sock_path, *rpc_dispatcher_);
+    try {
+        rpc_server_->start();
+    } catch (const std::exception& ex) {
+        LOG_WARN("rpc: failed to start server on %s: %s",
+                 sock_path.c_str(), ex.what());
+        rpc_server_.reset();
+        rpc_dispatcher_.reset();
+    }
+#endif
+
     return true;
 }
 
 void App::shutdown() {
     NFD_Quit();
+
+#ifdef IDIFF_HAVE_RPC
+    // Stop the RPC server FIRST, before any other state is torn down.
+    // The Asio I/O thread can be parked inside a session waiting for
+    // a future from drain(); stop() unblocks and joins it cleanly.
+    // Destroying rpc_server_ then rpc_dispatcher_ is safe because the
+    // I/O thread has joined.
+    if (rpc_server_) {
+        rpc_server_->stop();
+    }
+    rpc_server_.reset();
+    rpc_dispatcher_.reset();
+#endif
 
     if (library_) {
         library_->clear();
@@ -455,6 +502,17 @@ void App::shutdown() {
 }
 
 void App::frame() {
+#ifdef IDIFF_HAVE_RPC
+    // Drain any RPC requests that arrived since the last frame.  This
+    // is the ONLY place RPC method handlers run, and it always runs on
+    // the main thread -- so handlers can freely touch App / Controller
+    // / SDL state without locks.  drain() is non-blocking and returns
+    // immediately when the queue is empty (the common case).
+    if (rpc_server_) {
+        rpc_server_->drain();
+    }
+#endif
+
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();

@@ -33,6 +33,13 @@ class YuvRawSource;
 #endif
 struct SRDialogState;
 
+#ifdef IDIFF_HAVE_RPC
+namespace rpc {
+class Dispatcher;
+class RpcServer;
+} // namespace rpc
+#endif
+
 // Forward declaration is not sufficient because App stores a default-
 // initialized ChannelViewMode value; the full enum definition is needed.
 // Defined in core/channel_view.h.
@@ -271,6 +278,20 @@ private:
 
     // SR configuration dialog state.
     std::unique_ptr<SRDialogState> sr_dialog_;
+
+#ifdef IDIFF_HAVE_RPC
+    // JSON-RPC 2.0 server.  The dispatcher owns method handlers and is
+    // pumped on the main thread once per frame() via rpc_server_->drain();
+    // the server itself runs an Asio I/O thread that handles the UDS
+    // socket I/O.  Handlers are registered in init() and the server
+    // bound to /tmp/idiff-<pid>.sock.  Both are torn down in shutdown().
+    //
+    // Order matters: rpc_server_ borrows rpc_dispatcher_ by reference,
+    // so the dispatcher must outlive the server.  Declaring them in
+    // this order (dispatcher first) guarantees correct destruction.
+    std::unique_ptr<rpc::Dispatcher> rpc_dispatcher_;
+    std::unique_ptr<rpc::RpcServer>  rpc_server_;
+#endif
 
     // Last known channel view mode, tracked so we can detect changes
     // triggered inside the Viewport combo and mark textures dirty.
