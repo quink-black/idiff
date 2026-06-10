@@ -28,6 +28,7 @@
 #ifdef IDIFF_HAVE_RPC
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/rpc_server.h"
+#include "app/rpc/socket_paths.h"
 #endif
 #include "core/file_watcher.h"
 #include "domain/image_library.h"
@@ -184,6 +185,21 @@ struct App::State {
     // borrowed pointers always reach a stable State; cleared in
     // App::shutdown() before State is destroyed.
     std::unique_ptr<IStatusReporter> status_reporter;
+
+#ifdef IDIFF_HAVE_RPC
+    // Per-instance RPC identity.  Set in init() once the server has
+    // started successfully; remains empty when the server failed to
+    // bind.  The status-bar chip and the app.identity RPC method both
+    // read these directly.
+    int         rpc_pid = -1;
+    std::string rpc_socket_path;   // "/tmp/idiff-<pid>.sock"
+    std::string rpc_identity;      // "idiff:<pid>"
+
+    // Snapshot of /tmp/idiff-*.sock taken once at startup.  Mainly
+    // useful for log spelunking; app.list_instances re-runs the sweep
+    // on demand because state changes after init().
+    std::vector<rpc::SocketProbe> known_instances;
+#endif
 };
 
 App::App()
@@ -194,6 +210,35 @@ App::~App() = default;
 #ifdef IDIFF_HAVE_RPC
 Viewport& App::rpc_viewport() noexcept {
     return *state_->viewport;
+}
+
+int App::rpc_pid() const noexcept {
+    return state_->rpc_pid;
+}
+
+const std::string& App::rpc_socket_path() const noexcept {
+    return state_->rpc_socket_path;
+}
+
+const std::string& App::rpc_identity() const noexcept {
+    return state_->rpc_identity;
+}
+
+const std::string& App::identity_label() const noexcept {
+    return state_->rpc_identity;
+}
+
+const std::string& App::identity_socket_path() const noexcept {
+    return state_->rpc_socket_path;
+}
+#else
+const std::string& App::identity_label() const noexcept {
+    static const std::string empty;
+    return empty;
+}
+const std::string& App::identity_socket_path() const noexcept {
+    static const std::string empty;
+    return empty;
 }
 #endif
 
@@ -431,6 +476,16 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     }
 
 #ifdef IDIFF_HAVE_RPC
+    // Sweep stale /tmp/idiff-*.sock files left behind by hard-killed
+    // / crashed previous instances.  Probe each by connect(); only
+    // ECONNREFUSED entries are removed.  This keeps `ls /tmp/idiff-*`
+    // honest as a "currently-running idiff instances" listing, which
+    // the MCP server relies on for auto-discovery.  Stale entries we
+    // detect (alive or not) are also stashed on State so the in-app
+    // RPC handler app.list_instances can return them without a
+    // second sweep.
+    state_->known_instances = rpc::sweep_stale_sockets();
+
     // Start the JSON-RPC server.  Bound to /tmp/idiff-<pid>.sock so
     // multiple idiff instances on the same machine don't collide.  The
     // 7 Phase-1 method handlers are wired in register_rpc_methods()
@@ -443,17 +498,29 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // recoverable downgrade.
     rpc_dispatcher_ = std::make_unique<rpc::Dispatcher>();
     register_rpc_methods();
-    const std::string sock_path =
-        "/tmp/idiff-" + std::to_string(::getpid()) + ".sock";
+    state_->rpc_pid = static_cast<int>(::getpid());
+    state_->rpc_socket_path = rpc::compose_socket_path(state_->rpc_pid);
+    state_->rpc_identity = rpc::compose_identity_label(state_->rpc_pid);
     rpc_server_ = std::make_unique<rpc::RpcServer>(
-        sock_path, *rpc_dispatcher_);
+        state_->rpc_socket_path, *rpc_dispatcher_);
     try {
         rpc_server_->start();
+        // Reflect the identity in the OS window title so the user can
+        // tell two open idiff windows apart at a glance.  Anything
+        // non-fatal in this section -- the title can be re-set later
+        // and is purely cosmetic.
+        if (state_->window) {
+            const std::string title = "idiff [" + state_->rpc_identity + "]";
+            SDL_SetWindowTitle(state_->window, title.c_str());
+        }
     } catch (const std::exception& ex) {
         LOG_WARN("rpc: failed to start server on %s: %s",
-                 sock_path.c_str(), ex.what());
+                 state_->rpc_socket_path.c_str(), ex.what());
         rpc_server_.reset();
         rpc_dispatcher_.reset();
+        state_->rpc_socket_path.clear();
+        state_->rpc_identity.clear();
+        state_->rpc_pid = -1;
     }
 #endif
 
@@ -1719,6 +1786,8 @@ void App::render_status_bar() {
     in.status_text = &state_->status_text;
     in.status_msg = &state_->status_msg;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
+    in.identity_label = &identity_label();
+    in.identity_socket_path = &identity_socket_path();
     idiff::render_status_bar(in);
 }
 

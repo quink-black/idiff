@@ -36,6 +36,7 @@
 
 #include "app/controller.h"
 #include "app/rpc/rpc_dispatcher.h"
+#include "app/rpc/socket_paths.h"
 #include "app/screenshot_composer.h"
 #include "app/viewport.h"
 #include "core/detail/platform_utf8.h"
@@ -132,6 +133,58 @@ void App::register_rpc_methods() {
     if (!rpc_dispatcher_) return;
     auto& d = *rpc_dispatcher_;
 
+    // --- app.identity ----------------------------------------------
+    //
+    // Single round-trip the MCP server uses to confirm that the
+    // socket path it just connected to actually belongs to an idiff
+    // (rather than some unrelated UDS server that happens to live in
+    // /tmp/idiff-*).  Also lets a multi-instance UI tell the user
+    // which window the agent is talking to.
+    d.register_method("app.identity",
+        [this](const json& /*params*/) -> json {
+            return json{
+                {"name",   "idiff"},
+                {"pid",    rpc_pid()},
+                {"socket", rpc_socket_path()},
+                {"label",  rpc_identity()},
+            };
+        });
+
+    // --- app.list_instances ----------------------------------------
+    //
+    // Re-runs the /tmp/idiff-*.sock sweep on demand and reports back
+    // one entry per probe.  Stale entries (ECONNREFUSED) are cleaned
+    // up as a side effect of the sweep, mirroring what init() does.
+    // Used by the MCP server when its own discovery turns up more
+    // than one live instance: returning the list lets the agent
+    // show the user a chooser without poking the filesystem itself.
+    d.register_method("app.list_instances",
+        [this](const json& /*params*/) -> json {
+            auto probes = rpc::sweep_stale_sockets();
+            json arr = json::array();
+            for (const auto& p : probes) {
+                json je = {
+                    {"path",    p.path},
+                    {"pid",     p.pid},
+                    {"alive",   p.alive},
+                    {"removed", p.removed},
+                };
+                if (p.alive && p.pid > 0) {
+                    je["label"] = rpc::compose_identity_label(p.pid);
+                }
+                if (p.alive && p.pid == rpc_pid()) {
+                    je["self"] = true;
+                }
+                arr.push_back(std::move(je));
+            }
+            return json{
+                {"self_pid",    rpc_pid()},
+                {"self_socket", rpc_socket_path()},
+                {"self_label",  rpc_identity()},
+                {"instances",   std::move(arr)},
+            };
+        });
+
     // --- state.get -------------------------------------------------
     //
     // Returns a snapshot of everything an external client needs to
@@ -174,6 +227,12 @@ void App::register_rpc_methods() {
             };
 
             return json{
+                {"identity", json{
+                    {"name",   "idiff"},
+                    {"pid",    rpc_pid()},
+                    {"socket", rpc_socket_path()},
+                    {"label",  rpc_identity()},
+                }},
                 {"entries",   std::move(entries_json)},
                 {"selection", std::move(selection_json)},
                 {"reference", ref_idx < 0 ? json(nullptr) : json(ref_idx)},

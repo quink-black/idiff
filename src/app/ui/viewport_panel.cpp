@@ -89,9 +89,15 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         int src_h = e.image ? e.image->info().display_height() : e.tex_h;
         tex_ws.push_back(src_w);
         tex_hs.push_back(src_h);
+        // The slot index (the position of this cell in the viewport's
+        // grid) is shown as a small bracketed prefix so the user has
+        // a stable identifier they can quote when collaborating with
+        // an AI agent over MCP -- "look at panel [1]" works without
+        // ambiguity even when the underlying file path is long.
+        const std::size_t slot_no = tex_ptrs.size() - 1;
         std::string lbl = prefix
-            ? (std::string("[") + prefix + "] " + e.display_label)
-            : e.display_label;
+            ? ("[" + std::to_string(slot_no) + "][" + prefix + "] " + e.display_label)
+            : ("[" + std::to_string(slot_no) + "] " + e.display_label);
         label_storage.push_back(std::move(lbl));
         labels.push_back(label_storage.back().c_str());
         slot_to_entry.push_back(s);
