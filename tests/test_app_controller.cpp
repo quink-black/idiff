@@ -294,20 +294,22 @@ TEST_CASE("AppController::mark_as_reference ignores out-of-range indices",
     REQUIRE(controller.selection().indices() == std::set<int>{0});
 }
 
-TEST_CASE("AppController per-group reference persists across group switches",
-          "[controller][group_reference]") {
+TEST_CASE("AppController per-comparison reference persists across switches",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
 
-    // Two groups by filename stem: "a" and "b".  Two directories so
-    // we can verify reference-path tracking is directory-aware.
+    // Two comparisons by filename stem: "a" and "b".  Two
+    // directories so we can verify reference-path tracking is
+    // directory-aware.
     controller.library().add(make_entry("/Foo/a.png", "a.png"));
     controller.library().add(make_entry("/Bar/a.png", "a.png"));
     controller.library().add(make_entry("/Foo/b.png", "b.png"));
     controller.library().add(make_entry("/Bar/b.png", "b.png"));
 
-    // Activate group "a" (indices 0, 1) and pin /Bar/a.png as reference.
+    // Activate comparison "a" (indices 0, 1) and pin /Bar/a.png as
+    // reference.
     REQUIRE(controller.select_group(0));
     REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
     controller.mark_as_reference(1);
@@ -315,31 +317,34 @@ TEST_CASE("AppController per-group reference persists across group switches",
     controller.get_ref_index(ref);
     REQUIRE(ref == 1);
 
-    // Switch to group "b" (indices 2, 3); reference is the implicit
-    // smallest selected index (no rule recorded for group "b" yet).
+    // Switch to comparison "b" (indices 2, 3); reference is the
+    // implicit smallest selected index (no rule recorded for
+    // comparison "b" yet).
     REQUIRE(controller.select_group(2));
     REQUIRE(controller.selection().indices() == std::set<int>{2, 3});
     controller.get_ref_index(ref);
     REQUIRE(ref == 2);
     REQUIRE_FALSE(controller.selection().has_explicit_reference());
 
-    // Pin /Bar/b.png as group "b" reference and switch back to "a".
+    // Pin /Bar/b.png as comparison "b" reference and switch back
+    // to "a".
     controller.mark_as_reference(3);
     REQUIRE(controller.select_group(0));
     REQUIRE(controller.selection().indices() == std::set<int>{0, 1});
     controller.get_ref_index(ref);
-    // Group "a" should remember its pinned reference (/Bar/a.png).
+    // Comparison "a" should remember its pinned reference (/Bar/a.png).
     REQUIRE(ref == 1);
     REQUIRE(controller.selection().has_explicit_reference());
 
-    // And group "b" should remember its pinned reference (/Bar/b.png).
+    // And comparison "b" should remember its pinned reference
+    // (/Bar/b.png).
     REQUIRE(controller.select_group(2));
     controller.get_ref_index(ref);
     REQUIRE(ref == 3);
 }
 
-TEST_CASE("AppController::list_groups exposes file-stem groups",
-          "[controller][group_reference]") {
+TEST_CASE("AppController::list_comparisons exposes file-stem comparisons",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
@@ -348,20 +353,20 @@ TEST_CASE("AppController::list_groups exposes file-stem groups",
     controller.library().add(make_entry("/Bar/a.png", "a.png"));
     controller.library().add(make_entry("/Foo/b.png", "b.png"));
 
-    auto groups = controller.list_groups();
-    REQUIRE(groups.size() == 2);
+    auto comparisons = controller.list_comparisons();
+    REQUIRE(comparisons.size() == 2);
 
     // Order is library-insertion-order of first occurrence.
-    REQUIRE(groups[0].key == "file:a");
-    REQUIRE(groups[0].entries == std::vector<int>{0, 1});
-    REQUIRE(groups[0].current);
+    REQUIRE(comparisons[0].key == "file:a");
+    REQUIRE(comparisons[0].entries == std::vector<int>{0, 1});
+    REQUIRE(comparisons[0].current);
 
-    REQUIRE(groups[1].key == "file:b");
-    REQUIRE(groups[1].entries == std::vector<int>{2});
+    REQUIRE(comparisons[1].key == "file:b");
+    REQUIRE(comparisons[1].entries == std::vector<int>{2});
 }
 
-TEST_CASE("AppController::set_group_reference applies on next activation",
-          "[controller][group_reference]") {
+TEST_CASE("AppController::set_comparison_reference applies on next activation",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
@@ -371,10 +376,10 @@ TEST_CASE("AppController::set_group_reference applies on next activation",
     controller.library().add(make_entry("/Foo/b.png", "b.png"));
     controller.library().add(make_entry("/Bar/b.png", "b.png"));
 
-    // Record a reference for group "b" without ever activating it.
-    REQUIRE(controller.set_group_reference("file:b", "/Bar/b.png"));
+    // Record a reference for comparison "b" without ever activating it.
+    REQUIRE(controller.set_comparison_reference("file:b", "/Bar/b.png"));
 
-    // Activating group "b" should auto-mark /Bar/b.png as reference.
+    // Activating comparison "b" should auto-mark /Bar/b.png as reference.
     REQUIRE(controller.select_group(2));
     int ref = -1;
     controller.get_ref_index(ref);
@@ -382,8 +387,8 @@ TEST_CASE("AppController::set_group_reference applies on next activation",
     REQUIRE(controller.selection().has_explicit_reference());
 }
 
-TEST_CASE("AppController::set_group_reference is robust to missing path",
-          "[controller][group_reference]") {
+TEST_CASE("AppController::set_comparison_reference is robust to missing path",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
@@ -392,7 +397,7 @@ TEST_CASE("AppController::set_group_reference is robust to missing path",
     controller.library().add(make_entry("/Bar/a.png", "a.png"));
 
     // Record a path that does not appear in any selected entry.
-    REQUIRE(controller.set_group_reference("file:a", "/nowhere/a.png"));
+    REQUIRE(controller.set_comparison_reference("file:a", "/nowhere/a.png"));
 
     REQUIRE(controller.select_group(0));
     int ref = -1;
@@ -402,18 +407,18 @@ TEST_CASE("AppController::set_group_reference is robust to missing path",
     REQUIRE_FALSE(controller.selection().has_explicit_reference());
 }
 
-TEST_CASE("AppController::set_group_reference rejects empty key",
-          "[controller][group_reference]") {
+TEST_CASE("AppController::set_comparison_reference rejects empty key",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
 
-    REQUIRE_FALSE(controller.set_group_reference("", "/x.png"));
-    REQUIRE(controller.group_references().empty());
+    REQUIRE_FALSE(controller.set_comparison_reference("", "/x.png"));
+    REQUIRE(controller.comparison_references().empty());
 }
 
-TEST_CASE("AppController per-group reference survives entry removal",
-          "[controller][group_reference]") {
+TEST_CASE("AppController per-comparison reference survives entry removal",
+          "[controller][comparison_reference]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
     idiff::AppController controller(uploader, reporter);
@@ -428,7 +433,7 @@ TEST_CASE("AppController per-group reference survives entry removal",
     // path that is no longer present; the next activation should
     // fall through to the implicit reference without crashing.
     controller.remove_entry(1);
-    controller.select_group(0);  // selection already covers group "a"
+    controller.select_group(0);  // selection already covers comparison "a"
     int ref = -1;
     controller.get_ref_index(ref);
     REQUIRE(ref == 0);

@@ -226,17 +226,18 @@ void App::register_rpc_methods() {
                 {"slider", vp.overlay_slider_pos()},
             };
 
-            // Per-group references: expose the mapping the AI / user
-            // populated via library.set_group_reference, plus the key
-            // of the currently-active group so callers can correlate
-            // the entries above with their group.
-            json grefs = json::object();
-            for (const auto& [k, v] : controller_->group_references()) {
-                grefs[k] = v;
+            // Per-comparison references: expose the mapping the AI
+            // / user populated via library.set_comparison_reference,
+            // plus the key of the currently-active comparison so
+            // callers can correlate the entries above with their
+            // comparison.
+            json crefs = json::object();
+            for (const auto& [k, v] : controller_->comparison_references()) {
+                crefs[k] = v;
             }
             std::string current_key;
             if (!selection_->indices().empty()) {
-                current_key = controller_->group_key_of(
+                current_key = controller_->comparison_key_of(
                     *selection_->indices().begin());
             }
 
@@ -253,8 +254,8 @@ void App::register_rpc_methods() {
                 {"explicit_reference",
                     selection_->has_explicit_reference()},
                 {"view",      std::move(view)},
-                {"group_references", std::move(grefs)},
-                {"current_group_key",
+                {"comparison_references", std::move(crefs)},
+                {"current_comparison_key",
                     current_key.empty() ? json(nullptr) : json(current_key)},
             };
         });
@@ -309,25 +310,33 @@ void App::register_rpc_methods() {
             return json::object();
         });
 
-    // --- library.list_groups ---------------------------------------
+    // --- library.list_comparisons ----------------------------------
     //
-    // Enumerate the groups visible to the current library.  When a
-    // comparison config is active, returns one entry per config group
-    // (only the resident group has its `entries` populated; other
-    // groups list the key only so the caller can still pin a
-    // reference for them via library.set_group_reference).  Otherwise
-    // returns one entry per filename-stem group.
-    d.register_method("library.list_groups",
+    // A "comparison" is the set of images shown together when the
+    // user picks one in the Group-by-Name image list (or the items
+    // of the active comparison-config group).  This is the
+    // horizontal axis -- which images appear on screen at once.
+    // The vertical axis (which entry plays the reference role)
+    // lives in library.set_comparison_reference and is owned by the
+    // caller's rule.
+    //
+    // When a comparison config is active, returns one entry per
+    // config group (only the resident comparison has its `entries`
+    // populated; other comparisons list the key only so the caller
+    // can still pin a reference for them via
+    // library.set_comparison_reference).  Otherwise returns one
+    // entry per filename-stem comparison.
+    d.register_method("library.list_comparisons",
         [this](const json& /*params*/) -> json {
             const auto& entries = entries_view();
-            const auto& grefs = controller_->group_references();
+            const auto& crefs = controller_->comparison_references();
             json arr = json::array();
-            for (const auto& g : controller_->list_groups()) {
+            for (const auto& c : controller_->list_comparisons()) {
                 json entries_json = json::array();
                 std::string ref_path;
-                auto it = grefs.find(g.key);
-                if (it != grefs.end()) ref_path = it->second;
-                for (int idx : g.entries) {
+                auto it = crefs.find(c.key);
+                if (it != crefs.end()) ref_path = it->second;
+                for (int idx : c.entries) {
                     if (idx < 0 || idx >= static_cast<int>(entries.size())) {
                         continue;
                     }
@@ -350,9 +359,9 @@ void App::register_rpc_methods() {
                     entries_json.push_back(std::move(je));
                 }
                 json je = {
-                    {"key",       g.key},
-                    {"name",      g.name},
-                    {"current",   g.current},
+                    {"key",       c.key},
+                    {"name",      c.name},
+                    {"current",   c.current},
                     {"entries",   std::move(entries_json)},
                 };
                 if (!ref_path.empty()) je["reference_path"] = ref_path;
@@ -361,14 +370,16 @@ void App::register_rpc_methods() {
             return arr;
         });
 
-    // --- library.set_group_reference -------------------------------
+    // --- library.set_comparison_reference --------------------------
     //
-    // Pin `path` as the reference for the group identified by `key`.
-    // Group keys come from library.list_groups[].key.  The path is
-    // not validated against the current library (the group may not
-    // be resident); the mapping is applied lazily on the next group
-    // switch.  Pass an empty path to clear the mapping for `key`.
-    d.register_method("library.set_group_reference",
+    // Pin `path` as the reference for the comparison identified by
+    // `key`.  Comparison keys come from
+    // library.list_comparisons[].key.  The path is not validated
+    // against the current library (the comparison may not be
+    // resident); the mapping is applied lazily on the next
+    // comparison switch.  Pass an empty path to clear the mapping
+    // for `key`.
+    d.register_method("library.set_comparison_reference",
         [this](const json& params) -> json {
             require_object(params);
             const std::string& key = require_string_field(params, "key");
@@ -383,7 +394,7 @@ void App::register_rpc_methods() {
                 throw RpcException(ErrorCode::InvalidParams,
                     "key must be non-empty");
             }
-            controller_->set_group_reference(key, path);
+            controller_->set_comparison_reference(key, path);
             return json::object();
         });
 

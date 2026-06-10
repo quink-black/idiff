@@ -128,67 +128,79 @@ public:
     // the selection and designate it as the reference so overlay /
     // diff use it as the "A" side.  The entry stays at its current
     // position in the library (no reordering).  Out-of-range indices
-    // are ignored.  Also records the choice in the per-group
-    // reference map so switching away and back to this group keeps
-    // the same reference (see set_group_reference / apply_group_reference).
+    // are ignored.  Also records the choice in the per-comparison
+    // reference map so switching away and back to this comparison
+    // keeps the same reference (see set_comparison_reference /
+    // apply_comparison_reference).
     void mark_as_reference(int index);
 
-    // ---- Per-group reference --------------------------------------
+    // ---- Per-comparison reference ---------------------------------
     //
-    // idiff exposes the primitive of "remember which entry is the
-    // reference for each group" so external clients (the MCP shim,
-    // AI agents, scripts) can implement any rule they want -- by
-    // directory, by filename pattern, by ML, ... -- and call back
-    // with set_group_reference() per group.  idiff itself owns no
-    // rule logic, only the per-group state.
+    // A "comparison" is the set of images shown together when the
+    // user selects one of them in the Group-by-Name image list (or,
+    // with a comparison config loaded, the items of the active
+    // config group).  This is the horizontal axis -- which images
+    // appear on screen at the same time.
     //
-    // A group key is one of:
+    // The "role" of an image inside a comparison (reference vs
+    // candidate, or in general "A vs B vs ...") is the orthogonal
+    // vertical axis.  idiff stores only the reference role -- the
+    // entry the diff/overlay uses as the "A" side -- and lets
+    // external clients decide which entry plays it via any rule
+    // they want (directory, prefix, regex, ML, ...).  The rule
+    // itself does not live in idiff: callers compute it externally
+    // and call set_comparison_reference() per comparison.
+    //
+    // A comparison key is one of:
     //   "config:<name>"  when a comparison config is active.  <name>
     //                    is the ComparisonGroup::name, or "#<idx>"
     //                    when the config did not provide a name.
     //   "file:<stem>"    otherwise.  <stem> is group_key_from_filename
     //                    of the entry's filename (the same key the
     //                    "Group by Name" UI uses).
+    // The "config:" / "file:" prefix names the *origin* of the key,
+    // not the concept -- both denote a comparison.
 
-    // One group as seen by external clients.
-    struct GroupView {
+    // One comparison as seen by external clients.
+    struct ComparisonView {
         std::string key;
         std::string name;            // human-readable; same as key body
-        bool current = false;        // entry indices belong to this group
+        bool current = false;        // entry indices are loaded
         std::vector<int> entries;    // indices into library_->all()
     };
 
-    // Compute the group key for an entry.  Returns an empty string
-    // for out-of-range indices.
-    std::string group_key_of(int index) const;
+    // Compute the comparison key for an entry.  Returns an empty
+    // string for out-of-range indices.
+    std::string comparison_key_of(int index) const;
 
-    // Enumerate the groups visible to the current library.  When a
-    // comparison config is active, returns one GroupView per config
-    // group (only the currently-resident one has its entries
-    // populated; the rest are empty because their pixels are not
-    // loaded).  Otherwise returns one GroupView per filename-stem
-    // group.
-    std::vector<GroupView> list_groups() const;
+    // Enumerate the comparisons visible to the current library.
+    // When a comparison config is active, returns one ComparisonView
+    // per config group (only the currently-resident one has its
+    // entries populated; the rest are empty because their pixels are
+    // not loaded).  Otherwise returns one ComparisonView per
+    // filename-stem comparison.
+    std::vector<ComparisonView> list_comparisons() const;
 
-    // Read-only access to the per-group reference map.  Keys are
-    // group keys as above; values are entry paths.
+    // Read-only access to the per-comparison reference map.  Keys
+    // are comparison keys as above; values are entry paths.
     const std::unordered_map<std::string, std::string>&
-    group_references() const noexcept { return group_reference_; }
+    comparison_references() const noexcept { return comparison_reference_; }
 
-    // Pin `path` as the reference for the group identified by `key`.
-    // The path is not validated against the current library (the
-    // group may not be resident); the mapping is consulted lazily
-    // by apply_group_reference() when the group becomes active.
-    // Returns false when key is empty.  Pass an empty path to clear
-    // the mapping for `key`.
-    bool set_group_reference(const std::string& key,
-                             const std::string& path);
+    // Pin `path` as the reference for the comparison identified by
+    // `key`.  The path is not validated against the current library
+    // (the comparison may not be resident); the mapping is consulted
+    // lazily by apply_comparison_reference() when the comparison
+    // becomes active.  Returns false when key is empty.  Pass an
+    // empty path to clear the mapping for `key`.
+    bool set_comparison_reference(const std::string& key,
+                                  const std::string& path);
 
-    // If a per-group reference is recorded for the currently active
-    // group, and a selected entry has that path, mark it as the
-    // selection's explicit reference.  No-op otherwise.  Called
-    // automatically after group switches; exposed for tests.
-    void apply_group_reference();
+    // If a per-comparison reference is recorded for the currently
+    // active comparison, and a selected entry has that path, mark
+    // it as the selection's explicit reference.  No-op otherwise.
+    // Called automatically after comparison switches; exposed for
+    // tests.
+    void apply_comparison_reference();
 
     // Remove the entry at `index` (destroying its texture via the
     // injected ITextureUploader), patch the selection, refresh
@@ -304,11 +316,11 @@ private:
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();
 
-    // Per-group reference map.  Keys are group keys (see GroupView
-    // doc above); values are entry paths.  Persisted across group
-    // switches but not across full sessions.  Cleared when a fresh
-    // comparison config is loaded.
-    std::unordered_map<std::string, std::string> group_reference_;
+    // Per-comparison reference map.  Keys are comparison keys (see
+    // ComparisonView doc above); values are entry paths.  Persisted
+    // across comparison switches but not across full sessions.
+    // Cleared when a fresh comparison config is loaded.
+    std::unordered_map<std::string, std::string> comparison_reference_;
 };
 
 } // namespace idiff
