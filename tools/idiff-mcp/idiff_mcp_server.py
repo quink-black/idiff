@@ -21,16 +21,16 @@ silences the multi-instance prompt.
 
 Tool surface (mirrors idiff RPC, with friendlier names)
 -------------------------------------------------------
-  list_instances       -- show every live idiff window
-  get_state            -- snapshot of the active instance (entries, view, ...)
-  load_images          -- load files into the GUI library
-  set_reference        -- pin one entry as the comparison "A"
-  remove_image         -- delete an entry from the library
-  set_selection        -- replace the selection
-  set_view_mode        -- split | overlay | difference, optional slider
-  screenshot           -- compose what the viewport currently shows to a file
-  list_groups          -- enumerate file/config groups visible to the library
-  set_group_reference  -- record a per-group reference path
+  list_instances             -- show every live idiff window
+  get_state                  -- snapshot of the active instance (entries, view, ...)
+  load_images                -- load files into the GUI library
+  set_reference              -- pin one entry as the comparison "A"
+  remove_image               -- delete an entry from the library
+  set_selection              -- replace the selection
+  set_view_mode              -- split | overlay | difference, optional slider
+  screenshot                 -- compose what the viewport currently shows to a file
+  list_comparisons           -- enumerate file/config comparisons in the library
+  set_comparison_reference   -- record a per-comparison reference path
 """
 from __future__ import annotations
 
@@ -212,9 +212,10 @@ async def list_tools() -> list[Tool]:
                 "Mark the entry at the given index as the comparison "
                 "reference ('A' side). Adds it to the selection if not "
                 "already there. Indices come from get_state.entries[].index. "
-                "Also records the choice in the per-group reference map "
-                "(keyed by the entry's group) so switching away and back "
-                "to that group keeps this reference."
+                "Also records the choice in the per-comparison "
+                "reference map (keyed by the entry's comparison) so "
+                "switching away and back to that comparison keeps "
+                "this reference."
             ),
             inputSchema={
                 "type": "object",
@@ -225,42 +226,49 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="list_groups",
+            name="list_comparisons",
             description=(
-                "Enumerate the groups visible to the current library. "
-                "Each group has a stable 'key' (e.g. 'file:role1' or "
-                "'config:My Group'), a human-readable 'name', a "
-                "'current' flag (entries are loaded), and 'entries' "
-                "with index, path, filename, directory, and "
-                "is_reference. Use this to inspect file structure "
-                "before deciding which entry should be reference per "
-                "group, then call set_group_reference per group. Only "
-                "the currently-resident comparison-config group has "
-                "its entries populated; other config groups list key "
-                "+ name only."
+                "Enumerate the comparisons visible to the current "
+                "library. A 'comparison' is the set of images shown "
+                "together when the user picks one in the Group-by-Name "
+                "image list (or the items of the active comparison-"
+                "config group). This is the horizontal axis -- which "
+                "images appear on screen at once. Each comparison has "
+                "a stable 'key' (e.g. 'file:role1' or 'config:My "
+                "Group'), a human-readable 'name', a 'current' flag "
+                "(entries are loaded), and 'entries' with index, "
+                "path, filename, directory, and is_reference. Use "
+                "this to inspect file structure before deciding which "
+                "entry should be reference per comparison, then call "
+                "set_comparison_reference per comparison. Only the "
+                "currently-resident comparison-config group has its "
+                "entries populated; other config comparisons list "
+                "key + name only."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
-            name="set_group_reference",
+            name="set_comparison_reference",
             description=(
                 "Pin a specific image path as the reference for one "
-                "group, keyed by group 'key' from list_groups. The "
-                "mapping persists across group switches: when the "
-                "group becomes active (selection changes to its "
-                "members), the entry at this path is auto-marked as "
-                "reference. Path is matched exactly against entry "
-                "paths; pass an empty path to clear the mapping. "
-                "This is the primitive idiff exposes -- callers "
-                "implement any rule (by directory, prefix, regex, "
-                "ML, ...) and call this per group."
+                "comparison, keyed by 'key' from list_comparisons. "
+                "The mapping persists across comparison switches: "
+                "when the comparison becomes active (selection "
+                "changes to its members), the entry at this path is "
+                "auto-marked as reference. Path is matched exactly "
+                "against entry paths; pass an empty path to clear "
+                "the mapping. This is the primitive idiff exposes -- "
+                "callers implement any rule (by directory, prefix, "
+                "regex, ML, ...) and call this per comparison."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "key": {
                         "type": "string",
-                        "description": "Group key from list_groups[].key",
+                        "description": (
+                            "Comparison key from list_comparisons[].key"
+                        ),
                     },
                     "path": {
                         "type": "string",
@@ -414,11 +422,11 @@ async def call_tool(
             return _ok(_call(instance, "library.set_reference",
                              {"index": int(arguments["index"])}))
 
-        if name == "list_groups":
-            return _ok(_call(instance, "library.list_groups"))
+        if name == "list_comparisons":
+            return _ok(_call(instance, "library.list_comparisons"))
 
-        if name == "set_group_reference":
-            return _ok(_call(instance, "library.set_group_reference",
+        if name == "set_comparison_reference":
+            return _ok(_call(instance, "library.set_comparison_reference",
                              {"key":  str(arguments["key"]),
                               "path": str(arguments.get("path", ""))}))
 
