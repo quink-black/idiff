@@ -64,18 +64,24 @@ jobs:
           fi
           echo 'Bundle is clean.'
 
-      - name: Stage distributable tree (.app + install.command)
+      - name: Stage distributable tree (.app + install.command + MCP shim)
         # Lay out everything we'll ship next to the .app so both the dmg
         # and the zip can share one tree. install.command is a
         # double-clickable helper that strips com.apple.quarantine and
         # copies the app to /Applications, which is the least painful
         # workaround for users who don't have an Apple Developer ID.
+        # idiff-mcp/ is the Python MCP shim (pure source, no build
+        # artifacts) that lets AI agents drive idiff over its JSON-RPC
+        # socket. Users run setup.sh inside it to provision a local
+        # venv after extracting the archive.
         run: |
           set -e
           mkdir -p dist/stage
           cp -R build/src/app/idiff.app dist/stage/
           cp scripts/macos_install.command dist/stage/install.command
           chmod +x dist/stage/install.command
+          rsync -a --exclude='.venv' --exclude='__pycache__' \
+              tools/idiff-mcp dist/stage/
 
       - name: Build .dmg
         run: |
@@ -145,6 +151,17 @@ jobs:
                in the dialog. (If macOS still reports the app as
                damaged, use option 1 or 2.)
 
+            ### MCP shim for AI agents (all platforms)
+
+            Each archive ships an `idiff-mcp/` folder alongside the
+            app. It is the Python MCP server that lets agents (Claude
+            Desktop, Codebuddy, Cursor, ...) drive idiff over its
+            JSON-RPC socket. After extracting, run `setup.sh` (macOS /
+            Linux) or `setup.ps1` (Windows) inside that folder to
+            provision a local venv; the script prints the snippet to
+            paste into your agent's MCP config. See
+            `idiff-mcp/README.md` for details.
+
   # ----------------------------------------------------------------------
   # Windows -- prebuilt vcpkg deps, OpenCV imgcodecs backend (no
   # ImageMagick on Windows; matches ci.yml). Ships a zipped directory
@@ -212,6 +229,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item build\src\app\Release\*.exe $stage
           Copy-Item build\src\app\Release\*.dll $stage -ErrorAction SilentlyContinue
+          # Bundle the Python MCP shim. Pure source -- users run
+          # setup.ps1 from the extracted folder to create the venv.
+          $mcpDst = Join-Path $stage "idiff-mcp"
+          New-Item -ItemType Directory -Force -Path $mcpDst | Out-Null
+          Copy-Item tools\idiff-mcp\* $mcpDst -Recurse `
+              -Exclude @('.venv', '__pycache__')
           # Compress-Archive zips the folder (top-level dir preserved).
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
 
