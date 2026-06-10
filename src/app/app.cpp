@@ -61,7 +61,11 @@
 #include <opencv2/imgproc.hpp>
 
 #ifdef IDIFF_HAVE_RPC
+#ifdef _WIN32
+#include <windows.h>  // GetCurrentProcessId for the per-PID pipe path
+#else
 #include <unistd.h>  // getpid for the per-PID socket path
+#endif
 #endif
 
 #include "core/channel_view.h"
@@ -498,7 +502,12 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // recoverable downgrade.
     rpc_dispatcher_ = std::make_unique<rpc::Dispatcher>();
     register_rpc_methods();
-    state_->rpc_pid = static_cast<int>(::getpid());
+    state_->rpc_pid =
+#ifdef _WIN32
+        static_cast<int>(::GetCurrentProcessId());
+#else
+        static_cast<int>(::getpid());
+#endif
     state_->rpc_socket_path = rpc::compose_socket_path(state_->rpc_pid);
     state_->rpc_identity = rpc::compose_identity_label(state_->rpc_pid);
     rpc_server_ = std::make_unique<rpc::RpcServer>(
