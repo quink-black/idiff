@@ -90,6 +90,12 @@ public:
     // image.
     float overlay_slider_pos() const noexcept { return slider_pos_; }
 
+    // Set the A/B overlay split position directly (0..1).  Out-of-range
+    // values are clamped.  The user normally drives this by dragging
+    // the on-screen slider; this setter exists for programmatic
+    // control (RPC view.screenshot, future preset playback, tests).
+    void set_overlay_slider_pos(float v);
+
     // True when the overlay A/B slider is actively being dragged by the
     // user (set during render_overlay, valid until the next render call).
     bool overlay_slider_dragging() const noexcept { return slider_dragging_; }
