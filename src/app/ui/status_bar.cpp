@@ -66,6 +66,30 @@ void render_status_bar(const StatusBarInputs& in) {
 
     if (ImGui::Begin("##statusbar", nullptr, flags)) {
         if (ImGui::BeginMenuBar()) {
+            // Identity chip on the far left.  Lets the user tell
+            // which idiff window (and which /tmp/idiff-*.sock) this
+            // is.  Hovering reveals the full socket path so the user
+            // can copy/paste it to MCP / scripts.  Background colour
+            // matches the docking-preview accent so it stands out
+            // from the rest of the menu bar without being noisy.
+            if (in.identity_label && !in.identity_label->empty()) {
+                ImVec4 chip_col(0.18f, 0.36f, 0.60f, 1.00f);
+                ImGui::PushStyleColor(ImGuiCol_Button, chip_col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, chip_col);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, chip_col);
+                // SmallButton acts purely as a clickable label that
+                // styles the way we want; no action on click.
+                ImGui::SmallButton(in.identity_label->c_str());
+                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered()
+                    && in.identity_socket_path
+                    && !in.identity_socket_path->empty()) {
+                    ImGui::SetTooltip("%s",
+                                       in.identity_socket_path->c_str());
+                }
+                ImGui::Separator();
+            }
+
             char buf[1024];
             int n = std::snprintf(buf, sizeof(buf), "%zu images | %zu selected",
                                    entries.size(), selection.size());

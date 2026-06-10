@@ -241,7 +241,25 @@ private:
     // private State struct and app_rpc_methods.cpp does not see State's
     // definition.  Defined in app.cpp.
     Viewport& rpc_viewport() noexcept;
+
+    // Identity getters used by app.identity / app.list_instances and
+    // by the status-bar chip.  Returned strings are empty when the
+    // server failed to start (no identity to report).  Defined in
+    // app.cpp; app_rpc_methods.cpp calls these to avoid leaking State.
+    int rpc_pid() const noexcept;
+    const std::string& rpc_socket_path() const noexcept;
+    const std::string& rpc_identity() const noexcept;
 #endif
+
+public:
+    // Public read-only identity accessor used by the status-bar
+    // renderer (which does not see App's private interface).  Returns
+    // an empty string when the RPC server is disabled or failed to
+    // start.
+    const std::string& identity_label() const noexcept;
+    const std::string& identity_socket_path() const noexcept;
+
+private:
 
     struct State;
     std::unique_ptr<State> state_;

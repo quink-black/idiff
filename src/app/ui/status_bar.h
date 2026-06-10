@@ -39,6 +39,15 @@ struct StatusBarInputs {
     // as a callback so the renderer does not duplicate the selection
     // logic.
     std::function<void(int& ref_idx)> get_ref_index;
+
+    // Per-instance identity ("idiff:<pid>") and the matching socket
+    // path.  The status bar shows the identity as a small chip on the
+    // left so the user can correlate this window with a /tmp/idiff-*
+    // .sock and with whatever the MCP / RPC client targeted.  Both
+    // are empty when the RPC server is disabled or failed to start;
+    // the chip is omitted in that case.
+    const std::string* identity_label = nullptr;
+    const std::string* identity_socket_path = nullptr;
 };
 
 void render_status_bar(const StatusBarInputs& in);
