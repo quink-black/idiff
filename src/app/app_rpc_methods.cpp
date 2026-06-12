@@ -40,12 +40,16 @@
 #include "app/rpc/socket_paths.h"
 #include "app/screenshot_composer.h"
 #include "app/viewport.h"
+#include "core/channel_view.h"
 #include "core/detail/platform_utf8.h"
 #include "core/image.h"
+#include "core/image_loader.h"
 #include "core/media_source.h"
+#include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
+#include "domain/timeline_model.h"
 
 #include <nlohmann/json.hpp>
 
@@ -225,6 +229,17 @@ void App::register_rpc_methods() {
             json view = {
                 {"mode",   mode_to_string(vp.mode())},
                 {"slider", vp.overlay_slider_pos()},
+                {"zoom",   vp.zoom()},
+                {"pan_x",  vp.pan_x()},
+                {"pan_y",  vp.pan_y()},
+                {"channel_view", channel_view_mode_label(vp.channel_view_mode())},
+            };
+
+            // Timeline state: current frame and total frames across
+            // all multi-frame entries.
+            json timeline = {
+                {"current_frame", timeline_->current_frame()},
+                {"total_frames",  TimelineModel::length(entries)},
             };
 
             // Per-comparison references: expose the mapping the AI
@@ -256,6 +271,7 @@ void App::register_rpc_methods() {
                     selection_->has_explicit_reference()},
                 {"group_by_name", rpc_group_by_name()},
                 {"view",      std::move(view)},
+                {"timeline",  std::move(timeline)},
                 {"comparison_references", std::move(crefs)},
                 {"current_comparison_key",
                     current_key.empty() ? json(nullptr) : json(current_key)},
@@ -599,6 +615,209 @@ void App::register_rpc_methods() {
                 {"height", composed.rows},
                 {"bytes",  static_cast<int>(buf.size())},
             };
+        });
+
+    // --- view.set_zoom_pan ------------------------------------------
+    //
+    // Set zoom and/or pan directly.  All parameters are optional;
+    // only the provided fields are applied.
+    d.register_method("view.set_zoom_pan",
+        [this](const json& params) -> json {
+            require_object(params);
+            Viewport& vp = rpc_viewport();
+
+            if (auto it = params.find("zoom"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "zoom must be a number");
+                }
+                vp.set_zoom(static_cast<float>(it->get<double>()));
+            }
+            if (auto it = params.find("pan_x"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "pan_x must be a number");
+                }
+                vp.set_pan(static_cast<float>(it->get<double>()), vp.pan_y());
+            }
+            if (auto it = params.find("pan_y"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "pan_y must be a number");
+                }
+                vp.set_pan(vp.pan_x(), static_cast<float>(it->get<double>()));
+            }
+            return json::object();
+        });
+
+    // --- view.set_channel -------------------------------------------
+    //
+    // Switch the single-channel view mode.  Accepts short names
+    // (r/g/b/a/y/u/v/none/rgb).
+    d.register_method("view.set_channel",
+        [this](const json& params) -> json {
+            require_object(params);
+            const std::string& ch = require_string_field(params, "channel");
+            ChannelViewMode m;
+            if (ch == "r")        m = ChannelViewMode::R;
+            else if (ch == "g")   m = ChannelViewMode::G;
+            else if (ch == "b")   m = ChannelViewMode::B;
+            else if (ch == "a")   m = ChannelViewMode::AlphaGray;
+            else if (ch == "y")   m = ChannelViewMode::Y;
+            else if (ch == "u")   m = ChannelViewMode::U;
+            else if (ch == "v")   m = ChannelViewMode::V;
+            else if (ch == "none") m = ChannelViewMode::None;
+            else if (ch == "rgb") m = ChannelViewMode::RGB;
+            else {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "channel must be one of: r, g, b, a, y, u, v, "
+                    "none, rgb (got \"" + ch + "\")");
+            }
+            rpc_viewport().set_channel_view_mode(m);
+            return json::object();
+        });
+
+    // --- selection.select_group -------------------------------------
+    //
+    // Select all entries that share the same group as the given index.
+    d.register_method("selection.select_group",
+        [this](const json& params) -> json {
+            require_object(params);
+            int idx = require_int_field(params, "index");
+            check_index(idx, entries_view().size(), "index");
+            bool changed = controller_->select_group(idx);
+            json indices = json::array();
+            for (int s : selection_->indices()) indices.push_back(s);
+            return json{{"changed", changed}, {"indices", std::move(indices)}};
+        });
+
+    // --- selection.select_range -------------------------------------
+    //
+    // Select all entries in the inclusive range [from, to].
+    d.register_method("selection.select_range",
+        [this](const json& params) -> json {
+            require_object(params);
+            int from = require_int_field(params, "from");
+            int to   = require_int_field(params, "to");
+            check_index(from, entries_view().size(), "from");
+            check_index(to,   entries_view().size(), "to");
+            bool changed = controller_->select_range(from, to);
+            json indices = json::array();
+            for (int s : selection_->indices()) indices.push_back(s);
+            return json{{"changed", changed}, {"indices", std::move(indices)}};
+        });
+
+    // --- comparison_config.load -------------------------------------
+    //
+    // Load a JSON comparison config file, replacing the current
+    // session.  Routes through App::load_comparison_config_from_path
+    // (not the controller directly) so the same side effects the GUI
+    // relies on -- file-watcher registration and the first-load switch
+    // to Overlay mode -- also fire for the RPC channel.
+    d.register_method("comparison_config.load",
+        [this](const json& params) -> json {
+            require_object(params);
+            const std::string& path = require_string_field(params, "path");
+            load_comparison_config_from_path(path);
+            return json{
+                {"entries",       static_cast<int>(entries_view().size())},
+                {"groups",
+                    static_cast<int>(comparison_config_->group_count())},
+                {"current_group", comparison_config_->current_index()},
+            };
+        });
+
+    // --- comparison_config.switch_group -----------------------------
+    //
+    // Switch to the given comparison config group index.  Routes
+    // through App::switch_to_comparison_group for the same reason as
+    // comparison_config.load above.  current_group reflects the
+    // service's actual index after the switch, which may differ from
+    // the requested index when the switch was a no-op or failed.
+    d.register_method("comparison_config.switch_group",
+        [this](const json& params) -> json {
+            require_object(params);
+            int group_idx = require_int_field(params, "group_index");
+            int count = static_cast<int>(comparison_config_->group_count());
+            if (group_idx < 0 || group_idx >= count) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "group_index out of range: " +
+                    std::to_string(group_idx) + " (have " +
+                    std::to_string(count) + " group(s))");
+            }
+            switch_to_comparison_group(group_idx);
+            return json{
+                {"entries",       static_cast<int>(entries_view().size())},
+                {"current_group", comparison_config_->current_index()},
+            };
+        });
+
+    // --- timeline.set_frame -----------------------------------------
+    //
+    // Set the shared timeline frame index and re-decode all multi-frame
+    // entries.  Out-of-range values are clamped.
+    d.register_method("timeline.set_frame",
+        [this](const json& params) -> json {
+            require_object(params);
+            int frame = require_int_field(params, "frame");
+            if (frame < 0) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "frame must be >= 0");
+            }
+            timeline_->set_current_frame(frame);
+            timeline_->clamp_to_length(entries_view());
+            sync_entries_to_timeline();
+            return json{{"current_frame", timeline_->current_frame()}};
+        });
+
+    // --- timeline.set_frame_offset ----------------------------------
+    //
+    // Set the per-entry frame offset for the given entry index and
+    // re-decode so the change is visible.
+    d.register_method("timeline.set_frame_offset",
+        [this](const json& params) -> json {
+            require_object(params);
+            int idx    = require_int_field(params, "index");
+            int offset = require_int_field(params, "offset");
+            check_index(idx, entries_view().size(), "index");
+            auto& entries = entries_view();
+            entries[idx].frame_offset = offset;
+            sync_entries_to_timeline();
+            return json{
+                {"index",  idx},
+                {"offset", offset},
+            };
+        });
+
+    // --- library.reload_all -----------------------------------------
+    //
+    // Re-decode every entry from disk using the current loader backend.
+    d.register_method("library.reload_all",
+        [this](const json& /*params*/) -> json {
+            reload_all_images();
+            return json::object();
+        });
+
+    // --- library.set_loader_backend ---------------------------------
+    //
+    // Switch the image loader backend and optionally reload.
+    d.register_method("library.set_loader_backend",
+        [this](const json& params) -> json {
+            require_object(params);
+            const std::string& backend = require_string_field(params, "backend");
+            LoaderBackend lb;
+            if (backend == "imagemagick")      lb = LoaderBackend::ImageMagick;
+            else if (backend == "opencv")      lb = LoaderBackend::OpenCV;
+            else if (backend == "ffmpeg")      lb = LoaderBackend::FFmpeg;
+            else {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "backend must be one of: imagemagick, opencv, ffmpeg "
+                    "(got \"" + backend + "\")");
+            }
+            controller_->set_loader_backend(lb);
+            // Reload images so the change takes effect immediately.
+            reload_all_images();
+            return json{{"backend", backend}};
         });
 }
 

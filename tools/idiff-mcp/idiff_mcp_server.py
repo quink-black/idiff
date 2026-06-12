@@ -394,6 +394,210 @@ async def list_tools() -> list[Tool]:
                 "required": ["path"],
             },
         ),
+        Tool(
+            name="set_zoom_pan",
+            description=(
+                "Set the viewport zoom and/or pan position. All "
+                "parameters are optional -- only the provided fields "
+                "are changed. Zoom > 1.0 magnifies; pan is in screen "
+                "pixels from the content origin."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "zoom": {
+                        "type": "number",
+                        "description": "Zoom level (1.0 = actual pixels)",
+                    },
+                    "pan_x": {
+                        "type": "number",
+                        "description": "Horizontal pan in screen pixels",
+                    },
+                    "pan_y": {
+                        "type": "number",
+                        "description": "Vertical pan in screen pixels",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="set_channel_view",
+            description=(
+                "Switch the viewport to show a single color channel "
+                "or the full RGB image. Values: r, g, b, a (alpha "
+                "as grayscale), y (luma), u, v, none (full color), "
+                "rgb (drop alpha). Use this to inspect individual "
+                "channels for artifacts or alignment issues."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "enum": ["r", "g", "b", "a", "y", "u", "v",
+                                 "none", "rgb"],
+                        "description": "Channel to display",
+                    },
+                },
+                "required": ["channel"],
+            },
+        ),
+        Tool(
+            name="select_group",
+            description=(
+                "Select all entries that share the same filename-stem "
+                "group as the entry at `index`. Use this instead of "
+                "set_selection when the user wants 'compare all images "
+                "with this name'. Returns whether the selection changed "
+                "and the new set of indices."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "minimum": 0},
+                },
+                "required": ["index"],
+            },
+        ),
+        Tool(
+            name="select_range",
+            description=(
+                "Select all entries in the inclusive index range "
+                "[from, to]. Replaces the current selection. Use "
+                "this for batch operations like 'select the first "
+                "10 images'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from": {"type": "integer", "minimum": 0},
+                    "to": {"type": "integer", "minimum": 0},
+                },
+                "required": ["from", "to"],
+            },
+        ),
+        Tool(
+            name="load_comparison_config",
+            description=(
+                "Load a JSON comparison-config file and replace the "
+                "current session. The config defines multiple groups "
+                "of images; only the first group's images are loaded "
+                "into memory. Returns the entry count, group count, "
+                "and current group index. After loading, use "
+                "get_state to see the entries and switch_comparison_group "
+                "to navigate between groups."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to a .json config file",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="switch_comparison_group",
+            description=(
+                "Switch the active comparison-config group to "
+                "`group_index`. Unloads the previous group's pixels "
+                "and loads the new group's images. No-op if the index "
+                "is already active. Returns the new entry count and "
+                "group index."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "group_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Zero-based group index",
+                    },
+                },
+                "required": ["group_index"],
+            },
+        ),
+        Tool(
+            name="set_timeline_frame",
+            description=(
+                "Jump to a specific frame on the shared timeline. "
+                "All multi-frame entries (e.g. YUV video streams) "
+                "are re-decoded to show the requested frame plus "
+                "their per-entry frame_offset. Out-of-range values "
+                "are clamped to the valid range. Use get_state to "
+                "read the current frame and total frame count."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "frame": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Frame number to display",
+                    },
+                },
+                "required": ["frame"],
+            },
+        ),
+        Tool(
+            name="set_frame_offset",
+            description=(
+                "Set a per-entry frame offset for one entry. The "
+                "effective frame for entry N becomes timeline_frame "
+                "+ frame_offset[N], clamped to the entry's own range. "
+                "Use this to align multi-frame streams that start at "
+                "different frames. Returns the index and the new offset."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Entry index from get_state",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Frame offset (can be negative)",
+                    },
+                },
+                "required": ["index", "offset"],
+            },
+        ),
+        Tool(
+            name="reload_all",
+            description=(
+                "Re-decode every loaded image from disk using the "
+                "current loader backend. Equivalent to pressing F5 "
+                "in the GUI. Use this after modifying image files "
+                "externally to refresh the viewport."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_loader_backend",
+            description=(
+                "Switch the image decoder backend and reload all "
+                "images. Values: 'imagemagick' (Magick++, wide format "
+                "support, ICC profiles), 'opencv' (OpenCV imgcodecs, "
+                "always available), 'ffmpeg' (libav* HEIF/AVIF path). "
+                "Use this to compare how different decoders render the "
+                "same file."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "backend": {
+                        "type": "string",
+                        "enum": ["imagemagick", "opencv", "ffmpeg"],
+                        "description": "Decoder backend to activate",
+                    },
+                },
+                "required": ["backend"],
+            },
+        ),
     ]
 
 
@@ -478,6 +682,53 @@ async def call_tool(
             if "slider" in arguments:
                 params["slider"] = float(arguments["slider"])
             return _ok(_call(instance, "view.screenshot", params))
+
+        if name == "set_zoom_pan":
+            params = {}
+            if "zoom" in arguments:
+                params["zoom"] = float(arguments["zoom"])
+            if "pan_x" in arguments:
+                params["pan_x"] = float(arguments["pan_x"])
+            if "pan_y" in arguments:
+                params["pan_y"] = float(arguments["pan_y"])
+            return _ok(_call(instance, "view.set_zoom_pan", params))
+
+        if name == "set_channel_view":
+            return _ok(_call(instance, "view.set_channel",
+                             {"channel": str(arguments["channel"])}))
+
+        if name == "select_group":
+            return _ok(_call(instance, "selection.select_group",
+                             {"index": int(arguments["index"])}))
+
+        if name == "select_range":
+            return _ok(_call(instance, "selection.select_range",
+                             {"from": int(arguments["from"]),
+                              "to": int(arguments["to"])}))
+
+        if name == "load_comparison_config":
+            return _ok(_call(instance, "comparison_config.load",
+                             {"path": str(arguments["path"])}))
+
+        if name == "switch_comparison_group":
+            return _ok(_call(instance, "comparison_config.switch_group",
+                             {"group_index": int(arguments["group_index"])}))
+
+        if name == "set_timeline_frame":
+            return _ok(_call(instance, "timeline.set_frame",
+                             {"frame": int(arguments["frame"])}))
+
+        if name == "set_frame_offset":
+            return _ok(_call(instance, "timeline.set_frame_offset",
+                             {"index": int(arguments["index"]),
+                              "offset": int(arguments["offset"])}))
+
+        if name == "reload_all":
+            return _ok(_call(instance, "library.reload_all"))
+
+        if name == "set_loader_backend":
+            return _ok(_call(instance, "library.set_loader_backend",
+                             {"backend": str(arguments["backend"])}))
 
         return _error(f"unknown tool: {name}")
 

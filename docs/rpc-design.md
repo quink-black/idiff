@@ -165,7 +165,7 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int|null, explicit_reference:bool, group_by_name:bool, view:{mode,slider}, comparison_references:{key->path}, current_comparison_key:string|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int\|null, explicit_reference:bool, group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 
@@ -176,10 +176,20 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 | `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
 | `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
 | `library.remove` | `{index:int}` | `{}` |
+| `library.reload_all` | none | `{}` — re-decode every entry from disk |
+| `library.set_loader_backend` | `{backend:"imagemagick"\|"opencv"\|"ffmpeg"}` | `{backend}` — switch decoder + reload |
 | `selection.set` | `{indices:[int]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
-| `view.set_mode` | `{mode:"split"|"overlay"|"difference", slider?:float}` | `{}` |
+| `selection.select_group` | `{index:int}` | `{changed:bool, indices:[int]}` |
+| `selection.select_range` | `{from:int, to:int}` | `{changed:bool, indices:[int]}` |
+| `view.set_mode` | `{mode:"split"\|"overlay"\|"difference", slider?:float}` | `{}` |
 | `view.set_group_by_name` | `{enabled:bool}` | `{}` |
+| `view.set_zoom_pan` | `{zoom?:float, pan_x?:float, pan_y?:float}` | `{}` — all fields optional |
+| `view.set_channel` | `{channel:"r"\|"g"\|"b"\|"a"\|"y"\|"u"\|"v"\|"none"\|"rgb"}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
+| `comparison_config.load` | `{path:string}` | `{entries:int, groups:int, current_group:int}` |
+| `comparison_config.switch_group` | `{group_index:int}` | `{entries:int, current_group:int}` |
+| `timeline.set_frame` | `{frame:int}` | `{current_frame:int}` |
+| `timeline.set_frame_offset` | `{index:int, offset:int}` | `{index:int, offset:int}` |
 
 ### Error policy
 
@@ -210,6 +220,16 @@ shim over one RPC method.
 | `set_view_mode` | `view.set_mode` |
 | `set_group_by_name` | `view.set_group_by_name` |
 | `screenshot` | `view.screenshot` |
+| `set_zoom_pan` | `view.set_zoom_pan` |
+| `set_channel_view` | `view.set_channel` |
+| `select_group` | `selection.select_group` |
+| `select_range` | `selection.select_range` |
+| `load_comparison_config` | `comparison_config.load` |
+| `switch_comparison_group` | `comparison_config.switch_group` |
+| `set_timeline_frame` | `timeline.set_frame` |
+| `set_frame_offset` | `timeline.set_frame_offset` |
+| `reload_all` | `library.reload_all` |
+| `set_loader_backend` | `library.set_loader_backend` |
 
 ### Discovery / multi-instance behaviour
 
