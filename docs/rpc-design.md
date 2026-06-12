@@ -165,7 +165,7 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int|null, explicit_reference:bool, view:{mode,slider}}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int|null, explicit_reference:bool, group_by_name:bool, view:{mode,slider}, comparison_references:{key->path}, current_comparison_key:string|null}` |
 
 ### Mutations
 
@@ -173,9 +173,12 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 |---|---|---|
 | `library.load` | `{paths:[string]}` | `{added:int, total:int}` |
 | `library.set_reference` | `{index:int}` | `{}` |
+| `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
+| `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
 | `library.remove` | `{index:int}` | `{}` |
-| `selection.set` | `{indices:[int]}` | `{}` |
+| `selection.set` | `{indices:[int]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
 | `view.set_mode` | `{mode:"split"|"overlay"|"difference", slider?:float}` | `{}` |
+| `view.set_group_by_name` | `{enabled:bool}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
 
 ### Error policy
@@ -200,9 +203,12 @@ shim over one RPC method.
 | `get_state` | `state.get` |
 | `load_images` | `library.load` |
 | `set_reference` | `library.set_reference` |
+| `list_comparisons` | `library.list_comparisons` |
+| `set_comparison_reference` | `library.set_comparison_reference` |
 | `remove_image` | `library.remove` |
 | `set_selection` | `selection.set` |
 | `set_view_mode` | `view.set_mode` |
+| `set_group_by_name` | `view.set_group_by_name` |
 | `screenshot` | `view.screenshot` |
 
 ### Discovery / multi-instance behaviour

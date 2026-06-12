@@ -28,6 +28,7 @@ Tool surface (mirrors idiff RPC, with friendlier names)
   remove_image               -- delete an entry from the library
   set_selection              -- replace the selection
   set_view_mode              -- split | overlay | difference, optional slider
+  set_group_by_name          -- toggle the image-list Group-by-Name mode
   screenshot                 -- compose what the viewport currently shows to a file
   list_comparisons           -- enumerate file/config comparisons in the library
   set_comparison_reference   -- record a per-comparison reference path
@@ -177,8 +178,9 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Snapshot the active idiff instance: identity, list of "
                 "loaded entries (with width/height/frames), current "
-                "selection, explicit reference (if any), view mode, and "
-                "overlay slider. Always start here before issuing any "
+                "selection, explicit reference (if any), view mode, "
+                "overlay slider, and the group_by_name flag. Always "
+                "start here before issuing any "
                 "modifying call -- the entry indices change as the user "
                 "loads / removes files."
             ),
@@ -344,6 +346,25 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="set_group_by_name",
+            description=(
+                "Toggle the image-list 'Group by Name' mode. When on "
+                "(the default), images sharing a filename stem form a "
+                "single comparison, and set_selection rejects any "
+                "selection that spans more than one comparison -- the "
+                "same invariant the GUI enforces. Turn it off to build "
+                "free-form selections across groups. The current value "
+                "is reported by get_state as 'group_by_name'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["enabled"],
+            },
+        ),
+        Tool(
             name="screenshot",
             description=(
                 "Compose the current viewport contents into a single "
@@ -445,6 +466,10 @@ async def call_tool(
             if "slider" in arguments:
                 params["slider"] = float(arguments["slider"])
             return _ok(_call(instance, "view.set_mode", params))
+
+        if name == "set_group_by_name":
+            return _ok(_call(instance, "view.set_group_by_name",
+                             {"enabled": bool(arguments["enabled"])}))
 
         if name == "screenshot":
             params = {"path": arguments["path"]}

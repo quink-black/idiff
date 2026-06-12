@@ -242,6 +242,17 @@ private:
     // definition.  Defined in app.cpp.
     Viewport& rpc_viewport() noexcept;
 
+    // Group-by-name runtime flag, used by selection.set (to enforce
+    // the single-comparison invariant), state.get (to report it), and
+    // view.set_group_by_name (to toggle it).  The flag lives inside the
+    // opaque State struct; these accessors expose it to
+    // app_rpc_methods.cpp without leaking State.  The setter mirrors
+    // the GUI checkbox: it updates the flag and persists settings, but
+    // does not re-select -- toggling only changes how subsequent clicks
+    // / selections behave.  Defined in app.cpp.
+    bool rpc_group_by_name() const noexcept;
+    void rpc_set_group_by_name(bool on);
+
     // Identity getters used by app.identity / app.list_instances and
     // by the status-bar chip.  Returned strings are empty when the
     // server failed to start (no identity to report).  Defined in

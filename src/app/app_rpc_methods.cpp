@@ -13,6 +13,7 @@
 //   selection.set         (indices: [int]) -> {}
 //   view.set_mode         (mode: "split"|"overlay"|"difference",
 //                          slider?: float) -> {}
+//   view.set_group_by_name(enabled: bool) -> {}
 //   view.screenshot       (path: string,
 //                          slider?: float,
 //                          mode?: "split"|"overlay"|"difference")
@@ -253,6 +254,7 @@ void App::register_rpc_methods() {
                 {"reference", ref_idx < 0 ? json(nullptr) : json(ref_idx)},
                 {"explicit_reference",
                     selection_->has_explicit_reference()},
+                {"group_by_name", rpc_group_by_name()},
                 {"view",      std::move(view)},
                 {"comparison_references", std::move(crefs)},
                 {"current_comparison_key",
@@ -436,11 +438,45 @@ void App::register_rpc_methods() {
                 check_index(idx, n, "indices[i]");
                 new_sel.insert(idx);
             }
+
+            // Honor the Group-by-Name invariant the GUI enforces via
+            // AppController::click_in_group: when grouping is on, a
+            // selection must live in exactly one comparison.  The GUI
+            // physically cannot produce a cross-comparison selection;
+            // a raw selection.set could, leaving the viewport diffing
+            // unrelated images.  Reject it (rather than silently
+            // narrowing) so the caller learns the selection was wrong
+            // instead of wondering why images disappeared.  The anchor
+            // is the smallest index, matching the reference-image rule.
+            if (rpc_group_by_name() && new_sel.size() >= 2) {
+                int anchor = *new_sel.begin();
+                std::string anchor_key = controller_->comparison_key_of(anchor);
+                if (!anchor_key.empty()) {
+                    for (int idx : new_sel) {
+                        std::string k = controller_->comparison_key_of(idx);
+                        if (!k.empty() && k != anchor_key) {
+                            throw RpcException(ErrorCode::InvalidParams,
+                                "selection spans multiple comparisons while "
+                                "group-by-name is on: index " +
+                                std::to_string(idx) + " (" + k +
+                                ") does not match index " +
+                                std::to_string(anchor) + " (" + anchor_key +
+                                "); select within one comparison or turn "
+                                "group-by-name off via view.set_group_by_name");
+                        }
+                    }
+                }
+            }
+
             // Replacing the selection invalidates the diff cache; the
             // controller's mark_as_reference path does that for us, but
             // a bare replace() does not.
             if (selection_->replace(std::move(new_sel))) {
                 diff_service_->mark_dirty();
+                // Re-apply any per-comparison reference recorded for
+                // the now-active comparison, matching select_group /
+                // click_in_group which both call this after a switch.
+                controller_->apply_comparison_reference();
             }
             return json::object();
         });
@@ -465,6 +501,26 @@ void App::register_rpc_methods() {
                 }
                 vp.set_overlay_slider_pos(it->get<float>());
             }
+            return json::object();
+        });
+
+    // --- view.set_group_by_name ------------------------------------
+    //
+    // Toggle the image-list "Group by Name" mode -- the same flag the
+    // GUI checkbox drives.  When on, selection.set rejects selections
+    // that span more than one comparison (filename-stem group).  The
+    // setting is persisted, matching the GUI checkbox path; toggling
+    // does not change the current selection, only how future
+    // selections are validated.
+    d.register_method("view.set_group_by_name",
+        [this](const json& params) -> json {
+            require_object(params);
+            auto it = params.find("enabled");
+            if (it == params.end() || !it->is_boolean()) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "missing or non-boolean field: enabled");
+            }
+            rpc_set_group_by_name(it->get<bool>());
             return json::object();
         });
 
