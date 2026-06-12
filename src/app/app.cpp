@@ -216,6 +216,15 @@ Viewport& App::rpc_viewport() noexcept {
     return *state_->viewport;
 }
 
+bool App::rpc_group_by_name() const noexcept {
+    return state_->group_by_name;
+}
+
+void App::rpc_set_group_by_name(bool on) {
+    state_->group_by_name = on;
+    save_settings();
+}
+
 int App::rpc_pid() const noexcept {
     return state_->rpc_pid;
 }
