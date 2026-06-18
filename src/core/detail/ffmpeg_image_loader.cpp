@@ -5,6 +5,8 @@
 #include "core/detail/heif_tile_assembler.h"
 #include "core/image_impl.h"
 #include "core/image_loader.h"  // for LoadFlag
+#include "core/video_decoder.h"        // for VideoColorTags
+#include "core/video_filter_graph.h"   // for VideoFilterGraph
 #include "util/logger.h"
 
 extern "C" {
@@ -15,7 +17,6 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
 }
 
 #include <opencv2/core.hpp>
@@ -134,13 +135,6 @@ struct AVFrameDeleter {
 };
 using AVFramePtr = std::unique_ptr<AVFrame, AVFrameDeleter>;
 
-struct SwsContextDeleter {
-    void operator()(SwsContext* sws) const noexcept {
-        if (sws) sws_freeContext(sws);
-    }
-};
-using SwsContextPtr = std::unique_ptr<SwsContext, SwsContextDeleter>;
-
 // ============================================================================
 // Single-stream decode
 // ============================================================================
@@ -237,6 +231,39 @@ AVFramePtr decode_one_frame(AVFormatContext* fmt_ctx,
 // AVFrame -> Image (RGB(A) 8 / 16-bit)
 // ============================================================================
 
+// Human-readable color-space label derived from the source frame's
+// (already resolved) color tags.  Informational only -- shown in the
+// UI / metadata panel.  The decoded pixels are always converted to
+// display sRGB downstream, so this string describes the *source*, not
+// the stored buffer.
+std::string describe_color_space(const VideoColorTags& tags, int w, int h) {
+    const AVColorPrimaries prim = tags.resolved_primaries(w, h);
+    const AVColorTransferCharacteristic trc = tags.resolved_transfer(w, h);
+
+    const char* gamut = nullptr;
+    switch (prim) {
+        case AVCOL_PRI_BT709:    gamut = "BT.709";    break;
+        case AVCOL_PRI_BT2020:   gamut = "BT.2020";   break;
+        case AVCOL_PRI_SMPTE432: gamut = "Display P3"; break;
+        case AVCOL_PRI_BT470BG:  gamut = "BT.601";    break;
+        case AVCOL_PRI_SMPTE170M:gamut = "BT.601";    break;
+        default:                 gamut = nullptr;     break;
+    }
+
+    const char* transfer = nullptr;
+    switch (trc) {
+        case AVCOL_TRC_SMPTE2084:   transfer = "PQ";  break;
+        case AVCOL_TRC_ARIB_STD_B67:transfer = "HLG"; break;
+        default:                    transfer = nullptr; break;
+    }
+
+    if (gamut && transfer) return std::string(gamut) + " " + transfer;
+    if (gamut)             return gamut;
+
+    const char* name = av_color_primaries_name(prim);
+    return name ? name : "Unknown";
+}
+
 PixelFormat select_target_pixel_format(AVPixelFormat src,
                                        std::uint32_t flags,
                                        AVPixelFormat& out_av_fmt) {
@@ -293,41 +320,77 @@ bool avframe_to_image(AVFrame* frame,
                      target_fmt == PixelFormat::RGBA16) ? 16 : 8;
     int cv_type = (bit_depth == 16) ? CV_16UC(channels) : CV_8UC(channels);
 
-    cv::Mat mat(frame->height, frame->width, cv_type);
+    // Resolve the source color description, applying FFmpeg's
+    // SD/HD/UHD-HDR fallbacks for UNSPECIFIED tags -- the same
+    // resolution the video path uses (video_decoder.cpp).
+    VideoColorTags tags;
+    tags.range     = frame->color_range;
+    tags.matrix    = frame->colorspace;
+    tags.primaries = frame->color_primaries;
+    tags.transfer  = frame->color_trc;
+
+    // Convert YUV -> display RGB through vf_scale so the source
+    // matrix / primaries / transfer are honoured and PQ/HLG HDR is
+    // tone-mapped to sRGB.  A bare sws_getContext (the previous
+    // implementation) ignored all of this and produced wrong colors
+    // on HDR / BT.2020 sources.
+    VideoFilterInputParams in;
+    in.width     = frame->width;
+    in.height    = frame->height;
+    in.pix_fmt   = static_cast<AVPixelFormat>(frame->format);
+    in.sar       = (frame->sample_aspect_ratio.num &&
+                    frame->sample_aspect_ratio.den)
+                       ? frame->sample_aspect_ratio
+                       : AVRational{1, 1};
+    in.time_base = AVRational{1, 1};
+    in.range     = tags.resolved_range();
+    in.matrix    = tags.resolved_matrix(frame->width, frame->height);
+    in.primaries = tags.resolved_primaries(frame->width, frame->height);
+    in.transfer  = tags.resolved_transfer(frame->width, frame->height);
+
+    VideoFilterOutputParams out;
+    out.width     = 0;  // keep source size
+    out.height    = 0;
+    out.pix_fmt   = target_av_fmt;
+    out.range     = AVCOL_RANGE_JPEG;          // full range
+    out.matrix    = AVCOL_SPC_RGB;             // identity (RGB)
+    out.primaries = AVCOL_PRI_BT709;
+    out.transfer  = AVCOL_TRC_IEC61966_2_1;    // sRGB
+
+    VideoFilterGraph graph;
+    if (!graph.configure(in, out, err)) {
+        return false;
+    }
+
+    AVFramePtr converted(graph.process(frame, err));
+    if (!converted) {
+        return false;
+    }
+
+    cv::Mat mat(converted->height, converted->width, cv_type);
     if (mat.empty()) {
         err = "cv::Mat allocation failed";
         return false;
     }
 
-    SwsContextPtr sws(sws_getContext(
-        frame->width, frame->height,
-        static_cast<AVPixelFormat>(frame->format),
-        frame->width, frame->height,
-        target_av_fmt,
-        SWS_BILINEAR, nullptr, nullptr, nullptr));
-    if (!sws) {
-        err = "sws_getContext failed";
-        return false;
-    }
-
-    uint8_t* dst_data[4]   = {mat.ptr(), nullptr, nullptr, nullptr};
-    int      dst_strides[4] = {static_cast<int>(mat.step[0]), 0, 0, 0};
-    int rc = sws_scale(sws.get(),
-                       frame->data, frame->linesize,
-                       0, frame->height,
-                       dst_data, dst_strides);
-    if (rc <= 0) {
-        err = "sws_scale produced no output";
-        return false;
+    // Copy row by row: the filter output linesize may include padding.
+    const size_t row_bytes =
+        static_cast<size_t>(converted->width) * channels *
+        (bit_depth == 16 ? 2 : 1);
+    for (int y = 0; y < converted->height; ++y) {
+        std::memcpy(mat.ptr(y),
+                    converted->data[0] + y * converted->linesize[0],
+                    row_bytes);
     }
 
     auto& impl = image.internal();
-    impl.info.width            = frame->width;
-    impl.info.height           = frame->height;
+    impl.info.width            = converted->width;
+    impl.info.height           = converted->height;
     impl.info.pixel_format     = target_fmt;
     impl.info.bit_depth        = bit_depth;
     impl.info.has_alpha        = (channels == 4);
-    impl.info.color_space      = "sRGB";
+    impl.info.color_space =
+        describe_color_space(tags, frame->width, frame->height);
     impl.info.source_format    = src_format;
 
     // Record the source bit depth so the UI can show "10-bit AVIF"
@@ -449,6 +512,23 @@ std::unique_ptr<Image> decode_tile_grid(AVFormatContext* fmt_ctx,
         tile_frames.push_back(std::move(frame));
     }
 
+    // All tiles share one source color description; resolve it once
+    // from the first tile (applying SD/HD/UHD-HDR fallbacks) and pass
+    // it to every input so the composed frame carries correct tags.
+    AVFrame* ref = tile_frames[0].get();
+    VideoColorTags tags;
+    tags.range     = ref->color_range;
+    tags.matrix    = ref->colorspace;
+    tags.primaries = ref->color_primaries;
+    tags.transfer  = ref->color_trc;
+    const AVColorRange res_range     = tags.resolved_range();
+    const AVColorSpace res_matrix    = tags.resolved_matrix(ref->width,
+                                                            ref->height);
+    const AVColorPrimaries res_prim  = tags.resolved_primaries(ref->width,
+                                                               ref->height);
+    const AVColorTransferCharacteristic res_trc =
+        tags.resolved_transfer(ref->width, ref->height);
+
     // ---- build assembler ----
     HeifTileAssembler assembler;
     std::vector<HeifTileInputDesc> inputs;
@@ -465,13 +545,20 @@ std::unique_ptr<Image> decode_tile_grid(AVFormatContext* fmt_ctx,
         // HEIF stills have no real timebase; xstack only requires that
         // every input shares one, so {1,1} on every src is fine.
         d.time_base = AVRational{1, 1};
+        d.range     = res_range;
+        d.matrix    = res_matrix;
+        d.primaries = res_prim;
+        d.transfer  = res_trc;
         inputs.push_back(d);
     }
 
-    // Pick sink pix_fmt based on caller flags.
-    AVPixelFormat sink_av_fmt = AV_PIX_FMT_NONE;
-    select_target_pixel_format(
-        static_cast<AVPixelFormat>(tile_frames[0]->format), flags, sink_av_fmt);
+    // Compose in the tiles' native pixel format so the source color
+    // space is preserved.  The composed frame carries the source color
+    // tags and is converted to display RGB by avframe_to_image's
+    // VideoFilterGraph pass -- identical color handling to the
+    // single-tile path.
+    const AVPixelFormat sink_av_fmt =
+        static_cast<AVPixelFormat>(ref->format);
 
     if (!assembler.configure(grid, inputs, sink_av_fmt, err)) {
         return nullptr;

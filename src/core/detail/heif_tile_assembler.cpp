@@ -52,6 +52,13 @@ struct HeifTileAssembler::Impl {
     int coded_w = 0, coded_h = 0;
     int out_w = 0, out_h = 0;
 
+    // Source color tags (from inputs[0]) stamped onto the composed
+    // output frame so the downstream YUV->RGB pass honours them.
+    AVColorRange color_range = AVCOL_RANGE_UNSPECIFIED;
+    AVColorSpace color_matrix = AVCOL_SPC_UNSPECIFIED;
+    AVColorPrimaries color_primaries = AVCOL_PRI_UNSPECIFIED;
+    AVColorTransferCharacteristic color_trc = AVCOL_TRC_UNSPECIFIED;
+
     void close() noexcept {
         if (graph) {
             avfilter_graph_free(&graph);  // also frees src/sink ctxs
@@ -158,6 +165,19 @@ bool HeifTileAssembler::configure(const AVStreamGroupTileGrid* grid,
         rc |= av_opt_set_q(src, "time_base", tb, AV_OPT_SEARCH_CHILDREN);
         rc |= av_opt_set_q(src, "pixel_aspect", sar,
                            AV_OPT_SEARCH_CHILDREN);
+        // Color description: the `buffer` source only exposes
+        // `colorspace` (YUV matrix) and `range` as options; primaries
+        // and transfer are not settable here and instead travel on the
+        // pushed AVFrames (stamped in assemble()).  Only set fields the
+        // caller actually resolved.
+        if (d.range != AVCOL_RANGE_UNSPECIFIED) {
+            rc |= av_opt_set_int(src, "range", d.range,
+                                 AV_OPT_SEARCH_CHILDREN);
+        }
+        if (d.matrix != AVCOL_SPC_UNSPECIFIED) {
+            rc |= av_opt_set_int(src, "colorspace", d.matrix,
+                                 AV_OPT_SEARCH_CHILDREN);
+        }
         if (rc != 0) {
             err = "buffer src option set failed";
             impl_->close();
@@ -348,6 +368,10 @@ bool HeifTileAssembler::configure(const AVStreamGroupTileGrid* grid,
     impl_->nb_tiles = static_cast<int>(grid->nb_tiles);
     impl_->coded_w  = grid->coded_width;
     impl_->coded_h  = grid->coded_height;
+    impl_->color_range     = inputs[0].range;
+    impl_->color_matrix    = inputs[0].matrix;
+    impl_->color_primaries = inputs[0].primaries;
+    impl_->color_trc       = inputs[0].transfer;
     impl_->configured = true;
 
     LOG_INFO("HeifTileAssembler: configured %d tiles, "
@@ -383,6 +407,15 @@ AVFrame* HeifTileAssembler::assemble(const std::vector<AVFrame*>& tiles,
             err = buf;
             return nullptr;
         }
+        // Stamp the resolved source color tags onto the frame so the
+        // graph's auto-inserted scale node sees correct primaries and
+        // transfer (the buffer source only carries matrix + range).
+        // These are scalar metadata fields, not shared pixel buffers,
+        // so updating them under KEEP_REF is safe.
+        f->color_range     = impl_->color_range;
+        f->colorspace      = impl_->color_matrix;
+        f->color_primaries = impl_->color_primaries;
+        f->color_trc       = impl_->color_trc;
         if (int ret = av_buffersrc_add_frame_flags(
                 impl_->src_ctxs[i], f, AV_BUFFERSRC_FLAG_KEEP_REF);
             ret < 0) {
@@ -407,6 +440,14 @@ AVFrame* HeifTileAssembler::assemble(const std::vector<AVFrame*>& tiles,
         av_frame_free(&out);
         return nullptr;
     }
+
+    // Carry the source color tags onto the composed frame so the
+    // downstream VideoFilterGraph pass converts from the correct
+    // source color space.
+    out->color_range     = impl_->color_range;
+    out->colorspace      = impl_->color_matrix;
+    out->color_primaries = impl_->color_primaries;
+    out->color_trc       = impl_->color_trc;
 
     LOG_DEBUG("HeifTileAssembler: assembled %d tiles "
               "(canvas %dx%d -> output %dx%d)",

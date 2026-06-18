@@ -27,6 +27,17 @@ struct HeifTileInputDesc {
     AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
     AVRational sar{1, 1};
     AVRational time_base{1, 1};
+
+    // Source color description.  All tiles of one HEIF image share a
+    // single description; it is set on every buffer source so the
+    // graph interprets chroma correctly, and stamped onto the composed
+    // output frame so the downstream YUV->RGB conversion can honour
+    // the source matrix / primaries / transfer.  Defaults are the
+    // FFmpeg UNSPECIFIED sentinels.
+    AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
+    AVColorSpace matrix = AVCOL_SPC_UNSPECIFIED;
+    AVColorPrimaries primaries = AVCOL_PRI_UNSPECIFIED;
+    AVColorTransferCharacteristic transfer = AVCOL_TRC_UNSPECIFIED;
 };
 
 // Wrapper around a one-shot HEIF tile-grid composition graph:
@@ -68,11 +79,13 @@ public:
     HeifTileAssembler& operator=(HeifTileAssembler&&) = delete;
 
     // Build the graph for a particular grid.  `out_pix_fmt` is the
-    // pixel format the buffersink is constrained to; the caller
-    // should pick a packed RGB(A) format compatible with the rest
-    // of idiff's image pipeline (RGB24 / RGBA / RGB48LE / RGBA64LE).
-    // Returns true on success; on failure, fills `err` and leaves
-    // the assembler in a closed state.
+    // pixel format the buffersink is constrained to.  Callers that
+    // want correct color handling should pass the tiles' *native*
+    // pixel format here so composition stays in the source color
+    // space; the composed output frame carries the source color tags
+    // (from inputs[0]) and is converted to display RGB by a later
+    // VideoFilterGraph pass.  Returns true on success; on failure,
+    // fills `err` and leaves the assembler in a closed state.
     bool configure(const AVStreamGroupTileGrid* grid,
                    const std::vector<HeifTileInputDesc>& inputs,
                    AVPixelFormat out_pix_fmt,
