@@ -271,9 +271,17 @@ bool VideoFilterGraph::configure(const VideoFilterInputParams& in,
     // format -- explicitly setting out_color_matrix=RGB on packed
     // RGB outputs makes vf_scale apply an unwanted second matrix
     // step.  For YUV / gray destinations we do need to tell vf_scale
-    // which matrix to encode into.
-    const bool out_is_packed_rgb = (out.pix_fmt == AV_PIX_FMT_RGB24 ||
-                                    out.pix_fmt == AV_PIX_FMT_BGR24);
+    // which matrix to encode into.  Detect from the pixel descriptor:
+    // RGB colour model (AV_PIX_FMT_FLAG_RGB) and packed layout (PLANAR
+    // not set).  FLAG_RGB alone is not enough -- GBRP / GBRAP are
+    // planar RGB and must not be treated as a packed-RGB sink.  This
+    // covers every packed RGB sink the loader reuses (RGB24, RGBA,
+    // RGB48, RGBA64) without enumerating formats by hand.
+    const AVPixFmtDescriptor* out_desc = av_pix_fmt_desc_get(out.pix_fmt);
+    const bool out_is_packed_rgb =
+        out_desc &&
+        (out_desc->flags & AV_PIX_FMT_FLAG_RGB) &&
+        !(out_desc->flags & AV_PIX_FMT_FLAG_PLANAR);
 
     rc = 0;
     rc |= av_opt_set    (scale_ctx, "w", wbuf, AV_OPT_SEARCH_CHILDREN);
