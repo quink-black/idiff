@@ -594,6 +594,16 @@ void App::shutdown() {
     ImGui::DestroyContext();
 }
 
+void App::tick_idle() {
+#ifdef IDIFF_HAVE_RPC
+    if (rpc_server_) {
+        rpc_server_->drain();
+    }
+#endif
+    poll_sr_tasks();
+    poll_file_watcher();
+}
+
 void App::frame() {
 #ifdef IDIFF_HAVE_RPC
     // Drain any RPC requests that arrived since the last frame.  This
