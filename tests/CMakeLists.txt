@@ -24,6 +24,7 @@ add_executable(idiff_tests
     test_controller_integration.cpp
     test_pixel_sampler.cpp
     test_sar.cpp
+    test_idle_policy.cpp
     # test_logging_integration.cpp  # FIXME: linking issue with ImageLibrary::upload
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
@@ -33,6 +34,8 @@ add_executable(idiff_tests
     ${CMAKE_SOURCE_DIR}/src/app/settings.cpp
     # Pixel sampler is exercised by test_pixel_sampler.cpp
     ${CMAKE_SOURCE_DIR}/src/app/pixel_sampler.cpp
+    # Idle-CPU loop policy exercised by test_idle_policy.cpp
+    ${CMAKE_SOURCE_DIR}/src/app/idle_policy.cpp
     # IO adapters under test
     ${CMAKE_SOURCE_DIR}/src/app/io/texture_uploader.cpp
     ${CMAKE_SOURCE_DIR}/src/app/io/file_dialog.cpp

@@ -1,6 +1,7 @@
 add_executable(idiff
     main.cpp
     app.cpp
+    idle_policy.cpp
     controller.cpp
     viewport.cpp
     metrics_panel.cpp
