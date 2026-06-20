@@ -99,6 +99,10 @@ public:
     bool init(SDL_Window* window, SDL_Renderer* renderer);
     void shutdown();
     void frame();
+    // Lightweight background tick for when the window is minimized or
+    // hidden.  Drains the RPC queue and polls file-watcher / SR tasks
+    // without running any ImGui rendering.
+    void tick_idle();
 
     void load_images(const std::vector<std::string>& paths);
 

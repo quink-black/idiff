@@ -245,10 +245,24 @@ int main(int argc, char** argv) {
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
     bool running = true;
+    bool minimized = false;
+
     while (running) {
         // Paths collected from SDL_DROPFILE events during this frame.
         // Batched so that sort / label / diff recompute only runs once.
         std::vector<std::string> dropped_paths;
+
+        // When minimized or hidden, sleep until an event arrives (up to
+        // 100 ms) so the CPU is idle.  Otherwise use a 16 ms timeout
+        // which caps the loop at ~60 fps without busy-spinning when no
+        // events are queued.
+        int timeout_ms = minimized ? 100 : 16;
+
+        // SDL_WaitEventTimeout blocks until an event arrives or the
+        // timeout expires.  When it returns 1 the first event is
+        // available via SDL_PollEvent; when 0 the timeout elapsed with
+        // no events (the thread was sleeping).
+        SDL_WaitEventTimeout(nullptr, timeout_ms);
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -261,6 +275,16 @@ int main(int argc, char** argv) {
                 event.window.windowID == SDL_GetWindowID(window)) {
                 app.request_quit();
             }
+            if (event.type == SDL_WINDOWEVENT) {
+                if (event.window.event == SDL_WINDOWEVENT_MINIMIZED ||
+                    event.window.event == SDL_WINDOWEVENT_HIDDEN) {
+                    minimized = true;
+                }
+                if (event.window.event == SDL_WINDOWEVENT_RESTORED ||
+                    event.window.event == SDL_WINDOWEVENT_SHOWN) {
+                    minimized = false;
+                }
+            }
             if (event.type == SDL_DROPFILE && event.drop.file) {
                 dropped_paths.emplace_back(event.drop.file);
                 SDL_free(event.drop.file);
@@ -271,6 +295,17 @@ int main(int argc, char** argv) {
             // Drag-and-drop accepts both images and comparison-config
             // JSON files; the dispatcher figures out which is which.
             app.load_paths(dropped_paths);
+        }
+
+        // When minimized, skip rendering to keep CPU near zero.
+        // tick_idle() drains RPC and background polls without the
+        // ImGui render pass.
+        if (minimized) {
+            app.tick_idle();
+            if (app.wants_quit()) {
+                running = false;
+            }
+            continue;
         }
 
         app.frame();
