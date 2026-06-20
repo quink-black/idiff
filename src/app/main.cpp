@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "app/idle_policy.h"
 #include "app/platform/platform.h"
 #include "util/logger.h"
 
@@ -252,17 +253,12 @@ int main(int argc, char** argv) {
         // Batched so that sort / label / diff recompute only runs once.
         std::vector<std::string> dropped_paths;
 
-        // When minimized or hidden, sleep until an event arrives (up to
-        // 100 ms) so the CPU is idle.  Otherwise use a 16 ms timeout
-        // which caps the loop at ~60 fps without busy-spinning when no
-        // events are queued.
-        int timeout_ms = minimized ? 100 : 16;
-
         // SDL_WaitEventTimeout blocks until an event arrives or the
         // timeout expires.  When it returns 1 the first event is
         // available via SDL_PollEvent; when 0 the timeout elapsed with
-        // no events (the thread was sleeping).
-        SDL_WaitEventTimeout(nullptr, timeout_ms);
+        // no events (the thread was sleeping).  The timeout is longer
+        // while minimized so a hidden window idles deeper.
+        SDL_WaitEventTimeout(nullptr, idiff::loop_wait_timeout_ms(minimized));
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -276,14 +272,8 @@ int main(int argc, char** argv) {
                 app.request_quit();
             }
             if (event.type == SDL_WINDOWEVENT) {
-                if (event.window.event == SDL_WINDOWEVENT_MINIMIZED ||
-                    event.window.event == SDL_WINDOWEVENT_HIDDEN) {
-                    minimized = true;
-                }
-                if (event.window.event == SDL_WINDOWEVENT_RESTORED ||
-                    event.window.event == SDL_WINDOWEVENT_SHOWN) {
-                    minimized = false;
-                }
+                minimized = idiff::apply_window_event(minimized,
+                                                      event.window.event);
             }
             if (event.type == SDL_DROPFILE && event.drop.file) {
                 dropped_paths.emplace_back(event.drop.file);
@@ -297,18 +287,14 @@ int main(int argc, char** argv) {
             app.load_paths(dropped_paths);
         }
 
-        // When minimized, skip rendering to keep CPU near zero.
-        // tick_idle() drains RPC and background polls without the
-        // ImGui render pass.
-        if (minimized) {
+        // While minimized, skip the render pass to keep CPU near zero.
+        // tick_idle() drains RPC and background polls without the ImGui
+        // render pass.
+        if (!idiff::loop_should_render(minimized)) {
             app.tick_idle();
-            if (app.wants_quit()) {
-                running = false;
-            }
-            continue;
+        } else {
+            app.frame();
         }
-
-        app.frame();
 
         if (app.wants_quit()) {
             running = false;
