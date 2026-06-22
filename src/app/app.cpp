@@ -1606,33 +1606,39 @@ void App::update_pixel_inspector_hover() {
     int px = vp->hover_pixel_x();
     int py = vp->hover_pixel_y();
 
-    const cv::Mat* mat = nullptr;
+    const Image* src_img = nullptr;
+    // Diff heatmaps are already at display resolution, so their mat
+    // dims are the correct normalizer.  Every other mode passes 0/0
+    // to let hover_pixel_to_norm pick the image's display_width/height.
+    int override_disp_w = 0;
+    int override_disp_h = 0;
 
     if (vp->mode() == ComparisonMode::Difference) {
         if (diff_service_ && cell >= 0 &&
             cell < static_cast<int>(diff_service_->size())) {
             const auto& slot = diff_service_->slots()[cell];
-            if (slot.image) mat = &slot.image->mat();
+            src_img = slot.image.get();
+            if (src_img && !src_img->mat().empty()) {
+                override_disp_w = src_img->mat().cols;
+                override_disp_h = src_img->mat().rows;
+            }
         }
     } else if (cell >= 0 &&
                cell < static_cast<int>(viewport_slot_to_entry_.size())) {
         int ent = viewport_slot_to_entry_[cell];
         if (ent >= 0 && ent < static_cast<int>(entries_view().size())) {
             const auto& e = entries_view()[ent];
-            if (e.image) mat = &e.image->mat();
+            src_img = e.image.get();
         }
     }
 
-    if (!mat || mat->empty() ||
-        px < 0 || py < 0 ||
-        px >= mat->cols || py >= mat->rows) {
+    HoverNorm hn = hover_pixel_to_norm(src_img, px, py,
+                                       override_disp_w, override_disp_h);
+    if (!hn.valid) {
         state_->pixel_panel->update_hover(0.0, 0.0, false);
         return;
     }
-
-    double u = pixel_to_norm(px, mat->cols);
-    double v = pixel_to_norm(py, mat->rows);
-    state_->pixel_panel->update_hover(u, v, true);
+    state_->pixel_panel->update_hover(hn.u, hn.v, true);
 }
 
 void App::render_error_dialog() {

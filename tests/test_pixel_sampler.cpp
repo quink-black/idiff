@@ -539,6 +539,111 @@ TEST_CASE("sample_image_at: prefer_rgb is a no-op when there is no AVFrame",
 }
 
 // -----------------------------------------------------------------------------
+// hover_pixel_to_norm: SAR-aware normalization regression.
+//
+// The viewport reports hover (px, py) in the image's display (SAR-
+// adjusted) coordinate system.  Normalizing against the source mat's
+// cols/rows instead of display_width/height shrinks the valid range
+// and shifts the sampled pixel whenever SAR != 1:1.  This case
+// reproduces the original bug report: a 720x576 PAL video with SAR
+// 64:45 (display 1024x576) whose bottom-right hover reported (1023,
+// 575) and either went out-of-range or sampled a shifted pixel.
+// -----------------------------------------------------------------------------
+
+namespace {
+
+Image make_sar_image(int w, int h, int sar_num, int sar_den) {
+    Image img;
+    img.internal().mat = cv::Mat(h, w, CV_8UC3, cv::Scalar(0, 0, 0));
+    img.internal().info.width = w;
+    img.internal().info.height = h;
+    img.internal().info.sar_num = sar_num;
+    img.internal().info.sar_den = sar_den;
+    return img;
+}
+
+} // namespace
+
+TEST_CASE("hover_pixel_to_norm: uses display dimensions, not source",
+          "[pixel_sampler][sar]") {
+    // 720x576 with SAR 64:45 -> display 1024x576 (PAL 16:9).
+    Image img = make_sar_image(/*w=*/720, /*h=*/576,
+                               /*sar_num=*/64, /*sar_den=*/45);
+    REQUIRE(img.info().display_width() == 1024);
+    REQUIRE(img.info().display_height() == 576);
+
+    SECTION("display-space corner maps to the expected normalized coord") {
+        // Bottom-right of the *display* rect is (1023, 575).  This is
+        // the exact hover that used to report "@ (1023, 575)" and then
+        // fail the px < mat->cols (1023 < 720) bounds check in the
+        // pixel inspector.  It must now be valid and normalize against
+        // 1024/576.
+        HoverNorm hn = hover_pixel_to_norm(&img, 1023, 575);
+        REQUIRE(hn.valid);
+        REQUIRE(hn.u == Catch::Approx(pixel_to_norm(1023, 1024)));
+        REQUIRE(hn.v == Catch::Approx(pixel_to_norm(575, 576)));
+    }
+
+    SECTION("display-space center samples the source-frame center") {
+        // Display center (512, 288) should map back to source pixel
+        // (360, 288) -- the source center.  Pre-fix the helper would
+        // have computed u = pixel_to_norm(512, 720), placing the
+        // sample near the right edge of the source instead of the
+        // middle.
+        HoverNorm hn = hover_pixel_to_norm(&img, 512, 288);
+        REQUIRE(hn.valid);
+        int src_x = norm_to_pixel(hn.u, 720);
+        int src_y = norm_to_pixel(hn.v, 576);
+        REQUIRE(src_x == 360);
+        REQUIRE(src_y == 288);
+    }
+
+    SECTION("hover at display width is rejected (half-open interval)") {
+        // px == display_width is one past the last display column and
+        // must be invalid rather than silently clamped.
+        REQUIRE_FALSE(hover_pixel_to_norm(&img, 1024, 0).valid);
+        REQUIRE_FALSE(hover_pixel_to_norm(&img, 0, 576).valid);
+    }
+
+    SECTION("negative hover is rejected") {
+        REQUIRE_FALSE(hover_pixel_to_norm(&img, -1, 0).valid);
+        REQUIRE_FALSE(hover_pixel_to_norm(&img, 0, -1).valid);
+    }
+
+    SECTION("SAR 1:1 falls back to source dimensions") {
+        // No SAR: display dims equal source dims, so the helper must
+        // accept every (px, py) in [0, w) x [0, h).
+        Image plain = make_sar_image(8, 4, /*sar_num=*/0, /*sar_den=*/0);
+        REQUIRE(plain.info().display_width() == 8);
+        REQUIRE(plain.info().display_height() == 4);
+        REQUIRE(hover_pixel_to_norm(&plain, 0, 0).valid);
+        REQUIRE(hover_pixel_to_norm(&plain, 7, 3).valid);
+        REQUIRE_FALSE(hover_pixel_to_norm(&plain, 8, 0).valid);
+        REQUIRE_FALSE(hover_pixel_to_norm(&plain, 0, 4).valid);
+    }
+
+    SECTION("explicit disp_w/disp_h override the image's display dims") {
+        // Mirrors the diff-heatmap path: the caller passes mat dims
+        // directly because the heatmap is already at display resolution.
+        Image plain = make_sar_image(16, 16, 0, 0);
+        HoverNorm hn = hover_pixel_to_norm(&plain, 9, 9,
+                                           /*disp_w=*/10, /*disp_h=*/10);
+        REQUIRE(hn.valid);
+        REQUIRE(hn.u == Catch::Approx(pixel_to_norm(9, 10)));
+        REQUIRE(hn.v == Catch::Approx(pixel_to_norm(9, 10)));
+        // The override is what bounds the hover, not the image dims.
+        REQUIRE_FALSE(hover_pixel_to_norm(&plain, 10, 0,
+                                          /*disp_w=*/10, /*disp_h=*/10).valid);
+    }
+
+    SECTION("null or empty image is invalid") {
+        REQUIRE_FALSE(hover_pixel_to_norm(nullptr, 0, 0).valid);
+        Image empty;
+        REQUIRE_FALSE(hover_pixel_to_norm(&empty, 0, 0).valid);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // format_delta: RGB <-> RGBA bridge.
 //
 // Real-world trigger: a user lines up an RGB24 PNG against a PAL8
