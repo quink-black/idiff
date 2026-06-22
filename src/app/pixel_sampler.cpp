@@ -294,6 +294,23 @@ int norm_to_pixel(double u, int w) {
     return px;
 }
 
+HoverNorm hover_pixel_to_norm(const Image* img,
+                              int px, int py,
+                              int disp_w, int disp_h) {
+    HoverNorm out;
+    if (!img) return out;
+    const cv::Mat& m = img->mat();
+    if (m.empty()) return out;
+    if (disp_w <= 0) disp_w = img->info().display_width();
+    if (disp_h <= 0) disp_h = img->info().display_height();
+    if (disp_w <= 0 || disp_h <= 0) return out;
+    if (px < 0 || py < 0 || px >= disp_w || py >= disp_h) return out;
+    out.u = pixel_to_norm(px, disp_w);
+    out.v = pixel_to_norm(py, disp_h);
+    out.valid = true;
+    return out;
+}
+
 bool format_pixel(const PixelSample& s, char* buf, std::size_t n) {
     if (n == 0) return false;
     if (!s.valid) {

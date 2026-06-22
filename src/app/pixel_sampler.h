@@ -75,6 +75,30 @@ double pixel_to_norm(int x, int w);
 // w <= 0 returns 0.
 int norm_to_pixel(double u, int w);
 
+// Convert a viewport hover pixel (px, py), reported in the image's
+// display (SAR-adjusted) coordinate system, into normalized (u, v)
+// suitable for sample_image_at().  Uses display_width()/display_height()
+// so the result stays valid when SAR != 1:1 -- normalizing against the
+// source mat's cols/rows instead would shrink the valid range and shift
+// the sampled pixel whenever the viewport upscaled the image for
+// aspect-correct display.
+//
+// `disp_w`/`disp_h` let the caller override the display dimensions for
+// paths that already produce display-resolution data (e.g. the diff
+// heatmap, whose mat dims equal its display dims).  Pass 0/0 to use the
+// image's own display_width()/display_height().
+//
+// Returns valid=false when img is null, has no pixel data, or (px, py)
+// falls outside [0, disp_w) x [0, disp_h).
+struct HoverNorm {
+    double u = 0.0;
+    double v = 0.0;
+    bool valid = false;
+};
+HoverNorm hover_pixel_to_norm(const Image* img,
+                              int px, int py,
+                              int disp_w = 0, int disp_h = 0);
+
 // Render a PixelSample as text suitable for the inspector table.
 // Returns true on success.  Unsupported depths produce
 // "(unsupported depth)" and return false; the buffer is always

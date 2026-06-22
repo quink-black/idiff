@@ -124,6 +124,12 @@ void render_status_bar(const StatusBarInputs& in) {
 
                 const char* src_label = nullptr;
                 const Image* src_img = nullptr;
+                // Diff heatmaps are already at display resolution, so
+                // their mat dims are the correct normalizer.  Every
+                // other mode passes 0/0 to let hover_pixel_to_norm pick
+                // the image's display_width/height.
+                int override_disp_w = 0;
+                int override_disp_h = 0;
 
                 if (vport.mode() == ComparisonMode::Difference) {
                     // Map the hovered cell back to its diff slot so
@@ -134,6 +140,10 @@ void render_status_bar(const StatusBarInputs& in) {
                         cell < static_cast<int>(diff_service.size())) {
                         const auto& slot = diff_service.slots()[cell];
                         src_img = slot.image.get();
+                        if (src_img && !src_img->mat().empty()) {
+                            override_disp_w = src_img->mat().cols;
+                            override_disp_h = src_img->mat().rows;
+                        }
                         static thread_local std::string diff_label;
                         std::string partner = "?";
                         if (slot.partner_entry_idx >= 0 &&
@@ -158,22 +168,28 @@ void render_status_bar(const StatusBarInputs& in) {
                     int ent = slot_to_entry[cell];
                     if (ent >= 0 && ent < static_cast<int>(entries.size())) {
                         const auto& e = entries[ent];
-                        // Hover px/py from the viewport are in the
-                        // source image's native coordinate system, so
-                        // read pixels from the original image rather
-                        // than display_image, which may be upscaled
-                        // with interpolated pixels.
+                        // Sample from the original image rather than
+                        // display_image, which may be upscaled with
+                        // interpolated pixels.
                         src_img = e.image.get();
                         src_label = e.display_label.c_str();
                     }
                 }
 
-                append(" | %s @ (%d, %d)", src_label ? src_label : "?", px, py);
-
-                if (src_img) {
+                HoverNorm hn = hover_pixel_to_norm(src_img, px, py,
+                                                   override_disp_w,
+                                                   override_disp_h);
+                if (hn.valid) {
                     const auto& m = src_img->mat();
-                    if (!m.empty() &&
-                        px >= 0 && px < m.cols && py >= 0 && py < m.rows) {
+                    // Show source-native coordinates so the readout
+                    // matches the pixel inspector's (x, y) column and
+                    // stays within the source frame's bounds.
+                    int sx = (!m.empty()) ? norm_to_pixel(hn.u, m.cols) : px;
+                    int sy = (!m.empty()) ? norm_to_pixel(hn.v, m.rows) : py;
+                    append(" | %s @ (%d, %d)",
+                           src_label ? src_label : "?", sx, sy);
+
+                    if (!m.empty()) {
                         // Status bar always reflects what is on screen:
                         // the post-conversion 8-bit sRGB pixel.  Force
                         // the RGB path so the inspector's YUV/RGB
@@ -181,15 +197,15 @@ void render_status_bar(const StatusBarInputs& in) {
                         // of these numbers.  format_pixel adds the
                         // "R G B:" prefix so users no longer have to
                         // guess what (a, b, c) means.
-                        double u = pixel_to_norm(px, m.cols);
-                        double v = pixel_to_norm(py, m.rows);
-                        PixelSample s = sample_image_at(src_img, u, v,
+                        PixelSample s = sample_image_at(src_img, hn.u, hn.v,
                                                         /*prefer_rgb=*/true);
                         char vbuf[96];
                         if (s.valid && format_pixel(s, vbuf, sizeof(vbuf))) {
                             append(" = %s", vbuf);
                         }
                     }
+                } else if (src_label) {
+                    append(" | %s", src_label);
                 }
             }
 
