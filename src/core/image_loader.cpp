@@ -11,9 +11,11 @@
 
 #ifdef IDIFF_HAVE_MAGICK
 #include <Magick++.h>
+#include <MagickCore/MagickCore.h>
 #endif
 
 #include "core/detail/raw_loader.h"
+#include "core/detail/srgb_icc.h"
 
 #ifdef IDIFF_HAVE_FFMPEG_IMAGE_DECODE
 #include "core/detail/ffmpeg_image_loader.h"
@@ -143,6 +145,25 @@ int pixel_format_channels(PixelFormat fmt) {
     return 3;
 }
 
+// Map a Magick++ colorspace enum to a short human-readable label for the
+// Inspector. Only the common cases are spelled out; everything else falls
+// back to a generic tag rather than the catch-all "Unknown".
+const char* magick_colorspace_label(Magick::ColorspaceType cs) {
+    switch (cs) {
+        case Magick::sRGBColorspace:        return "sRGB";
+        case Magick::RGBColorspace:         return "RGB (linear)";
+        case Magick::scRGBColorspace:       return "scRGB";
+        case Magick::GRAYColorspace:        return "Gray";
+        case Magick::CMYKColorspace:        return "CMYK";
+        case Magick::LabColorspace:         return "Lab";
+        case Magick::XYZColorspace:         return "XYZ";
+        case Magick::YCbCrColorspace:       return "YCbCr";
+        case Magick::HSLColorspace:         return "HSL";
+        case Magick::HSVColorspace:         return "HSV";
+        default:                            return "Unknown";
+    }
+}
+
 // Extract pixel data from a Magick::Image into the Image's cv::Mat and ImageInfo.
 // The Magick::Image is used only during this call and is not retained.
 void populate_image_from_magick(Magick::Image& mi, Image& image) {
@@ -150,22 +171,82 @@ void populate_image_from_magick(Magick::Image& mi, Image& image) {
 
     impl.info.width = static_cast<int>(mi.columns());
     impl.info.height = static_cast<int>(mi.rows());
-    impl.info.pixel_format = magick_type_to_pixel_format(mi);
-    impl.info.bit_depth = pixel_format_depth(impl.info.pixel_format);
     impl.info.source_bit_depth = static_cast<int>(mi.depth());
-    impl.info.has_alpha = mi.alpha();
 
+    // Report the *source* colorspace (before we convert), so the Inspector
+    // reflects what the file actually contained. Detect the ICC profile in
+    // the same step.
+    Magick::ColorspaceType source_cs = mi.colorSpace();
+    impl.info.color_space = magick_colorspace_label(source_cs);
+
+    bool has_icc = false;
     try {
         Magick::Blob icc_blob = mi.profile("icc");
         if (icc_blob.length() > 0) {
             impl.info.icc_profile_name = "Embedded ICC";
+            has_icc = true;
         }
     } catch (...) {
         // No ICC profile embedded in this image.
     }
 
-    impl.info.color_space = mi.colorSpace() == Magick::sRGBColorspace
-        ? "sRGB" : "Unknown";
+    // Normalize to sRGB before exporting pixels. Magick++ exports raw
+    // channel data through `write(..., "RGB"/"RGBA", ...)`; if the image
+    // is still in CMYK/Lab/etc., those channels are NOT what RGB means
+    // and the result looks color-inverted (CMYK K=0 -> RGB black, etc.).
+    //
+    // Two paths:
+    //   1. Embedded source ICC profile: call MagickCore::ProfileImage()
+    //      with the standard sRGB IEC 61966-2.1 destination profile.
+    //      LittleCMS (lcms2) renders from the source profile (e.g.
+    //      Japan Color 2001 Coated) to sRGB with perceptual intent,
+    //      matching what macOS Preview / Photos produce. This is the
+    //      only path that honors the source profile.
+    //   2. No ICC: fall back to TransformImageColorspace(), which uses
+    //      ImageMagick's built-in algebraic colorspace math. Worse
+    //      accuracy but still avoids channel inversion.
+    if (source_cs != Magick::sRGBColorspace) {
+        bool converted = false;
+        if (has_icc) {
+            try {
+                MagickCore::Image* core = mi.image();
+                MagickCore::ExceptionInfo* exc =
+                    MagickCore::AcquireExceptionInfo();
+                // Perceptual intent matches macOS Preview/Photos output
+                // closest for photographic content with embedded CMYK
+                // profiles.
+                core->rendering_intent = MagickCore::PerceptualIntent;
+                MagickCore::ProfileImage(core, "icc",
+                                         kSrgbIcc, kSrgbIccSize, exc);
+                bool failed = (exc->severity !=
+                               MagickCore::UndefinedException);
+                MagickCore::DestroyExceptionInfo(exc);
+                if (!failed) converted = true;
+            } catch (...) {
+                // Fall through to algebraic transform below.
+            }
+        }
+        if (!converted) {
+            try {
+                MagickCore::Image* core = mi.image();
+                MagickCore::ExceptionInfo* exc =
+                    MagickCore::AcquireExceptionInfo();
+                MagickCore::TransformImageColorspace(
+                    core, Magick::sRGBColorspace, exc);
+                MagickCore::DestroyExceptionInfo(exc);
+            } catch (...) {
+                // If the transform fails we still proceed; the pixels
+                // will be wrong but the load itself shouldn't abort.
+            }
+        }
+    }
+
+    // Re-derive pixel format AFTER the colorspace transform: a CMYK image
+    // typically has Magick::ColorSeparationType and 4 channels before the
+    // call, and TrueColorType with 3 channels after.
+    impl.info.pixel_format = magick_type_to_pixel_format(mi);
+    impl.info.bit_depth = pixel_format_depth(impl.info.pixel_format);
+    impl.info.has_alpha = mi.alpha();
 
     int channels = pixel_format_channels(impl.info.pixel_format);
     int cv_type = impl.info.bit_depth > 8
@@ -487,7 +568,12 @@ std::unique_ptr<Image> ImageLoader::load_via_magick(const std::string& path) {
         }
         Magick::Image magick_img(blob);
 
-        if (!has_flag(flags_, LoadFlag::KeepAlpha)) {
+        // Setting TrueColorType on a CMYK/Lab/etc. image coerces it to
+        // sRGB and discards the source profile path. Only flatten the
+        // type when the image is already in an RGB colorspace; the
+        // non-RGB path is handled (with ICC) inside populate_image_from_magick.
+        if (!has_flag(flags_, LoadFlag::KeepAlpha) &&
+            magick_img.colorSpace() == Magick::sRGBColorspace) {
             magick_img.type(Magick::TrueColorType);
         }
 
@@ -509,7 +595,8 @@ ImageLoader::load_via_magick_memory(const uint8_t* data, size_t size,
         Magick::Blob blob(data, size);
         Magick::Image magick_img(blob);
 
-        if (!has_flag(flags_, LoadFlag::KeepAlpha)) {
+        if (!has_flag(flags_, LoadFlag::KeepAlpha) &&
+            magick_img.colorSpace() == Magick::sRGBColorspace) {
             magick_img.type(Magick::TrueColorType);
         }
 

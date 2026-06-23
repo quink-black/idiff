@@ -281,3 +281,76 @@ TEST_CASE("ImageLoader: opens a multi-tile HEIF grid as a single full image",
 }
 
 #endif  // IDIFF_HAVE_FFMPEG_IMAGE_DECODE
+
+// -----------------------------------------------------------------------------
+// CMYK color-space conversion (ImageMagick backend)
+// -----------------------------------------------------------------------------
+//
+// CMYK JPEGs must be converted to sRGB before pixel export. Without the
+// transform, Magick++'s write(..., "RGB", ...) maps C/M/Y channels onto
+// R/G/B verbatim and drops K, producing color-inverted output (white ->
+// black, blue -> orange). This test generates a CMYK JPEG at runtime
+// using Magick++ and verifies the loader returns sRGB pixels that are
+// NOT inverted.
+
+#if defined(IDIFF_HAVE_MAGICK)
+
+#include <Magick++.h>
+#include <MagickCore/MagickCore.h>
+
+namespace {
+
+// Write a 32x32 CMYK JPEG whose pixels are pure CMYK white (C=M=Y=K=0).
+// Uses the MagickCore transform (Magick++'s colorSpaceType() only
+// updates metadata) so the written file truly carries CMYK channel
+// data; identify -verbose reports colorspace=CMYK on the result.
+void write_white_cmyk_jpeg(const std::string& path) {
+    Magick::Image mi(Magick::Geometry(32, 32), Magick::Color("white"));
+    MagickCore::Image* core = mi.image();
+    MagickCore::ExceptionInfo* exc = MagickCore::AcquireExceptionInfo();
+    MagickCore::TransformImageColorspace(core, Magick::CMYKColorspace, exc);
+    MagickCore::DestroyExceptionInfo(exc);
+    mi.magick("JPEG");
+    mi.write(path);
+}
+
+}  // namespace
+
+TEST_CASE("ImageLoader: CMYK JPEG is converted to sRGB, not inverted",
+          "[image_loader][cmyk][magick]") {
+    // Build a 32x32 CMYK JPEG where every pixel is pure white in CMYK
+    // terms: C=0, M=0, Y=0, K=0. After a correct CMYK->sRGB transform
+    // the sRGB pixel is also white (255, 255, 255). Without the
+    // transform, the loader would export C/M/Y = 0/0/0 as RGB black.
+    auto dir = make_non_ascii_tmp_dir("cmyk");
+    auto file = dir / std::filesystem::u8path("white_cmyk.jpg");
+
+    write_white_cmyk_jpeg(file.string());
+    REQUIRE(std::filesystem::exists(file));
+
+    ImageLoader loader;
+    loader.set_preferred_backend(LoaderBackend::ImageMagick);
+    auto img = loader.load(file.u8string());
+    REQUIRE(img != nullptr);
+    REQUIRE(loader.last_used_backend() == LoaderBackend::ImageMagick);
+
+    const auto& info = img->info();
+    // Source colorspace must be reported as CMYK; the loader converts
+    // to sRGB for display but the Inspector should still reflect the
+    // file's actual colorspace.
+    REQUIRE(info.color_space == "CMYK");
+    REQUIRE(img->mat().channels() == 3);
+
+    // Sample a center pixel. With the bug present, this would be
+    // near-black (0, 0, 0); with the fix it must be near-white.
+    const cv::Mat& m = img->mat();
+    cv::Vec3b px = m.at<cv::Vec3b>(m.rows / 2, m.cols / 2);
+    INFO("RGB pixel: " << (int)px[0] << " " << (int)px[1] << " " << (int)px[2]);
+    REQUIRE((int)px[0] >= 200);
+    REQUIRE((int)px[1] >= 200);
+    REQUIRE((int)px[2] >= 200);
+
+    std::filesystem::remove_all(dir);
+}
+
+#endif  // IDIFF_HAVE_MAGICK
