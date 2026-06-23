@@ -2,6 +2,117 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-06-23
+
+### Added
+
+- **Idle loop policy**: The main loop sleeps instead of busy-rendering
+  when the viewport has nothing to redraw, reducing CPU footprint on
+  idle desktops. The wake-up rules are extracted into a named policy
+  and pinned with tests so future regressions are caught.
+- **Embedded sRGB IEC 61966-2.1 profile**: The standard sRGB profile
+  is shipped as a generated C++ header (`src/core/detail/srgb_icc.h`)
+  so the ImageMagick loader can do ICC-based CMYK -> sRGB rendering on
+  any platform without a runtime profile lookup.
+
+### Fixed
+
+- **CMYK JPEG displayed with inverted colors**: The ImageMagick loader
+  exported raw CMYK channel data through `write(..., "RGB", ...)`,
+  which reinterpreted C/M/Y as R/G/B and dropped K, producing
+  color-inverted output (white -> black, blue -> orange). A second
+  bug compounded this: setting `TrueColorType` on a CMYK image
+  silently coerced it to sRGB and discarded the embedded source
+  profile before the loader could honor it. Skip the `TrueColorType`
+  coercion for non-sRGB sources, then call `MagickCore::ProfileImage()`
+  with the embedded sRGB destination profile so LittleCMS renders from
+  the source profile (e.g. Japan Color 2001 Coated) to sRGB with
+  perceptual intent. Fall back to `TransformImageColorspace()` when no
+  ICC profile is present. A regression test generates a CMYK JPEG at
+  runtime and verifies near-white sRGB output instead of the inverted
+  near-black.
+- **Pixel inspector dropped samples on anamorphic video**: Viewport
+  hover coordinates are reported in the SAR-adjusted display space,
+  but the pixel inspector and status bar normalized them against the
+  source mat's columns and rows. A 720x576 PAL frame with SAR 64:45
+  (display 1024x576) reported its bottom-right hover as (1023, 575),
+  failed the `px < 720` bounds check, and dropped the sample. The
+  conversion is now normalized against display dimensions and
+  extracted into a single tested `hover_pixel_to_norm()` helper.
+
+## [0.3.1] - 2026-06-18
+
+### Added
+
+- **RPC coverage for viewport, timeline, and config**: Exposed ten
+  new methods that map onto existing `AppController` and `Viewport`
+  operations (`view.set_zoom_pan`, `view.set_channel`,
+  `selection.select_range`, `comparison_config.load`,
+  `comparison_config.switch_group`, `timeline.set_frame`,
+  `timeline.set_frame_offset`, `library.reload_all`,
+  `library.set_loader_backend`). `state.get` now also reports zoom,
+  pan, channel view, and timeline frame/length so a client can read
+  back what it set.
+- **Single-comparison selection enforcement over RPC**: Group-by-Name
+  invariant (the selection lives in a single comparison) is now
+  honoured by `set_comparison_reference`; cross-comparison calls
+  narrow the selection to the new comparison's members first.
+- **Integration tests for group-by-name RPC methods**.
+
+### Fixed
+
+- **Wrong colors when loading HDR/wide-gamut HEIF images**: The
+  FFmpeg still-image HEIF/AVIF loader converted decoded YUV to RGB
+  with a bare `sws_getContext()` that received only pixel format and
+  dimensions. With no range, matrix, primaries, or transfer
+  information, swscale fell back to BT.601 defaults and ignored the
+  source transfer function, so a 10-bit BT.2020 HEIC decoded with
+  the wrong matrix and no gamut handling. Route the still-image path
+  through the same `VideoFilterGraph` the video decoder uses: read
+  the source color tags from the decoded frame, resolve UNSPECIFIED
+  values with FFmpeg's SD/HD/UHD fallbacks, and convert to display
+  sRGB. Single-tile and multi-tile HEIF now share one color path.
+
+## [0.3.0] - 2026-06-12
+
+### Added
+
+- **JSON-RPC 2.0 server**: idiff exposes a JSON-RPC 2.0 server on a
+  per-instance Unix Domain Socket (`/tmp/idiff-<pid>.sock` on POSIX,
+  `\\.\pipe\idiff-<pid>` named pipe on Windows) so external clients
+  can drive the same `App` state the GUI does. The wire format is a
+  4-byte big-endian length prefix plus UTF-8 JSON; a per-frame size
+  cap and single-state multi-channel invariants are enforced. See
+  `docs/rpc-design.md` for the paradigm, threading model, and
+  Phase 2 (Windows) handoff notes.
+- **Phase 1 RPC method handlers**: Seven methods covering library
+  CRUD, flat selection, view mode, and state inspection.
+- **MCP server shim**: `tools/idiff-mcp/` bridges idiff to AI agents
+  via the Model Context Protocol, auto-detecting the platform
+  transport. Bundled into macOS and Windows release archives so a
+  downloaded build is enough to wire idiff into an MCP-capable agent.
+- **Per-instance identity and stale-socket sweep**: Each idiff window
+  advertises a stable `(pid, socket, label)` tuple; stale sockets
+  left by crashed processes are reclaimed on startup.
+- **Per-comparison reference**: The reference index moved from a
+  single global slot to a per-comparison map keyed by
+  `file:<stem>` or `config:<name>`. External clients can now record
+  rules like "in this comparison, image B is the reference" via
+  `library.set_comparison_reference`. The map is consulted on every
+  comparison activation; entries whose paths disappear fall through
+  to the implicit smallest-index rule.
+
+### Changed
+
+- **Group-by-name terminology**: Renamed the horizontal axis from
+  "group" to "comparison" throughout the RPC/MCP surface
+  (`library.list_groups` -> `library.list_comparisons`,
+  `library.set_group_reference` -> `library.set_comparison_reference`,
+  `state.get group_references` -> `comparison_references`, etc.).
+  The word "group" was overloaded with the vertical axis (directory
+  role); the new term makes the seam AI agents actually see
+  unambiguous. No behavioural change.
+
 ## [0.2.2] - 2026-06-04
 
 ### Added
