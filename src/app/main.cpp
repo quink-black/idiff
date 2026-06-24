@@ -228,10 +228,19 @@ int main(int argc, char** argv) {
     }
 
     auto startup_paths = collect_startup_paths(argc, argv);
-    if (!startup_paths.empty()) {
-        // Route through load_paths() so launching with a JSON
-        // argument (e.g. `idiff config.json`) is equivalent to the
-        // menu's "Open Comparison Config..." entry.
+    if (startup_paths.empty()) {
+        // No argv paths: fall back to a saved session left by a
+        // previous Restart, if any.  consume_session_paths() clears
+        // and persists the settings so the session never re-fires on
+        // a later normal launch.
+        auto session = app.consume_session_paths();
+        if (!session.empty()) {
+            app.load_paths(session);
+        }
+    } else {
+        // argv paths win; discard any saved session so it does not
+        // fire on the next normal launch.
+        (void)app.consume_session_paths();
         app.load_paths(startup_paths);
     }
 

@@ -130,6 +130,12 @@ public:
     const std::vector<ImageEntry>& entries() const noexcept;
     const std::set<int>& selected() const noexcept;
 
+    // Return and clear any saved session_paths from settings, persisting
+    // the cleared state.  Called by main() at startup so a stale
+    // session never re-fires on a later normal launch.  Returns empty
+    // when no session was saved.
+    std::vector<std::string> consume_session_paths();
+
 private:
     void setup_dock_layout();
     void render_toolbar();
