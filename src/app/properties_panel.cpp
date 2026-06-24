@@ -13,26 +13,24 @@ namespace idiff {
 PropertiesPanel::PropertiesPanel() = default;
 PropertiesPanel::~PropertiesPanel() = default;
 
-void PropertiesPanel::render(const Image* image_a, const Image* image_b,
-                             const Image* display_a, const Image* display_b,
-                             const char* name_a, const char* name_b) {
+void PropertiesPanel::render(const std::vector<PropertiesEntry>& entries) {
     ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Properties")) {
         ImGui::End();
         return;
     }
-    render_inline(image_a, image_b, display_a, display_b, name_a, name_b);
+    render_inline(entries);
     ImGui::End();
 }
 
-void PropertiesPanel::render_inline(const Image* image_a, const Image* image_b,
-                                     const Image* display_a, const Image* display_b,
-                                     const char* name_a, const char* name_b) {
-    render_image_props("A", name_a, image_a, display_a);
-    if (image_a && image_b) {
-        ImGui::Separator();
+void PropertiesPanel::render_inline(const std::vector<PropertiesEntry>& entries) {
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const auto& e = entries[i];
+        render_image_props(e.slot_label, e.name, e.image, e.display_image);
+        if (i + 1 < entries.size() && e.image) {
+            ImGui::Separator();
+        }
     }
-    render_image_props("B", name_b, image_b, display_b);
 }
 
 void PropertiesPanel::render_image_props(const char* slot_label, const char* name,
