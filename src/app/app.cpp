@@ -263,6 +263,13 @@ const std::set<int>& App::selected() const noexcept {
     return selection_->indices();
 }
 
+std::vector<std::string> App::consume_session_paths() {
+    auto paths = std::move(state_->settings.session_paths);
+    state_->settings.session_paths.clear();
+    state_->settings.save();
+    return paths;
+}
+
 std::vector<ImageEntry>& App::entries_view() noexcept {
     return library_->all();
 }

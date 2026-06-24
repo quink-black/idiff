@@ -2,6 +2,7 @@
 #define IDIFF_APP_SETTINGS_H
 
 #include <string>
+#include <vector>
 
 #include "core/media_source.h"
 
@@ -74,6 +75,11 @@ struct AppSettings {
 
     // Image loader backend: 0 = ImageMagick, 1 = OpenCV, 2 = FFmpeg.
     int loader_backend = 0;
+
+    // Media paths to reload on next launch.  Populated by the Restart
+    // menu item, consumed and cleared by main() at startup.  Empty for
+    // a normal launch.
+    std::vector<std::string> session_paths;
 
     // Returns the platform-appropriate path to the settings file.
     // Resolves to:
