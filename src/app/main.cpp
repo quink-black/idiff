@@ -15,14 +15,18 @@
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace {
@@ -308,6 +312,54 @@ int main(int argc, char** argv) {
     SDL_DestroyWindow(window);
     SDL_Quit();
     LOG_INFO("idiff exiting cleanly");
+
+    if (app.wants_restart()) {
+        // Re-exec the binary so a freshly-rebuilt idiff picks up the
+        // session_paths saved by request_restart().  Resolve the exe
+        // and log the intent before tearing down the sink -- exec
+        // success replaces the process image, so anything after execl
+        // only runs on failure.
+        auto exe = idiff::platform::get_executable_path();
+        if (exe.empty()) {
+            LOG_ERROR("restart: could not resolve executable path");
+        } else {
+            LOG_INFO("restart: re-execing %s", exe.string().c_str());
+            idiff::log::sink().flush();
+#if defined(_WIN32)
+            // No exec() on Windows: spawn a new process and exit.
+            std::wstring w = exe.wstring();
+            STARTUPINFOW si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(w.c_str(), nullptr, nullptr, nullptr,
+                               FALSE, 0, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                idiff::log::set_sink(nullptr);
+                return 0;
+            }
+            LOG_ERROR("restart: CreateProcessW failed (err=%lu)",
+                      GetLastError());
+#else
+            // Drop the sink before execl so the file sink's worker
+            // thread is joined cleanly; exec success replaces the
+            // process image, and on failure we re-install a sink to
+            // log the error.
+            idiff::log::set_sink(nullptr);
+            execl(exe.c_str(), exe.c_str(), static_cast<char*>(nullptr));
+            // execl returned -- it failed.  Re-install the console
+            // sink so the error is visible.
+            std::vector<std::unique_ptr<idiff::log::ILogSink>> sinks;
+            sinks.emplace_back(
+                std::make_unique<idiff::log::ConsoleSink>(
+                    idiff::log::Level::Info));
+            idiff::log::set_sink(
+                std::make_unique<idiff::log::MultiSink>(std::move(sinks)));
+            LOG_ERROR("restart: execl failed: %s", std::strerror(errno));
+#endif
+        }
+    }
+
     idiff::log::sink().flush();
     // Drop the active sink before main returns so the file sink's
     // worker thread joins while the runtime is still healthy.

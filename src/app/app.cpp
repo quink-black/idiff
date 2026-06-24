@@ -1413,6 +1413,7 @@ void App::render_toolbar() {
     in.on_save_viewport = [this]() { save_viewport_dialog(); };
     in.on_request_quit = [this]() { request_quit(); };
     in.on_reload_all_images = [this]() { reload_all_images(); };
+    in.on_restart = [this]() { request_restart(); };
     in.on_view_invalidated = [this]() {
         // Sync the cached channel-view mode so render_viewport's detection
         // does not fire a redundant dirty pass on the next frame.
@@ -1668,6 +1669,28 @@ void App::request_quit() {
 
 bool App::wants_quit() const {
     return state_->quit_confirm_dialog.confirmed;
+}
+
+void App::request_restart() {
+    if (has_running_sr_tasks()) {
+        state_->status_text =
+            "Cannot restart while SR tasks are running.";
+        return;
+    }
+    // Snapshot current media paths so the next process restores them.
+    // A comparison-config JSON path is just another path here --
+    // load_paths() routes by extension on the next launch.
+    state_->settings.session_paths.clear();
+    for (const auto& e : entries()) {
+        state_->settings.session_paths.push_back(e.path);
+    }
+    state_->settings.save();
+    restart_requested_ = true;
+    request_quit();  // exit the event loop cleanly
+}
+
+bool App::wants_restart() const noexcept {
+    return restart_requested_;
 }
 
 void App::render_quit_confirm_dialog() {

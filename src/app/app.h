@@ -117,6 +117,14 @@ public:
     // were running, or the user confirmed the quit dialog).
     bool wants_quit() const;
 
+    // Snapshot the current media paths into settings, then signal the
+    // event loop to exit so main() can re-exec the binary.  Refused
+    // with a status message while SR tasks are running.
+    void request_restart();
+    // True after request_restart() has armed a restart.  main() checks
+    // this after the event loop exits.
+    bool wants_restart() const noexcept;
+
     // Dispatch entry for any "user asked to open these files" flow
     // (menu, drag & drop, side-bar button, command-line args, ...).
     // Paths with a `.json` extension are routed to the comparison-
@@ -316,6 +324,9 @@ private:
     // (as opposed to right-click).  Determines which mouse-up event ends
     // the selection.
     bool sel_drag_is_ctrl_ = false;
+    // Set by request_restart() so main() knows to re-exec the binary
+    // after the event loop exits and shutdown completes.
+    bool restart_requested_ = false;
 
     // Maps each slot index passed to Viewport::render (in order) back to
     // the corresponding entries_ index.  Populated by render_viewport() and
