@@ -8,17 +8,24 @@ namespace idiff {
 class Image;
 class Viewport;
 
+// One row of the Properties panel.  `slot_label` is the short tag
+// ("A", "B", "C", ...) shown next to the entry name; the host decides
+// how to assign labels so the Properties view stays in lockstep with
+// the Pixel / Metrics / Statistics tabs.
+struct PropertiesEntry {
+    const char* slot_label;
+    const char* name;
+    const Image* image;
+    const Image* display_image;
+};
+
 class PropertiesPanel {
 public:
     PropertiesPanel();
     ~PropertiesPanel();
 
-    void render(const Image* image_a, const Image* image_b,
-                const Image* display_a = nullptr, const Image* display_b = nullptr,
-                const char* name_a = nullptr, const char* name_b = nullptr);
-    void render_inline(const Image* image_a, const Image* image_b,
-                       const Image* display_a = nullptr, const Image* display_b = nullptr,
-                       const char* name_a = nullptr, const char* name_b = nullptr);
+    void render(const std::vector<PropertiesEntry>& entries);
+    void render_inline(const std::vector<PropertiesEntry>& entries);
 
     // Render the "Measurements" list for the given viewport.  Each row
     // describes one saved rectangle using the source image's native

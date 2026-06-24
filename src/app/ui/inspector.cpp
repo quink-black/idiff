@@ -29,37 +29,25 @@ void render_right_sidebar(const InspectorInputs& in) {
     }
 
     // Resolve the reference index via the shared helper so the
-    // inspector matches the viewport / image list labeling.  The first
-    // partner (the smallest selected index that is not the reference)
-    // feeds the side-by-side Properties / Metrics views below.
+    // inspector matches the viewport / image list labeling.  The
+    // first partner (the smallest selected index that is not the
+    // reference) feeds the side-by-side Properties / Metrics views
+    // below.
     int ref_idx = -1;
     if (in.get_ref_index) in.get_ref_index(ref_idx);
-    int partner_idx = -1;
-    for (int s : selection.indices()) {
-        if (s == ref_idx) continue;
-        partner_idx = s;
-        break;
-    }
 
     auto get_entry = [&](int idx) -> const ImageEntry* {
         if (idx < 0 || idx >= static_cast<int>(entries.size())) return nullptr;
         return &entries[idx];
     };
     const ImageEntry* entry_ref = get_entry(ref_idx);
-    const ImageEntry* entry_partner = get_entry(partner_idx);
 
-    const Image* img_ref = entry_ref ? entry_ref->image.get() : nullptr;
-    const Image* img_partner = entry_partner ? entry_partner->image.get() : nullptr;
+    // disp_ref feeds the Metrics tab, which compares every partner
+    // against the reference's display (upscaled) image.
     const Image* disp_ref = entry_ref
         ? (entry_ref->display_image ? entry_ref->display_image.get()
                                     : entry_ref->image.get())
         : nullptr;
-    const Image* disp_partner = entry_partner
-        ? (entry_partner->display_image ? entry_partner->display_image.get()
-                                        : entry_partner->image.get())
-        : nullptr;
-    const char* name_ref = entry_ref ? entry_ref->display_label.c_str() : nullptr;
-    const char* name_partner = entry_partner ? entry_partner->display_label.c_str() : nullptr;
 
     // Sub-panel selection.  We keep a local mirror of *in.current_panel
     // when the host did not supply persistent storage so the user can
@@ -86,9 +74,36 @@ void render_right_sidebar(const InspectorInputs& in) {
     switch (*current_panel) {
         case 0: { // Properties
             if (in.properties_panel) {
-                in.properties_panel->render_inline(img_ref, img_partner,
-                                                   disp_ref, disp_partner,
-                                                   name_ref, name_partner);
+                // Build the (label, image) list in viewport order:
+                // reference first (labeled "A"), then any other
+                // selected entries labeled "B", "C", ... so the
+                // Properties view shows every comparison image, not
+                // just A and the first partner.  This matches what
+                // the viewport draws and what the Pixel / Statistics
+                // tabs already do.
+                std::vector<PropertiesEntry> props;
+                auto add_entry = [&](int idx, const char* slot_label) {
+                    if (idx < 0 ||
+                        idx >= static_cast<int>(entries.size())) return;
+                    const auto& e = entries[idx];
+                    const Image* native = e.image.get();
+                    const Image* disp = e.display_image
+                                            ? e.display_image.get()
+                                            : e.image.get();
+                    props.push_back({slot_label, e.display_label.c_str(),
+                                     native, disp});
+                };
+                add_entry(ref_idx, "A");
+                char slot_label[2] = {'B', '\0'};
+                for (int s : selection.indices()) {
+                    if (s == ref_idx) continue;
+                    add_entry(s, slot_label);
+                    // Advance "B" -> "C" -> ... ; clamp at "Z" so we
+                    // never overflow the 2-byte buffer.  Selections
+                    // beyond 25 partners just reuse "Z".
+                    if (slot_label[0] < 'Z') ++slot_label[0];
+                }
+                in.properties_panel->render_inline(props);
             } else {
                 ImGui::TextDisabled("Properties panel unavailable.");
             }
