@@ -29,6 +29,9 @@ void render_toolbar(const ToolbarInputs& in) {
                              in.any_entries_loaded)) {
             if (in.on_reload_all_images) in.on_reload_all_images();
         }
+        if (ImGui::MenuItem("Restart (Reload Media)")) {
+            if (in.on_restart) in.on_restart();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Alt+F4")) {
             if (in.on_request_quit) in.on_request_quit();

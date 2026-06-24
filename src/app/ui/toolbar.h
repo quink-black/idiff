@@ -39,6 +39,9 @@ struct ToolbarInputs {
     std::function<void()> on_save_viewport;
     std::function<void()> on_request_quit;
     std::function<void()> on_reload_all_images;
+    // Snapshot the current media list and re-exec the binary so a
+    // freshly-rebuilt idiff picks up where this process left off.
+    std::function<void()> on_restart;
 
     // Invoked after the user changed channel view or background so
     // the host can mark the affected textures dirty.  May be empty.
