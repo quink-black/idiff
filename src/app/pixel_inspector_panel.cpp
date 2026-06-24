@@ -276,7 +276,7 @@ void PixelInspectorPanel::render(const PixelInspectorInputs& inputs) {
 
     if (samples.empty()) {
         ImGui::Spacing();
-        ImGui::TextDisabled("No images loaded.");
+        ImGui::TextDisabled("No media loaded.");
         return;
     }
 

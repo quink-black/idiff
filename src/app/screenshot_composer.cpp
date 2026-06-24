@@ -84,7 +84,7 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
     if (slot_mats.empty() &&
         !(in.mode == ComparisonMode::Difference
           && in.diff && !in.diff->empty())) {
-        set_error(error_message, "nothing to save (no images selected)");
+        set_error(error_message, "nothing to save (no media selected)");
         return {};
     }
 
@@ -93,7 +93,7 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
     if (in.mode == ComparisonMode::Difference) {
         if (!in.diff || in.diff->empty()) {
             set_error(error_message,
-                      "no diff map available (select at least 2 images)");
+                      "no diff map available (select at least 2 media)");
             return {};
         }
 

@@ -1062,7 +1062,7 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         } else {
             dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 60,
                                vp_origin_.y + vp_size_.y * 0.5f),
-                        IM_COL32(255, 255, 255, 80), "Select images for overlay");
+                        IM_COL32(255, 255, 255, 80), "Select media for overlay");
         }
         return;
     }
@@ -1204,7 +1204,7 @@ void Viewport::render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
         dl->AddText(ImVec2(vp_origin_.x + vp_size_.x * 0.5f - 140,
                            vp_origin_.y + vp_size_.y * 0.5f + 10),
                     IM_COL32(255, 255, 255, 80),
-                    "Select at least 2 images to compute diff against A");
+                    "Select at least 2 media to compute diff against A");
         return;
     }
 

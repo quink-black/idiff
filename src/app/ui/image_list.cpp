@@ -27,12 +27,12 @@ void render_image_list(const ImageListInputs& in) {
     bool was_visible = in.show_image_list ? *in.show_image_list : true;
 
     ImGui::SetNextWindowSize(ImVec2(220, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Images", in.show_image_list)) {
+    if (!ImGui::Begin("Media List", in.show_image_list)) {
         ImGui::End();
         return;
     }
 
-    if (ImGui::Button("+ Add Images", ImVec2(-1, 0))) {
+    if (ImGui::Button("+ Add Media", ImVec2(-1, 0))) {
         if (in.on_open_files) in.on_open_files();
     }
 
@@ -368,7 +368,7 @@ void render_image_list(const ImageListInputs& in) {
                 }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     ImGui::SetTooltip(
-                        "Move this image to the top of the list and use\n"
+                        "Move this media to the top of the list and use\n"
                         "it as the reference for overlay / diff.");
                 }
                 if (!entries.empty() && selection.size() < entries.size()) {
@@ -420,7 +420,7 @@ void render_image_list(const ImageListInputs& in) {
     ImGui::EndChild();
 
     if (entries.empty()) {
-        ImGui::TextDisabled("No images loaded.");
+        ImGui::TextDisabled("No media loaded.");
         ImGui::TextDisabled("Ctrl+O or click '+' to add.");
     }
 

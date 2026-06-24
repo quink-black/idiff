@@ -16,7 +16,7 @@ MetricsPanel::~MetricsPanel() = default;
 
 void MetricsPanel::render_inline(const Image* image_a, const Image* image_b) {
     if (!image_a || !image_b) {
-        ImGui::TextDisabled("Load both images to compute metrics");
+        ImGui::TextDisabled("Load both media to compute metrics");
         return;
     }
 
@@ -61,7 +61,7 @@ void MetricsPanel::render_pair_metrics(
         const Image* image_a,
         const std::vector<std::pair<std::string, const Image*>>& partners) {
     if (!image_a) {
-        ImGui::TextDisabled("Select at least one image (A) to compute metrics");
+        ImGui::TextDisabled("Select at least one media (A) to compute metrics");
         return;
     }
 
@@ -91,7 +91,7 @@ void MetricsPanel::render_pair_metrics(
     }
 
     if (partners.empty()) {
-        ImGui::TextDisabled("Select a second image to compute A vs B/C/D...");
+        ImGui::TextDisabled("Select a second media to compute A vs B/C/D...");
         return;
     }
 
@@ -146,7 +146,7 @@ void MetricsPanel::render_pair_metrics(
 void MetricsPanel::render_statistics(
         const std::vector<std::pair<std::string, const Image*>>& images) {
     if (images.empty()) {
-        ImGui::TextDisabled("No images selected");
+        ImGui::TextDisabled("No media selected");
         return;
     }
 
