@@ -13,7 +13,7 @@ void render_toolbar(const ToolbarInputs& in) {
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open Images...", "Ctrl+O")) {
+        if (ImGui::MenuItem("Open Media...", "Ctrl+O")) {
             if (in.on_open_files) in.on_open_files();
         }
         if (ImGui::MenuItem("Open Comparison Config...")) {
@@ -37,7 +37,7 @@ void render_toolbar(const ToolbarInputs& in) {
     }
 
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("Image List", nullptr, in.show_image_list);
+        ImGui::MenuItem("Media List", nullptr, in.show_image_list);
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             if (in.on_settings_changed) in.on_settings_changed();
         }

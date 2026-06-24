@@ -784,7 +784,7 @@ void App::setup_dock_layout() {
     ImGuiID dock_center, dock_right;
     ImGui::DockBuilderSplitNode(dock_center_right, ImGuiDir_Right, 0.25f, &dock_right, &dock_center);
 
-    ImGui::DockBuilderDockWindow("Images", dock_left);
+    ImGui::DockBuilderDockWindow("Media List", dock_left);
     ImGui::DockBuilderDockWindow("Viewport", dock_center);
     ImGui::DockBuilderDockWindow("Inspector", dock_right);
 
