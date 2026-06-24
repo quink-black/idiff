@@ -25,6 +25,15 @@ std::string get_resource_path() {
     return "";
 }
 
+std::filesystem::path get_executable_path() {
+    uint32_t buf_size = 0;
+    _NSGetExecutablePath(nullptr, &buf_size);
+    if (buf_size == 0) return {};
+    std::vector<char> buf(buf_size);
+    if (_NSGetExecutablePath(buf.data(), &buf_size) != 0) return {};
+    return std::filesystem::path(buf.data());
+}
+
 std::filesystem::path seedvr2_detect_upscaler() {
     const char* env_path = std::getenv("SEEDVR2_UPSCALER_PATH");
     if (env_path && env_path[0]) {
@@ -34,14 +43,7 @@ std::filesystem::path seedvr2_detect_upscaler() {
         }
     }
 
-    std::filesystem::path exe_dir;
-    uint32_t buf_size = 0;
-    _NSGetExecutablePath(nullptr, &buf_size);
-    std::vector<char> exe_buf(buf_size);
-    if (_NSGetExecutablePath(exe_buf.data(), &buf_size) == 0) {
-        exe_dir = std::filesystem::path(exe_buf.data()).parent_path();
-    }
-
+    auto exe_dir = get_executable_path().parent_path();
     if (!exe_dir.empty()) {
         auto candidate = exe_dir / "seedvr2-upscaler";
         if (std::filesystem::is_directory(candidate)) {

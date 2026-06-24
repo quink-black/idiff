@@ -78,14 +78,7 @@ void set_window_icon(SDL_Window* window) {
     if (!rp.empty()) candidates.push_back(rp + "/idiff.png");
 
     // Locate the directory that holds the running executable.
-    std::filesystem::path exe_dir;
-#if defined(__linux__)
-    exe_dir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
-#elif defined(_WIN32)
-    wchar_t buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) exe_dir = std::filesystem::path(buf).parent_path();
-#endif
+    auto exe_dir = idiff::platform::get_executable_path().parent_path();
     if (!exe_dir.empty()) candidates.push_back((exe_dir / "idiff.png").string());
 
     cv::Mat mat;

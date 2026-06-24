@@ -22,6 +22,13 @@ std::string get_resource_path() {
     return "";
 }
 
+std::filesystem::path get_executable_path() {
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) return std::filesystem::path(buf);
+    return {};
+}
+
 std::filesystem::path seedvr2_detect_upscaler() {
     // 1. Check environment variable first
     const char* env_path = std::getenv("SEEDVR2_UPSCALER_PATH");
@@ -33,15 +40,7 @@ std::filesystem::path seedvr2_detect_upscaler() {
     }
 
     // 2. Check relative to executable directory
-    std::filesystem::path exe_dir;
-#ifdef _WIN32
-    wchar_t exe_buf[MAX_PATH];
-    DWORD len = GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-        exe_dir = std::filesystem::path(exe_buf).parent_path();
-    }
-#endif
-
+    auto exe_dir = get_executable_path().parent_path();
     if (!exe_dir.empty()) {
         auto candidate = exe_dir / "seedvr2-upscaler";
         if (std::filesystem::is_directory(candidate)) {
