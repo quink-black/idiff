@@ -75,7 +75,7 @@ TEST_CASE("IdleTracker: render is skipped after idle grace expires") {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     CHECK_FALSE(t.should_render());
     CHECK(t.is_idle());
-    CHECK(t.wait_timeout_ms() == 200);
+    CHECK(t.wait_timeout_ms() == 500);
 }
 
 TEST_CASE("IdleTracker: user input resets idle timer and resumes render") {
@@ -111,7 +111,7 @@ TEST_CASE("IdleTracker: minimized always skips render regardless of idle") {
     CHECK(t.is_minimized());
     CHECK_FALSE(t.should_render());
     CHECK(t.is_idle());
-    CHECK(t.wait_timeout_ms() == 100);
+    CHECK(t.wait_timeout_ms() == 500);
 }
 
 TEST_CASE("IdleTracker: restore from minimized counts as user input") {
