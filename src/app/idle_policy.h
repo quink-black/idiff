@@ -44,7 +44,7 @@ bool apply_window_event(bool minimized, std::uint32_t sdl_window_event);
 // Three states:
 //   Active    -- recent interaction, render every frame (16 ms timeout).
 //   Idle      -- no interaction for kIdleGrace, skip render, long timeout.
-//   Minimized -- window hidden, skip render, longest timeout.
+//   Minimized -- window hidden, skip render, deep-sleep timeout.
 //
 // Thread safety: all methods are intended to be called from the main
 // thread only (matching the SDL / App threading model).

@@ -7,9 +7,10 @@ namespace idiff {
 namespace {
 // Visible window: cap the loop at ~60 fps without busy-spinning.
 constexpr int kActiveTimeoutMs = 16;
-// Hidden window: wake only a few times a second to keep RPC and
-// background polls responsive while the CPU stays near idle.
-constexpr int kMinimizedTimeoutMs = 100;
+// Hidden window: wake ~2 Hz to poll file watcher and SR tasks;
+// all "needs immediate response" paths (user input, MCP, window
+// restore) have their own wake-up so this is purely a fallback.
+constexpr int kMinimizedTimeoutMs = 500;
 } // namespace
 
 int loop_wait_timeout_ms(bool minimized) {
@@ -84,10 +85,11 @@ int IdleTracker::wait_timeout_ms() const {
     auto elapsed = now - last_activity;
 
     if (elapsed >= idle_grace_) {
-        // Idle visible window: use a longer timeout so the thread
-        // sleeps deeper, but still wake frequently enough to keep
-        // RPC responsive (~5 Hz).
-        return 200;
+        // Idle visible window: same deep-sleep timeout as minimized.
+        // File-watcher and SR-task polls run at ~2 Hz which is
+        // adequate; user input, MCP requests, and window restores
+        // all have immediate wake-up paths of their own.
+        return kMinimizedTimeoutMs;
     }
 
     return kActiveTimeoutMs;
