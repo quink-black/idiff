@@ -4,6 +4,7 @@
 #include "app/measurement.h"
 #include "core/channel_view.h"
 
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -103,6 +104,13 @@ public:
     // hidden.  Drains the RPC queue and polls file-watcher / SR tasks
     // without running any ImGui rendering.
     void tick_idle();
+
+    // Install a callback that is invoked whenever an RPC/MCP request
+    // is actually dispatched (drain() returns > 0).  The main loop
+    // uses this to wake the IdleTracker so it transitions out of the
+    // idle state and resumes rendering on the next iteration.
+    using IdleWakeFn = std::function<void()>;
+    void set_idle_wake_callback(IdleWakeFn fn);
 
     void load_images(const std::vector<std::string>& paths);
 
@@ -327,6 +335,11 @@ private:
     // Set by request_restart() so main() knows to re-exec the binary
     // after the event loop exits and shutdown completes.
     bool restart_requested_ = false;
+
+    // Callback invoked when RPC/MCP requests are dispatched.  Set by
+    // main.cpp to idle_tracker.on_mcp_activity so the IdleTracker
+    // transitions out of idle and resumes rendering.
+    IdleWakeFn idle_wake_fn_;
 
     // Maps each slot index passed to Viewport::render (in order) back to
     // the corresponding entries_ index.  Populated by render_viewport() and
