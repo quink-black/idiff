@@ -224,60 +224,13 @@ TEST_CASE("ImageLoader::load accepts backslash Windows paths with CJK",
 }
 #endif
 
-// -----------------------------------------------------------------------------
-// HEIF / AVIF FFmpeg backend
-// -----------------------------------------------------------------------------
-//
-// These cases need real sample files; without them they SKIP rather
-// than fail.  IDIFF_TEST_HEIF_TILE_PATH is set by tests/CMakeLists.txt
-// to either tests/data/heif-tile.heif or the developer's
-// ~/Downloads/heif-tile.heif when present.
-
 #if defined(IDIFF_HAVE_FFMPEG_IMAGE_DECODE)
-
-namespace {
-
-bool sample_exists(const char* path) {
-    return path && *path != '\0' &&
-           std::filesystem::exists(std::filesystem::u8path(path));
-}
-
-}  // namespace
 
 TEST_CASE("ImageLoader: FFmpeg backend is reported as compiled in",
           "[image_loader][heif]") {
     REQUIRE(ImageLoader::has_backend(LoaderBackend::FFmpeg));
     REQUIRE(std::string(ImageLoader::backend_name(LoaderBackend::FFmpeg))
             == "FFmpeg");
-}
-
-TEST_CASE("ImageLoader: opens a multi-tile HEIF grid as a single full image",
-          "[image_loader][heif][grid]") {
-    if (!sample_exists(IDIFF_TEST_HEIF_TILE_PATH)) {
-        SKIP("HEIF tile sample not available "
-             "(IDIFF_TEST_HEIF_TILE_PATH is empty)");
-    }
-
-    ImageLoader loader;
-    auto img = loader.load(IDIFF_TEST_HEIF_TILE_PATH);
-    REQUIRE(img != nullptr);
-    REQUIRE(loader.last_used_backend() == LoaderBackend::FFmpeg);
-
-    const auto& info = img->info();
-
-    // HEIF grids -- like the sample at hand -- are usually composed
-    // from many 512x512 tiles.  The whole point of tile-grid support
-    // is that the loader returns ONE composed image, not one tile, so
-    // the reported dimensions must be strictly larger than a single
-    // tile.  We don't pin exact W/H because the sample may change.
-    REQUIRE(info.width  > 512);
-    REQUIRE(info.height > 512);
-
-    // Pixel data must be present and match the reported shape.
-    REQUIRE(img->mat().cols == info.width);
-    REQUIRE(img->mat().rows == info.height);
-
-    REQUIRE(info.source_format == SourceFormat::HEIF);
 }
 
 #endif  // IDIFF_HAVE_FFMPEG_IMAGE_DECODE

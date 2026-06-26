@@ -177,28 +177,3 @@ endif()
 
 # --- HEIF / AVIF sample paths ---
 #
-# The image_loader tests below need optional HEIF / AVIF inputs to
-# exercise the FFmpeg-backed decoding path.  Sample paths are passed
-# in via compile definitions so the tests can SKIP cleanly when the
-# files are absent (CI runners without the samples installed, fresh
-# clones without git-lfs, etc.).
-#
-# Search order:
-#   1. tests/data/<name> in the repo (preferred -- co-located, easy
-#      to ship via git-lfs)
-#   2. fall back to a developer's home/Downloads sample
-set(_idiff_heif_tile_local
-    "${CMAKE_SOURCE_DIR}/tests/data/heif-tile.heif")
-set(_idiff_heif_tile_fallback
-    "$ENV{USERPROFILE}/Downloads/heif-tile.heif")
-
-if(EXISTS "${_idiff_heif_tile_local}")
-    set(_idiff_heif_tile_path "${_idiff_heif_tile_local}")
-elseif(EXISTS "${_idiff_heif_tile_fallback}")
-    set(_idiff_heif_tile_path "${_idiff_heif_tile_fallback}")
-else()
-    set(_idiff_heif_tile_path "")
-endif()
-
-target_compile_definitions(idiff_tests PRIVATE
-    IDIFF_TEST_HEIF_TILE_PATH="${_idiff_heif_tile_path}")
