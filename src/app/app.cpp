@@ -604,11 +604,18 @@ void App::shutdown() {
 void App::tick_idle() {
 #ifdef IDIFF_HAVE_RPC
     if (rpc_server_) {
-        rpc_server_->drain();
+        auto n = rpc_server_->drain();
+        if (n > 0 && idle_wake_fn_) {
+            idle_wake_fn_();
+        }
     }
 #endif
     poll_sr_tasks();
     poll_file_watcher();
+}
+
+void App::set_idle_wake_callback(IdleWakeFn fn) {
+    idle_wake_fn_ = std::move(fn);
 }
 
 void App::frame() {
@@ -619,7 +626,10 @@ void App::frame() {
     // / SDL state without locks.  drain() is non-blocking and returns
     // immediately when the queue is empty (the common case).
     if (rpc_server_) {
-        rpc_server_->drain();
+        auto n = rpc_server_->drain();
+        if (n > 0 && idle_wake_fn_) {
+            idle_wake_fn_();
+        }
     }
 #endif
 

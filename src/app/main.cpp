@@ -223,6 +223,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    idiff::IdleTracker idle_tracker;
+
     idiff::App app;
     if (!app.init(window, renderer)) {
         SDL_DestroyRenderer(renderer);
@@ -230,6 +232,12 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
+
+    // Wire RPC activity back to the idle tracker so MCP requests wake
+    // the app from idle and resume rendering.
+    app.set_idle_wake_callback([&idle_tracker]() {
+        idle_tracker.on_mcp_activity();
+    });
 
     auto startup_paths = collect_startup_paths(argc, argv);
     if (startup_paths.empty()) {
@@ -252,7 +260,6 @@ int main(int argc, char** argv) {
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
     bool running = true;
-    bool minimized = false;
 
     while (running) {
         // Paths collected from SDL_DROPFILE events during this frame.
@@ -262,13 +269,29 @@ int main(int argc, char** argv) {
         // SDL_WaitEventTimeout blocks until an event arrives or the
         // timeout expires.  When it returns 1 the first event is
         // available via SDL_PollEvent; when 0 the timeout elapsed with
-        // no events (the thread was sleeping).  The timeout is longer
-        // while minimized so a hidden window idles deeper.
-        SDL_WaitEventTimeout(nullptr, idiff::loop_wait_timeout_ms(minimized));
+        // no events (the thread was sleeping).  The IdleTracker
+        // chooses a longer timeout when the app is idle or minimized
+        // so the CPU stays near zero.
+        SDL_WaitEventTimeout(nullptr, idle_tracker.wait_timeout_ms());
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
+
+            // Feed every event to the idle tracker so it can detect
+            // user input and window-state changes.
+            auto cls = idle_tracker.on_sdl_event(
+                event.type,
+                event.type == SDL_WINDOWEVENT
+                    ? event.window.event : 0);
+
+            if (cls == idiff::IdleTracker::EventClass::Window) {
+                idle_tracker.set_minimized(
+                    idiff::apply_window_event(
+                        idle_tracker.is_minimized(),
+                        event.window.event));
+            }
+
             if (event.type == SDL_QUIT) {
                 app.request_quit();
             }
@@ -276,10 +299,6 @@ int main(int argc, char** argv) {
                 event.window.event == SDL_WINDOWEVENT_CLOSE &&
                 event.window.windowID == SDL_GetWindowID(window)) {
                 app.request_quit();
-            }
-            if (event.type == SDL_WINDOWEVENT) {
-                minimized = idiff::apply_window_event(minimized,
-                                                      event.window.event);
             }
             if (event.type == SDL_DROPFILE && event.drop.file) {
                 dropped_paths.emplace_back(event.drop.file);
@@ -293,13 +312,15 @@ int main(int argc, char** argv) {
             app.load_paths(dropped_paths);
         }
 
-        // While minimized, skip the render pass to keep CPU near zero.
-        // tick_idle() drains RPC and background polls without the ImGui
-        // render pass.
-        if (!idiff::loop_should_render(minimized)) {
-            app.tick_idle();
-        } else {
+        // When idle or minimized, skip the full render pass to keep
+        // CPU near zero.  tick_idle() drains RPC and background polls
+        // without the ImGui render pass.  Any user input or MCP
+        // activity received above will have reset the idle timer so
+        // should_render() returns true on the next iteration.
+        if (idle_tracker.should_render()) {
             app.frame();
+        } else {
+            app.tick_idle();
         }
 
         if (app.wants_quit()) {
