@@ -401,8 +401,6 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // demand from frame() based on io.WantTextInput.
     SDL_StopTextInput();
 
-    SDL_RenderSetScale(renderer, dpi_scale, dpi_scale);
-
     state_->viewport = std::make_unique<Viewport>();
     state_->metrics_panel = std::make_unique<MetricsPanel>();
     state_->properties_panel = std::make_unique<PropertiesPanel>();
@@ -762,6 +760,20 @@ void App::frame() {
     poll_file_watcher();
 
     ImGui::Render();
+
+    // Sync SDL's render scale to the current framebuffer-to-window
+    // ratio every frame.  This is the official ImGui SDLRenderer2
+    // pattern (example_sdl2_sdlrenderer2/main.cpp line 177).  Without
+    // it, SDL_RenderSetScale called once in init() becomes stale when
+    // the window is maximized or moved to a different display, and
+    // the renderer backend's clipping rects are computed with a wrong
+    // scale -- UI elements appear clipped or misplaced.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        SDL_RenderSetScale(state_->renderer,
+                           io.DisplayFramebufferScale.x,
+                           io.DisplayFramebufferScale.y);
+    }
 
     // Sync SDL's IME / text-input state to whatever ImGui actually
     // wants this frame.  When no InputText widget is focused
