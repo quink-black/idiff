@@ -58,6 +58,7 @@ elseif(WIN32)
     if(MSVC)
         target_link_options(idiff PRIVATE
             "/MANIFEST"
+            "/MANIFEST:EMBED"
             "/MANIFESTUAC:NO"
             "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/platform/idiff.manifest")
     endif()
