@@ -78,6 +78,14 @@ public:
     // Destroy all textures and drop every entry.
     void clear();
 
+    // Release decoded pixel data and GPU texture for a single entry
+    // without removing it from the library.  Destroys the texture via
+    // the uploader first, then resets pixel state via
+    // ImageEntry::release_pixel_data.  cached_info and source are
+    // preserved so the entry can be re-decoded on demand.  Used by
+    // the lazy-load eviction path.
+    void release_entry_pixels(std::size_t index);
+
     // Texture lifecycle helpers.  The pixel-conversion logic
     // (channel-view extraction, RGBA conversion) currently lives in
     // App; once the viewport is decoupled the responsibility will
