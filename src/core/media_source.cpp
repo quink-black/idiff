@@ -62,6 +62,15 @@ ImageFileSource::ImageFileSource(std::string path, LoaderBackend preferred_backe
 
 ImageFileSource::~ImageFileSource() = default;
 
+bool ImageFileSource::is_valid() const noexcept {
+    // Cheap probe: just check the file exists and is readable.  We
+    // don't verify the image format here -- that would require a
+    // full decode with the current backends.  Wrong-format files
+    // surface on read_frame.
+    std::error_code ec;
+    return std::filesystem::exists(path_, ec);
+}
+
 void ImageFileSource::set_preferred_backend(LoaderBackend backend) noexcept {
     preferred_backend_ = backend;
 }
