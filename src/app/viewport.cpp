@@ -530,9 +530,10 @@ void Viewport::draw_image_label(const char* label,
     ImVec2 rect_min;
     ImU32 bg_color;
     if (fits_above) {
-        float x = std::clamp(img_pos.x,
-                             cell_pos.x,
-                             cell_pos.x + cell_size.x - box_w);
+        float max_x = cell_pos.x + cell_size.x - box_w;
+        float x = (max_x >= cell_pos.x)
+                      ? std::clamp(img_pos.x, cell_pos.x, max_x)
+                      : cell_pos.x;
         rect_min = ImVec2(x, above_y);
         // Solid, high-contrast badge when we have dedicated room above
         // the image: the label is not on top of any pixels so we can
@@ -541,9 +542,10 @@ void Viewport::draw_image_label(const char* label,
     } else {
         // Fallback: overlay on the image, but below the ruler strip and
         // subtle enough that the underlying pixels still show through.
-        float x = std::clamp(img_pos.x + 2.0f,
-                             cell_pos.x,
-                             cell_pos.x + cell_size.x - box_w);
+        float max_x = cell_pos.x + cell_size.x - box_w;
+        float x = (max_x >= cell_pos.x)
+                      ? std::clamp(img_pos.x + 2.0f, cell_pos.x, max_x)
+                      : cell_pos.x;
         float y = std::max(img_pos.y + 2.0f, cell_effective_top + 2.0f);
         rect_min = ImVec2(x, y);
         bg_color = IM_COL32(0, 0, 0, 110);
@@ -628,7 +630,11 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", px);
             ImVec2 text_size = ImGui::CalcTextSize(buf);
-            float label_x = std::clamp(sx + 2.0f, cell_left + 1.0f, cell_right - text_size.x - 1.0f);
+            float h_max = cell_right - text_size.x - 1.0f;
+            float h_min = cell_left + 1.0f;
+            float label_x = (h_max >= h_min)
+                                ? std::clamp(sx + 2.0f, h_min, h_max)
+                                : h_min;
             dl->AddText(ImVec2(label_x, h_ruler_y + 1), label_color, buf);
         }
 
@@ -669,7 +675,11 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", py);
             ImVec2 text_size = ImGui::CalcTextSize(buf);
-            float label_y = std::clamp(sy + 1.0f, h_ruler_bottom + 1.0f, cell_bottom - text_size.y - 1.0f);
+            float v_max = cell_bottom - text_size.y - 1.0f;
+            float v_min = h_ruler_bottom + 1.0f;
+            float label_y = (v_max >= v_min)
+                                ? std::clamp(sy + 1.0f, v_min, v_max)
+                                : v_min;
             dl->AddText(ImVec2(v_ruler_x + 2, label_y), label_color, buf);
         }
 
