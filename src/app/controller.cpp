@@ -27,6 +27,17 @@
 
 namespace idiff {
 
+bool ImageEntry::ensure_decoded() const {
+    if (image_decoded && image) return true;
+    if (!source) return false;
+    auto img = source->read_frame(cached_frame);
+    if (!img) return false;
+    cached_info = img->info();
+    image = std::move(img);
+    image_decoded = true;
+    return true;
+}
+
 AppController::AppController(ITextureUploader& texture_uploader,
                              IStatusReporter& status_reporter)
     : library_(std::make_unique<ImageLibrary>(texture_uploader)),
