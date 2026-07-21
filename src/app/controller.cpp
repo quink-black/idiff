@@ -511,20 +511,22 @@ namespace {
 // raw `.yuv`, `.ivf`) still get a chance through the FFmpeg-backed
 // VideoFileSource when the regular still-image loaders give up.
 //
-// On success returns an opened source plus a freshly decoded frame 0.
-// On failure returns {nullptr, nullptr} and writes a combined error
-// describing what every attempted backend reported, so the status
-// bar / log line mentions both the image and the video failure.
-struct OpenedSource {
-    std::unique_ptr<idiff::MediaSource> source;
-    std::unique_ptr<idiff::Image> first_frame;
-};
-
-OpenedSource open_media_source(const std::string& path,
-                               idiff::LoaderBackend backend,
-                               std::string& out_error) {
-    OpenedSource result;
-
+// On success returns an opened source.  On failure returns nullptr
+// and writes a combined error describing what every attempted
+// backend reported, so the status bar / log line mentions both the
+// image and the video failure.
+//
+// Pixels are NOT decoded here -- the caller decodes on demand via
+// source->read_frame() (lazy-load).  For ImageFileSource the file
+// is not even opened at this point; a stale or unreadable file is
+// detected only when the entry enters the selection and
+// ensure_decoded() runs.  VideoFileSource opens the container in
+// its constructor (is_valid() reports open failure here), but no
+// frame is decoded.
+std::unique_ptr<idiff::MediaSource>
+open_media_source(const std::string& path,
+                   idiff::LoaderBackend backend,
+                   std::string& out_error) {
 #ifdef IDIFF_HAVE_FFMPEG
     // Files with a known video container extension always go straight
     // to the video pipeline -- no point in burning two failed image
@@ -533,56 +535,22 @@ OpenedSource open_media_source(const std::string& path,
         auto vsrc = std::make_unique<idiff::VideoFileSource>(path);
         if (!vsrc->is_valid()) {
             out_error = vsrc->last_error();
-            return result;
+            return nullptr;
         }
-        auto img = vsrc->read_frame(0);
-        if (!img) {
-            out_error = vsrc->last_error();
-            return result;
-        }
-        result.source = std::move(vsrc);
-        result.first_frame = std::move(img);
-        return result;
+        return vsrc;
     }
 #endif
 
-    // Try the still-image loaders first.  ImageLoader already
-    // fails over between OpenCV / ImageMagick / FFmpeg-image-decode
-    // internally, so a failure here means none of the configured
-    // image backends recognised the file.
+    // Try the still-image loaders.  ImageFileSource defers the actual
+    // decode to read_frame(), but is_valid() cheaply checks the file
+    // exists so non-existent paths are reported at load time.  Format
+    // errors surface later when ensure_decoded() runs.
     auto isrc = std::make_unique<idiff::ImageFileSource>(path, backend);
-    auto img = isrc->read_frame(0);
-    if (img) {
-        result.source = std::move(isrc);
-        result.first_frame = std::move(img);
-        return result;
+    if (!isrc->is_valid()) {
+        out_error = "file not found or not readable: " + path;
+        return nullptr;
     }
-    std::string image_err = isrc->last_error();
-
-#ifdef IDIFF_HAVE_FFMPEG
-    // Last-chance fallback: hand the file to FFmpeg as if it were a
-    // video container.  This is what makes `.y4m` and other formats
-    // FFmpeg knows about but our image stack does not load through
-    // the image dialog without forcing the user to rename the file.
-    auto vsrc = std::make_unique<idiff::VideoFileSource>(path);
-    if (vsrc->is_valid()) {
-        auto vimg = vsrc->read_frame(0);
-        if (vimg) {
-            result.source = std::move(vsrc);
-            result.first_frame = std::move(vimg);
-            return result;
-        }
-        out_error = "image: " + image_err
-                  + "; FFmpeg: " + vsrc->last_error();
-        return result;
-    }
-    out_error = "image: " + image_err
-              + "; FFmpeg: " + vsrc->last_error();
-    return result;
-#else
-    out_error = std::move(image_err);
-    return result;
-#endif
+    return isrc;
 }
 
 } // namespace
@@ -591,16 +559,15 @@ namespace {
 
 // Recreate the MediaSource for an entry from its on-disk path so the
 // decoder re-opens the file (picking up new content after an external
-// mv or overwrite).  Returns the freshly decoded frame 0 on success,
-// or nullptr on failure.  On success the entry's source is replaced;
-// on failure the previous source is left intact.
-std::unique_ptr<idiff::Image>
-reopen_source(idiff::ImageEntry& entry, idiff::LoaderBackend backend) {
+// mv or overwrite).  On success the entry's source is replaced and
+// the function returns true; on failure the previous source is left
+// intact and the function returns false.  Does NOT decode pixels.
+bool reopen_source(idiff::ImageEntry& entry, idiff::LoaderBackend backend) {
     std::string err;
-    auto opened = open_media_source(entry.path, backend, err);
-    if (!opened.first_frame) return nullptr;
-    entry.source = std::move(opened.source);
-    return std::move(opened.first_frame);
+    auto source = open_media_source(entry.path, backend, err);
+    if (!source) return false;
+    entry.source = std::move(source);
+    return true;
 }
 
 } // namespace
@@ -613,11 +580,13 @@ void AppController::reload_all_images() {
     int failed = 0;
     std::string last_fail;
     std::string failure_details;
-    for (auto& entry : entries) {
-        auto img = reopen_source(entry, loader_backend_);
-        if (img) {
-            entry.image = std::move(img);
-            entry.display_image.reset();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        auto& entry = entries[i];
+        if (reopen_source(entry, loader_backend_)) {
+            // Drop any previously decoded pixels and the GPU texture;
+            // the next time this entry enters the selection,
+            // ensure_decoded() will re-decode from the new source.
+            library_->release_entry_pixels(i);
             entry.texture_dirty = true;
             ++reloaded;
         } else {
@@ -655,10 +624,8 @@ void AppController::reload_entry(int index) {
     if (index < 0 || index >= n) return;
 
     auto& entry = library_->all()[index];
-    auto img = reopen_source(entry, loader_backend_);
-    if (img) {
-        entry.image = std::move(img);
-        entry.display_image.reset();
+    if (reopen_source(entry, loader_backend_)) {
+        library_->release_entry_pixels(static_cast<std::size_t>(index));
         entry.texture_dirty = true;
         diff_->mark_dirty();
     } else {
@@ -678,10 +645,8 @@ int AppController::reload_entries_by_path(
     for (const auto& path : paths) {
         for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
             if (entries[i].path != path) continue;
-            auto img = reopen_source(entries[i], loader_backend_);
-            if (img) {
-                entries[i].image = std::move(img);
-                entries[i].display_image.reset();
+            if (reopen_source(entries[i], loader_backend_)) {
+                library_->release_entry_pixels(static_cast<std::size_t>(i));
                 entries[i].texture_dirty = true;
                 ++reloaded;
             }
@@ -715,38 +680,44 @@ AppController::load_images(const std::vector<std::string>& paths) {
     };
     std::vector<LoadFailure> failures;
 
-    for (const auto& path : paths) {
+    for (std::size_t path_idx = 0; path_idx < paths.size(); ++path_idx) {
+        const auto& path = paths[path_idx];
         // Deduplicate: if this path is already loaded, refresh the
         // existing entry instead of appending a duplicate.
         bool found_existing = false;
-        for (auto& existing : library_->all()) {
-            if (existing.path == path) {
-                if (auto* ifs = dynamic_cast<ImageFileSource*>(
-                        existing.source.get())) {
-                    ifs->set_preferred_backend(loader_backend_);
-                }
-                auto img = existing.source
-                    ? existing.source->read_frame(0) : nullptr;
-                if (img) {
-                    existing.image = std::move(img);
-                    existing.display_image.reset();
-                    existing.texture_dirty = true;
-                    status_reporter_->set_status("Refreshed: " + path);
-                }
-                found_existing = true;
-                break;
+        for (std::size_t i = 0; i < library_->all().size(); ++i) {
+            auto& existing = library_->all()[i];
+            if (existing.path != path) continue;
+            if (auto* ifs = dynamic_cast<ImageFileSource*>(
+                    existing.source.get())) {
+                ifs->set_preferred_backend(loader_backend_);
             }
+            // Re-open the source so the decoder picks up on-disk
+            // changes, then drop any previously decoded pixels.
+            // The next time this entry enters the selection,
+            // ensure_decoded() re-decodes from the new source.
+            std::string err;
+            auto source = open_media_source(path, loader_backend_, err);
+            if (source) {
+                existing.source = std::move(source);
+                library_->release_entry_pixels(i);
+                existing.texture_dirty = true;
+                status_reporter_->set_status("Refreshed: " + path);
+            }
+            found_existing = true;
+            break;
         }
         if (found_existing) continue;
 
         // Open the file through whichever backend recognises it.
         // open_media_source picks VideoFileSource for known video
-        // extensions, otherwise tries the still-image loaders first
-        // and finally falls back to FFmpeg so formats outside our
-        // hard-coded extension list (e.g. .y4m) still load.
+        // extensions, otherwise ImageFileSource.  Pixels are not
+        // decoded here -- the entry is added with no resident image
+        // and ensure_decoded() fetches it on demand when the entry
+        // enters the selection.
         std::string open_err;
-        auto opened = open_media_source(path, loader_backend_, open_err);
-        if (!opened.first_frame) {
+        auto source = open_media_source(path, loader_backend_, open_err);
+        if (!source) {
             status_reporter_->set_status("Failed to load: " + path
                                          + " (" + open_err + ")");
             LOG_WARN("load_images failed: %s (%s)",
@@ -754,8 +725,6 @@ AppController::load_images(const std::vector<std::string>& paths) {
             failures.push_back({path, open_err});
             continue;
         }
-        auto source = std::move(opened.source);
-        auto img = std::move(opened.first_frame);
 
         {
             ImageEntry entry;
@@ -770,9 +739,9 @@ AppController::load_images(const std::vector<std::string>& paths) {
                                     + " frames)";
             }
             entry.source = std::move(source);
-            entry.image = std::move(img);
-            entry.display_image = nullptr;
-            entry.texture = nullptr;
+            // image, display_image, texture all default-constructed
+            // (nullptr).  cached_info is default-constructed (dims=0)
+            // and gets populated on the first ensure_decoded() call.
             entry.texture_dirty = true;
 
             library_->add(std::move(entry));

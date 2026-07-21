@@ -65,6 +65,14 @@ public:
     std::unique_ptr<Image> read_frame(int index) override;
     const std::string& last_error() const noexcept override { return last_error_; }
 
+    // Cheap openability probe: returns true when the file exists and
+    // is readable.  Does NOT verify the format or decode any pixels --
+    // a file that is the wrong format will still pass this check and
+    // surface a decode error on the first read_frame() call.  Used by
+    // the lazy-load open path so non-existent files are reported at
+    // load time without forcing a full decode.
+    bool is_valid() const noexcept;
+
     const std::string& path() const noexcept { return path_; }
     void set_preferred_backend(LoaderBackend backend) noexcept;
 
