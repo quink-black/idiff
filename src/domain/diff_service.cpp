@@ -85,6 +85,12 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
     if (idx_ref < 0 || idx_ref >= static_cast<int>(entries.size())) return;
 
     const auto& entry_ref = entries[idx_ref];
+    // Lazy-load: ensure the reference entry's pixels are resident
+    // before reading them.  Under the lazy-load model a selected
+    // entry may have been evicted by the LRU; ensure_decoded()
+    // re-fetches from source.  safe on a const ImageEntry because
+    // image / display_image / image_decoded are mutable.
+    entry_ref.ensure_decoded();
     const auto* img_ref = entry_ref.display_image ? entry_ref.display_image.get()
                                                   : entry_ref.image.get();
     if (!img_ref) return;
@@ -113,6 +119,10 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
     for (int partner : partners) {
         if (partner < 0 || partner >= static_cast<int>(entries.size())) continue;
         const auto& entry_p = entries[partner];
+        // Lazy-load: fetch partner pixels on demand so a partner
+        // that was evicted by the LRU still appears in the diff
+        // column instead of being silently skipped.
+        entry_p.ensure_decoded();
         const auto* img_p = entry_p.display_image ? entry_p.display_image.get()
                                                   : entry_p.image.get();
         if (!img_p) continue;
