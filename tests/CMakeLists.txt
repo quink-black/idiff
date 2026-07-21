@@ -25,6 +25,7 @@ add_executable(idiff_tests
     test_pixel_sampler.cpp
     test_sar.cpp
     test_idle_policy.cpp
+    test_lazy_load_cache.cpp
     # test_logging_integration.cpp  # FIXME: linking issue with ImageLibrary::upload
     # SR engine sources needed by test_sr_engine.cpp
     ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp

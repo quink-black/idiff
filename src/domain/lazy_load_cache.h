@@ -58,20 +58,22 @@ public:
     void apply_remap(const std::vector<int>& remap) {
         if (remap.empty()) return;
         std::list<int> new_order;
-        pos_.clear();
         for (int old_idx : order_) {
             if (old_idx < 0 || static_cast<std::size_t>(old_idx) >= remap.size()) {
                 // Index outside the remap range; keep as-is.
                 new_order.push_back(old_idx);
-                pos_[old_idx] = std::prev(new_order.end());
                 continue;
             }
             int new_idx = remap[static_cast<std::size_t>(old_idx)];
             if (new_idx == kRemoved) continue;
             new_order.push_back(new_idx);
-            pos_[new_idx] = std::prev(new_order.end());
         }
         order_ = std::move(new_order);
+        // Rebuild pos_ from the final order_ so iterators are valid.
+        pos_.clear();
+        for (auto it = order_.begin(); it != order_.end(); ++it) {
+            pos_[*it] = it;
+        }
     }
 
     // Evict from the least-recently-used end until size <= kCapacity.
