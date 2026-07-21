@@ -895,12 +895,11 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
         state_->status_text = "YUV: invalid parameters or unreadable file: " + path;
         return false;
     }
-    auto img = source->read_frame(0);
-    if (!img) {
-        state_->status_text = "YUV: decode failed for " + path +
-                              " (" + source->last_error() + ")";
-        return false;
-    }
+    // Lazy-load: do not decode frame 0 here.  The entry is added with
+    // no resident pixels; ensure_decoded() fetches frame 0 on demand
+    // when the entry enters the selection.  YuvRawSource::frame_count
+    // is computed from the file size + params without decoding, so
+    // the validity check above catches bad parameter combinations.
 
     const bool was_empty = entries_view().empty();
 
@@ -916,9 +915,8 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
                             + " frames)";
     }
     entry.source = std::move(source);
-    entry.image = std::move(img);
-    entry.display_image = nullptr;
-    entry.texture = nullptr;
+    // image, display_image, texture all default-constructed (nullptr).
+    // cached_info is populated on the first ensure_decoded() call.
     entry.texture_dirty = true;
 
     library_->add(std::move(entry));
@@ -987,18 +985,14 @@ bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
     if (target_frame >= source->frame_count()) {
         target_frame = source->frame_count() - 1;
     }
-    auto img = source->read_frame(target_frame);
-    if (!img) {
-        state_->status_text = "YUV: decode failed for " + entry.path +
-                              " (" + source->last_error() + ")";
-        return false;
-    }
-
+    // Lazy-load: do not decode here.  The next ensure_decoded() /
+    // sync_to() call will fetch target_frame from the new source.
     entry.source = std::move(source);
-    entry.image = std::move(img);
-    entry.display_image.reset();
-    entry.texture_dirty = true;
     entry.cached_frame = target_frame;
+    // Drop any previously decoded pixels and the GPU texture so the
+    // next render uploads fresh pixels from the new parameters.
+    library_->release_entry_pixels(static_cast<std::size_t>(index));
+    entry.texture_dirty = true;
 
     // Refresh "(N frames)" suffix: may change if the new params produce a
     // different frame count.  compute_display_labels() will reconcile
