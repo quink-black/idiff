@@ -315,6 +315,11 @@ void AppController::on_selection_changed() {
 
 void AppController::touch_lazy(int index) {
     if (index < 0 || index >= static_cast<int>(library_->all().size())) return;
+    // Selected entries are never in the LRU -- they stay resident
+    // unconditionally.  Skipping the touch here preserves that
+    // invariant when the caller (e.g. timeline scrub) touches every
+    // decoded entry without filtering by selection.
+    if (selection_->contains(index)) return;
     lazy_cache_.touch(index);
     lazy_cache_.evict_excess([this](int idx) {
         library_->release_entry_pixels(static_cast<std::size_t>(idx));
@@ -479,10 +484,30 @@ void AppController::sync_entries_to_timeline() {
     if (!status_buf.empty()) {
         status_reporter_->append_status(status_buf);
     }
+    // Promote every multi-frame entry that decoded this tick to the
+    // front of the LRU so the next eviction sweep (fired on selection
+    // change) leaves them alone while the user is actively scrubbing.
+    // Selected entries are skipped by touch_lazy itself.
+    for (std::size_t i = 0; i < library_->all().size(); ++i) {
+        const auto& e = library_->all()[i];
+        if (e.image_decoded && e.image && e.source &&
+            e.source->frame_count() > 1) {
+            touch_lazy(static_cast<int>(i));
+        }
+    }
 }
 
 void AppController::preview_entries_to_timeline() {
     timeline_->preview_to(library_->all());
+    // Same LRU promotion as sync_entries_to_timeline: keep scrubbed
+    // entries resident while the user is dragging the slider.
+    for (std::size_t i = 0; i < library_->all().size(); ++i) {
+        const auto& e = library_->all()[i];
+        if (e.image_decoded && e.image && e.source &&
+            e.source->frame_count() > 1) {
+            touch_lazy(static_cast<int>(i));
+        }
+    }
 }
 
 void AppController::start_sr_task(const SRTaskParams& params) {
