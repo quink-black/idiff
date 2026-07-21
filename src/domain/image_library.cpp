@@ -138,6 +138,13 @@ void ImageLibrary::clear() {
     entries_.clear();
 }
 
+void ImageLibrary::release_entry_pixels(std::size_t index) {
+    if (index >= entries_.size()) return;
+    auto& e = entries_[index];
+    uploader_.destroy(e.texture);
+    e.release_pixel_data();
+}
+
 void ImageLibrary::upload(std::size_t index, const UploadRequest& req) {
     if (index >= entries_.size()) {
         LOG_WARN("library upload index out of range: %zu", index);
