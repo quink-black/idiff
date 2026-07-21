@@ -1419,6 +1419,20 @@ void App::upload_texture(ImageEntry& entry) {
     entry.texture_dirty = false;
 }
 
+void App::evict_non_selected_entries() {
+    auto& entries = entries_view();
+    for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+        if (selection_->contains(i)) continue;
+        auto& e = entries[i];
+        if (!e.image_decoded && !e.image) continue;  // already released
+        // Destroy GPU texture through the uploader before releasing.
+        if (e.texture) {
+            state_->texture_uploader->destroy(e.texture);
+        }
+        e.release_pixels();
+    }
+}
+
 void App::render_toolbar() {
     ToolbarInputs in;
     in.viewport = state_->viewport.get();
@@ -1585,6 +1599,7 @@ void App::render_viewport() {
     in.sel_drag_is_ctrl = &sel_drag_is_ctrl_;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.on_update_display_image = [this](int s) { update_display_image(s); };
+    in.on_evict_non_selected = [this]() { evict_non_selected_entries(); };
     in.on_upload_texture = [this](int s) { upload_texture(entries_view()[s]); };
     in.on_save_viewport = [this]() { save_viewport_dialog(); };
     in.on_shift_pin_click = [this]() {

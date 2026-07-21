@@ -222,6 +222,7 @@ private:
     void remove_entry(int index);
     void reload_all_images();
     void update_display_image(int index);
+    void evict_non_selected_entries();
     void upload_texture(ImageEntry& entry);
     void compute_display_labels();
     void sort_entries_by_name();

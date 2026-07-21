@@ -37,6 +37,12 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         in.viewport->clear_measurements();
     }
 
+    // Release decoded pixels for entries that just left the selection
+    // so they don't sit idle in memory.
+    if (selection_changed && in.on_evict_non_selected) {
+        in.on_evict_non_selected();
+    }
+
     // Upload dirty textures for selected images
     for (int s : selection.indices()) {
         if (s >= 0 && s < static_cast<int>(entries.size())) {

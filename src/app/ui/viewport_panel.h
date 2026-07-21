@@ -70,6 +70,11 @@ struct ViewportPanelInputs {
     // selection-zoom because Shift is otherwise unused by the existing
     // gestures; nullptr-safe.
     std::function<void()> on_shift_pin_click;
+
+    // Called once per frame when the selection just changed.  The host
+    // uses this to release decoded pixel data for entries that are no
+    // longer selected, reducing memory usage.  May be empty.
+    std::function<void()> on_evict_non_selected;
 };
 
 void render_viewport_panel(const ViewportPanelInputs& in);
