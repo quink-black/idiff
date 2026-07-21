@@ -3,6 +3,7 @@
 
 #include "app/measurement.h"
 #include "core/channel_view.h"
+#include "core/image.h"
 
 #include <functional>
 #include <memory>
@@ -54,16 +55,47 @@ struct ImageEntry {
     // exposes multiple frames.  The field is always non-null for an
     // entry that was successfully added by load_images().
     std::unique_ptr<MediaSource> source;
-    // Cached decoded frame for the current frame index.  This is what
-    // all downstream rendering / comparison paths consume.  It is
-    // repopulated via source->read_frame() whenever the frame index
-    // changes or the loader backend is toggled.
-    std::unique_ptr<Image> image;
-    std::unique_ptr<Image> display_image;
+    // Cached decoded frame for the current frame index.  Under the
+    // lazy-load model, pixels are only resident while the entry is in
+    // the selection (or in the LRU soft cache).  Call ensure_decoded()
+    // before accessing -- it decodes on demand from `source`.
+    // Marked mutable so ensure_decoded() can be const and callable
+    // from paths that take const ImageEntry& (e.g. DiffService).
+    mutable std::unique_ptr<Image> image;
+    mutable std::unique_ptr<Image> display_image;
     SDL_Texture* texture = nullptr;
     int tex_w = 0;
     int tex_h = 0;
     bool texture_dirty = true;
+
+    // Cached metadata from the last decode.  Persists across
+    // release_pixel_data() so the UI can show dimensions / format
+    // without holding decoded pixels in memory.  Default-constructed
+    // (dims=0, format=Unknown) until the first decode succeeds.
+    mutable ImageInfo cached_info;
+    mutable bool image_decoded = false;
+
+    // Decode the current frame from source if not already resident.
+    // Returns true if `image` is available after the call.  Must be
+    // called before accessing entry.image when the entry may have been
+    // lazy-loaded.  Defined in controller.cpp where MediaSource is
+    // complete.  Only restores `image`; `display_image` is rebuilt by
+    // App::update_display_image.
+    bool ensure_decoded() const;
+
+    // Reset pixel state without touching the GPU texture.  The caller
+    // is responsible for destroying the texture via ITextureUploader
+    // first; ImageLibrary::release_entry_pixels does this.  Defined
+    // inline because it is just field resets.
+    void release_pixel_data() {
+        image.reset();
+        display_image.reset();
+        image_decoded = false;
+        texture = nullptr;
+        tex_w = 0;
+        tex_h = 0;
+        texture_dirty = true;
+    }
 
     // Multi-frame bookkeeping (only meaningful when source->frame_count() > 1).
     // frame_offset is a user-tunable per-entry shift applied to the shared
