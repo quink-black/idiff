@@ -85,8 +85,21 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         // make rulers and measurements report sizes in the upscaled
         // coordinate system.  Display dimensions give the correct visual
         // size for aspect-ratio-correct rendering.
-        int src_w = e.image ? e.image->info().display_width()  : e.tex_w;
-        int src_h = e.image ? e.image->info().display_height() : e.tex_h;
+        //
+        // Under lazy-load, selected entries have image resident after
+        // upload_texture ran earlier in the frame; cached_info is the
+        // fallback when decode failed (e.g. unreadable source) and the
+        // entry has no pixels and no texture yet.
+        int src_w = e.image_decoded && e.image
+            ? e.image->info().display_width()
+            : (e.cached_info.display_width()
+               ? e.cached_info.display_width()
+               : e.tex_w);
+        int src_h = e.image_decoded && e.image
+            ? e.image->info().display_height()
+            : (e.cached_info.display_height()
+               ? e.cached_info.display_height()
+               : e.tex_h);
         tex_ws.push_back(src_w);
         tex_hs.push_back(src_h);
         // The slot index (the position of this cell in the viewport's

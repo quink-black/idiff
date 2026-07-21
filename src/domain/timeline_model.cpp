@@ -22,6 +22,12 @@ int TimelineModel::length(const std::vector<ImageEntry>& entries) noexcept {
     return max_frames;
 }
 
+// Re-decode every multi-frame entry to the shared timeline index.
+// Pixels are kept resident after decode so the user can scrub without
+// re-decoding on every frame; AppController::touch_lazy is called by
+// the controller after sync_to / preview_to returns, promoting each
+// decoded entry to the front of the LRU so the next eviction sweep
+// (fired on selection change) leaves scrub-active entries alone.
 bool TimelineModel::sync_to(std::vector<ImageEntry>& entries,
                             std::string& out_status) {
     bool any_changed = false;
@@ -54,6 +60,12 @@ bool TimelineModel::sync_to(std::vector<ImageEntry>& entries,
     return any_changed;
 }
 
+// Fast approximate preview for scrubbing: uses read_keyframe() so the
+// decoder can skip to the nearest keyframe instead of decoding every
+// intermediate frame.  Like sync_to, decoded pixels stay resident;
+// AppController::touch_lazy keeps scrubbed entries in the LRU front.
+// cached_frame is intentionally NOT updated so a subsequent sync_to()
+// still performs an exact decode at this position.
 bool TimelineModel::preview_to(std::vector<ImageEntry>& entries) {
     bool any_changed = false;
     for (auto& e : entries) {
