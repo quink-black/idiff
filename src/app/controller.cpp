@@ -135,7 +135,10 @@ bool AppController::select_group(int index) {
     auto group = group_indices(index);
     if (group.empty()) return false;
     bool changed = selection_->replace(std::move(group));
-    if (changed) diff_->mark_dirty();
+    if (changed) {
+        diff_->mark_dirty();
+        on_selection_changed();
+    }
     apply_comparison_reference();
     return changed;
 }
@@ -164,6 +167,7 @@ AppController::GroupClickAction AppController::click_in_group(int index) {
         // narrow / widen the comparison within the active group.
         selection_->toggle(index);
         diff_->mark_dirty();
+        on_selection_changed();
         return GroupClickAction::Toggled;
     }
 
@@ -171,7 +175,10 @@ AppController::GroupClickAction AppController::click_in_group(int index) {
     // the new group, matching the "click another group switches and
     // selects all" UX.
     bool changed = selection_->replace(std::move(group));
-    if (changed) diff_->mark_dirty();
+    if (changed) {
+        diff_->mark_dirty();
+        on_selection_changed();
+    }
     apply_comparison_reference();
     return GroupClickAction::Switched;
 }
@@ -186,7 +193,10 @@ bool AppController::select_range(int from, int to) {
     std::set<int> range;
     for (int i = from; i <= to; ++i) range.insert(i);
     bool changed = selection_->replace(std::move(range));
-    if (changed) diff_->mark_dirty();
+    if (changed) {
+        diff_->mark_dirty();
+        on_selection_changed();
+    }
     return changed;
 }
 
@@ -207,6 +217,7 @@ void AppController::move_entry(int from, int to) {
     // keeps showing the previous heatmap pixels even though the slot
     // labels have shifted to point at different entries.
     diff_->mark_dirty();
+    on_selection_changed();
 }
 
 void AppController::mark_as_reference(int index) {
@@ -269,6 +280,45 @@ void AppController::mark_as_reference(int index) {
     }
 
     diff_->mark_dirty();
+    on_selection_changed();
+}
+
+void AppController::on_selection_changed() {
+    const auto& current = selection_->indices();
+
+    // Entries that left the selection go to the front of the LRU
+    // (most-recently-departed).  Entries that entered are removed
+    // from the LRU -- their pixels stay resident while selected.
+    for (int idx : last_selection_) {
+        if (!selection_->contains(idx)) lazy_cache_.touch(idx);
+    }
+    for (int idx : current) {
+        lazy_cache_.remove(idx);
+    }
+
+    // Evict the oldest entries beyond capacity.  Each evicted entry
+    // has its pixels and GPU texture released; the diff cache is
+    // marked dirty so any stale partner slots are rebuilt against
+    // the (now-empty) image.
+    lazy_cache_.evict_excess([this](int idx) {
+        library_->release_entry_pixels(static_cast<std::size_t>(idx));
+    });
+
+    last_selection_ = current;
+
+    // The diff cache may hold slots pointing at entries whose pixel
+    // state just changed (either they entered the selection and need
+    // re-decoding, or they were evicted).  Mark dirty so the next
+    // update recomputes against current state.
+    diff_->mark_dirty();
+}
+
+void AppController::touch_lazy(int index) {
+    if (index < 0 || index >= static_cast<int>(library_->all().size())) return;
+    lazy_cache_.touch(index);
+    lazy_cache_.evict_excess([this](int idx) {
+        library_->release_entry_pixels(static_cast<std::size_t>(idx));
+    });
 }
 
 namespace {
@@ -406,9 +456,11 @@ void AppController::remove_entry(int index) {
     // and returns a remap so we can fix up selection indices.
     auto remap = library_->remove(static_cast<std::size_t>(index));
     selection_->apply_remap(remap);
+    lazy_cache_.apply_remap(remap);
 
     compute_display_labels();
     diff_->mark_dirty();
+    on_selection_changed();
 }
 
 bool AppController::has_running_sr_tasks() const {
@@ -760,6 +812,7 @@ AppController::load_images(const std::vector<std::string>& paths) {
             }
         }
         diff_->mark_dirty();
+        on_selection_changed();
         result.did_first_load_select = true;
     }
 
@@ -787,6 +840,8 @@ AppController::load_comparison_config(const std::string& path) {
     // navigation.
     library_->clear();
     selection_->clear();
+    lazy_cache_.clear();
+    last_selection_.clear();
     diff_->clear();
     diff_->mark_dirty();
     // A fresh config is a new world.  Per-comparison references
@@ -812,6 +867,8 @@ AppController::switch_to_comparison_group(int group_idx) {
     // memory lever for configs with many large groups.
     library_->clear();
     selection_->clear();
+    lazy_cache_.clear();
+    last_selection_.clear();
     diff_->clear();
     diff_->mark_dirty();
 
