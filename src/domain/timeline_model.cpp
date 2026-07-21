@@ -46,6 +46,8 @@ bool TimelineModel::sync_to(std::vector<ImageEntry>& entries,
             continue;
         }
         e.image = std::move(img);
+        e.cached_info = e.image->info();
+        e.image_decoded = true;
         e.display_image.reset();
         e.texture_dirty = true;
         e.cached_frame = target;
@@ -71,6 +73,8 @@ bool TimelineModel::preview_to(std::vector<ImageEntry>& entries) {
         if (!img) continue;
 
         e.image = std::move(img);
+        e.cached_info = e.image->info();
+        e.image_decoded = true;
         e.display_image.reset();
         e.texture_dirty = true;
         any_changed = true;

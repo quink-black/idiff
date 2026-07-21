@@ -3,6 +3,7 @@
 
 #include "app/measurement.h"
 #include "core/channel_view.h"
+#include "core/image.h"
 
 #include <functional>
 #include <memory>
@@ -58,12 +59,42 @@ struct ImageEntry {
     // all downstream rendering / comparison paths consume.  It is
     // repopulated via source->read_frame() whenever the frame index
     // changes or the loader backend is toggled.
+    // Under lazy loading, image is only populated when the entry is
+    // selected (on-screen).  Call ensure_decoded() before accessing.
     std::unique_ptr<Image> image;
     std::unique_ptr<Image> display_image;
     SDL_Texture* texture = nullptr;
     int tex_w = 0;
     int tex_h = 0;
     bool texture_dirty = true;
+
+    // Cached metadata from the last decode.  Persists even after
+    // image is released so the UI can show dimensions / format without
+    // holding decoded pixels in memory.
+    ImageInfo cached_info;
+    bool image_decoded = false;
+
+    // Decode the current frame from source if not already resident.
+    // Returns true if image is available after the call.  Must be
+    // called before accessing entry.image when the entry may have been
+    // lazy-loaded.  Defined in controller.cpp where MediaSource is
+    // complete.
+    bool ensure_decoded();
+
+    // Release decoded pixel data and display image to free memory.
+    // Keeps cached_info and source intact so the entry can be re-decoded
+    // on demand.  Also destroys the GPU texture.
+    void release_pixels() {
+        image.reset();
+        display_image.reset();
+        image_decoded = false;
+        // texture is released externally via SDL_DestroyTexture; just
+        // null the pointer so we don't use a stale handle.
+        texture = nullptr;
+        tex_w = 0;
+        tex_h = 0;
+        texture_dirty = true;
+    }
 
     // Multi-frame bookkeeping (only meaningful when source->frame_count() > 1).
     // frame_offset is a user-tunable per-entry shift applied to the shared

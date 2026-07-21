@@ -27,6 +27,17 @@
 
 namespace idiff {
 
+bool ImageEntry::ensure_decoded() {
+    if (image_decoded && image) return true;
+    if (!source) return false;
+    auto img = source->read_frame(cached_frame);
+    if (!img) return false;
+    cached_info = img->info();
+    image = std::move(img);
+    image_decoded = true;
+    return true;
+}
+
 AppController::AppController(ITextureUploader& texture_uploader,
                              IStatusReporter& status_reporter)
     : library_(std::make_unique<ImageLibrary>(texture_uploader)),
@@ -553,8 +564,10 @@ void AppController::reload_all_images() {
     for (auto& entry : entries) {
         auto img = reopen_source(entry, loader_backend_);
         if (img) {
+            entry.cached_info = img->info();
             entry.image = std::move(img);
-            entry.display_image.reset();
+            entry.image_decoded = true;
+            entry.release_pixels();
             entry.texture_dirty = true;
             ++reloaded;
         } else {
@@ -594,8 +607,10 @@ void AppController::reload_entry(int index) {
     auto& entry = library_->all()[index];
     auto img = reopen_source(entry, loader_backend_);
     if (img) {
+        entry.cached_info = img->info();
         entry.image = std::move(img);
-        entry.display_image.reset();
+        entry.image_decoded = true;
+        entry.release_pixels();
         entry.texture_dirty = true;
         diff_->mark_dirty();
     } else {
@@ -617,8 +632,10 @@ int AppController::reload_entries_by_path(
             if (entries[i].path != path) continue;
             auto img = reopen_source(entries[i], loader_backend_);
             if (img) {
+                entries[i].cached_info = img->info();
                 entries[i].image = std::move(img);
-                entries[i].display_image.reset();
+                entries[i].image_decoded = true;
+                entries[i].release_pixels();
                 entries[i].texture_dirty = true;
                 ++reloaded;
             }
@@ -665,8 +682,10 @@ AppController::load_images(const std::vector<std::string>& paths) {
                 auto img = existing.source
                     ? existing.source->read_frame(0) : nullptr;
                 if (img) {
+                    existing.cached_info = img->info();
                     existing.image = std::move(img);
-                    existing.display_image.reset();
+                    existing.image_decoded = true;
+                    existing.release_pixels();
                     existing.texture_dirty = true;
                     status_reporter_->set_status("Refreshed: " + path);
                 }
@@ -707,7 +726,14 @@ AppController::load_images(const std::vector<std::string>& paths) {
                                     + " frames)";
             }
             entry.source = std::move(source);
+            // Cache metadata from the first frame so it is available
+            // even after pixels are released, then immediately free
+            // the decoded pixel data.  The image will be re-decoded
+            // on demand when this entry enters the selection.
+            entry.cached_info = img->info();
             entry.image = std::move(img);
+            entry.image_decoded = true;
+            entry.release_pixels();
             entry.display_image = nullptr;
             entry.texture = nullptr;
             entry.texture_dirty = true;
