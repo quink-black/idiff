@@ -1320,7 +1320,8 @@ void App::update_display_image(int index) {
     if (index < 0 || index >= static_cast<int>(entries_view().size())) return;
 
     auto& entry = entries_view()[index];
-    if (!entry.image) return;
+    // Ensure pixels are decoded before computing display dimensions.
+    if (!entry.ensure_decoded()) return;
 
     // Use display dimensions (SAR-adjusted) so that images with
     // non-square pixels are upscaled to the correct visual size for
@@ -1332,10 +1333,16 @@ void App::update_display_image(int index) {
         if (s == index) continue;
         if (s < 0 || s >= static_cast<int>(entries_view().size())) continue;
         const auto& other = entries_view()[s];
-        if (other.image) {
-            target_w = std::max(target_w, other.image->info().display_width());
-            target_h = std::max(target_h, other.image->info().display_height());
-        }
+        // Use cached_info for non-decoded entries so we don't trigger
+        // a full decode just to read display dimensions.
+        int other_w = other.image_decoded && other.image
+            ? other.image->info().display_width()
+            : other.cached_info.display_width();
+        int other_h = other.image_decoded && other.image
+            ? other.image->info().display_height()
+            : other.cached_info.display_height();
+        target_w = std::max(target_w, other_w);
+        target_h = std::max(target_h, other_h);
     }
 
     bool needs_upscale = entry.image->info().width != target_w ||
@@ -1358,6 +1365,9 @@ diff_service_->mark_dirty();
 }
 
 void App::upload_texture(ImageEntry& entry) {
+    // Ensure pixels are decoded before we can upload to GPU.
+    if (!entry.ensure_decoded()) return;
+
     const Image* img = entry.display_image ? entry.display_image.get() : entry.image.get();
     if (!img) return;
 

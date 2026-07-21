@@ -207,13 +207,13 @@ void App::register_rpc_methods() {
                 je["path"]     = e.path;
                 je["filename"] = e.filename;
                 je["label"]    = e.display_label;
-                if (e.image) {
+                if (e.image_decoded && e.image) {
                     const auto& info = e.image->info();
                     je["width"]  = info.width;
                     je["height"] = info.height;
                 } else {
-                    je["width"]  = 0;
-                    je["height"] = 0;
+                    je["width"]  = e.cached_info.width;
+                    je["height"] = e.cached_info.height;
                 }
                 je["frames"] = e.source ? e.source->frame_count() : 1;
                 entries_json.push_back(std::move(je));
