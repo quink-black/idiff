@@ -945,7 +945,8 @@ diff_service_->mark_dirty();
                 entries_view()[s].texture_dirty = true;
             }
         }
-diff_service_->mark_dirty();
+        diff_service_->mark_dirty();
+        controller_->on_selection_changed();
         if (state_->viewport) {
             state_->viewport->set_mode(ComparisonMode::Overlay);
         }
@@ -1521,6 +1522,7 @@ void App::render_image_list() {
             entries_view()[i].texture_dirty = true;
         }
         diff_service_->mark_dirty();
+        controller_->on_selection_changed();
     };
     in.on_select_only_this = [this](int idx) {
         selection_->clear();
@@ -1529,6 +1531,7 @@ void App::render_image_list() {
             entries_view()[i].texture_dirty = true;
         }
         diff_service_->mark_dirty();
+        controller_->on_selection_changed();
     };
     in.on_select_group = [this](int idx) {
         controller_->select_group(idx);
@@ -1561,10 +1564,12 @@ void App::render_image_list() {
             entries_view()[i].texture_dirty = true;
         }
         diff_service_->mark_dirty();
+        controller_->on_selection_changed();
     };
     in.on_unselect_all = [this]() {
         selection_->clear();
         diff_service_->mark_dirty();
+        controller_->on_selection_changed();
     };
     in.on_settings_changed = [this]() { save_settings(); };
     idiff::render_image_list(in);
@@ -1841,6 +1846,7 @@ void App::poll_sr_tasks() {
             }
             selection_->insert(new_idx);
             diff_service_->mark_dirty();
+            controller_->on_selection_changed();
 
             for (int s : selection_->indices()) {
                 if (s >= 0 && s < static_cast<int>(entries_view().size())) {

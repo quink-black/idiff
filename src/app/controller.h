@@ -2,6 +2,7 @@
 #define IDIFF_APP_CONTROLLER_H
 
 #include "core/image_loader.h"
+#include "domain/lazy_load_cache.h"
 
 #include <memory>
 #include <set>
@@ -133,6 +134,27 @@ public:
     // keeps the same reference (see set_comparison_reference /
     // apply_comparison_reference).
     void mark_as_reference(int index);
+
+    // ---- Lazy-load eviction ----------------------------------------
+    //
+    // The selection is the authoritative set of "resident" entries.
+    // When an entry leaves the selection it is promoted to a small
+    // LRU soft cache (LazyLoadCache, N=4) so a brief toggle doesn't
+    // force a re-decode; when the LRU overflows the oldest entry's
+    // pixels and GPU texture are released via
+    // ImageLibrary::release_entry_pixels.
+    //
+    // on_selection_changed() must be called after every selection
+    // mutation -- it diffs the previous selection against the new
+    // one, updates the LRU, evicts excess entries, and marks the
+    // diff cache dirty so stale partner slots are rebuilt.
+    void on_selection_changed();
+
+    // Promote `index` to the front of the LRU without changing the
+    // selection.  Used by timeline scrub so the scrubbed entry
+    // survives the next eviction sweep while the user is dragging
+    // the slider.
+    void touch_lazy(int index);
 
     // ---- Per-comparison reference ---------------------------------
     //
@@ -321,6 +343,16 @@ private:
     // across comparison switches but not across full sessions.
     // Cleared when a fresh comparison config is loaded.
     std::unordered_map<std::string, std::string> comparison_reference_;
+
+    // LRU of entry indices that recently left the selection.  See
+    // on_selection_changed / touch_lazy.
+    LazyLoadCache lazy_cache_;
+
+    // Snapshot of the selection at the end of the last call to
+    // on_selection_changed().  Used to compute the diff against the
+    // current selection so entries that left get inserted into the
+    // LRU and entries that entered get removed.
+    std::set<int> last_selection_;
 };
 
 } // namespace idiff

@@ -489,6 +489,7 @@ void App::register_rpc_methods() {
             // a bare replace() does not.
             if (selection_->replace(std::move(new_sel))) {
                 diff_service_->mark_dirty();
+                controller_->on_selection_changed();
                 // Re-apply any per-comparison reference recorded for
                 // the now-active comparison, matching select_group /
                 // click_in_group which both call this after a switch.
