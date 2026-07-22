@@ -183,6 +183,9 @@ AppSettings AppSettings::load(const std::string& path) {
             s.comparison_mode = std::atoi(val.c_str());
         } else if (key == "viewport.loader_backend") {
             s.loader_backend = std::atoi(val.c_str());
+        } else if (key == "cache.lru_capacity") {
+            int v = std::atoi(val.c_str());
+            if (v > 0) s.lru_capacity = v;
         } else if (key.rfind("session.path.", 0) == 0) {
             // session.path.0=..., session.path.1=... -- collected in
             // file order.  Hand-edited files may have gaps or duplicate
@@ -241,6 +244,7 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.view_background="   << view_background   << "\n";
     out << "viewport.comparison_mode="   << comparison_mode   << "\n";
     out << "viewport.loader_backend="    << loader_backend    << "\n";
+    out << "cache.lru_capacity="          << lru_capacity      << "\n";
     for (size_t i = 0; i < session_paths.size(); ++i) {
         out << "session.path." << i << "=" << session_paths[i] << "\n";
     }

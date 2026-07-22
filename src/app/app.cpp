@@ -477,6 +477,10 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     controller_->set_loader_backend(
         static_cast<LoaderBackend>(state_->settings.loader_backend));
 
+    // Apply persisted LRU cache capacity (default 20).
+    controller_->set_lru_capacity(
+        static_cast<std::size_t>(state_->settings.lru_capacity));
+
     state_->file_watcher = std::make_unique<FileWatcher>();
 
     // Detect whether a super-resolution upscaler is available next to
@@ -1201,6 +1205,7 @@ void App::save_settings() {
     s.view_background = static_cast<int>(vp.view_background());
     s.comparison_mode = static_cast<int>(vp.mode());
     s.loader_backend = static_cast<int>(controller_->loader_backend());
+    s.lru_capacity = static_cast<int>(controller_->lru_capacity());
 
     // Viewport overlay options (may also be written directly by the
     // viewport panel; sync from the viewport object so the settings

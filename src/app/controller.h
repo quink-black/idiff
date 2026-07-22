@@ -156,6 +156,11 @@ public:
     // the slider.
     void touch_lazy(int index);
 
+    // Query / change the LRU capacity at runtime.  Shrinking evicts
+    // excess entries immediately.
+    std::size_t lru_capacity() const noexcept;
+    void set_lru_capacity(std::size_t capacity);
+
     // ---- Per-comparison reference ---------------------------------
     //
     // A "comparison" is the set of images shown together when the

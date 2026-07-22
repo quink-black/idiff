@@ -326,6 +326,17 @@ void AppController::touch_lazy(int index) {
     });
 }
 
+std::size_t AppController::lru_capacity() const noexcept {
+    return lazy_cache_.capacity();
+}
+
+void AppController::set_lru_capacity(std::size_t capacity) {
+    lazy_cache_.set_capacity(capacity, [this](int idx) {
+        library_->release_entry_pixels(static_cast<std::size_t>(idx));
+    });
+    diff_->mark_dirty();
+}
+
 namespace {
 
 // Build the comparison key for an entry given the current comparison

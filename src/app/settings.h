@@ -76,6 +76,12 @@ struct AppSettings {
     // Image loader backend: 0 = ImageMagick, 1 = OpenCV, 2 = FFmpeg.
     int loader_backend = 0;
 
+    // LRU cache capacity: number of recently-deselected entries whose
+    // pixels stay in memory to avoid re-decode on brief toggles.
+    // Default 20 ≈ 660 MB for 4K RGBA8 images (3840x2160x4), ~160 MB
+    // for 1080p (1920x1080x4).
+    int lru_capacity = 20;
+
     // Media paths to reload on next launch.  Populated by the Restart
     // menu item, consumed and cleared by main() at startup.  Empty for
     // a normal launch.
