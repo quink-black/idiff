@@ -12,6 +12,19 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Xcode 16 omits ad-hoc code signing when no developer identity is set,
+# leaving arm64 executables unsigned and killed by the kernel at launch
+# (SIGKILL, no crash report). These attributes reduce signing warnings;
+# the actual ad-hoc signature is applied by POST_BUILD codesign steps on
+# each target (see src/app/CMakeLists.txt, tests/CMakeLists.txt).
+if(XCODE AND APPLE)
+    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-")
+    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO")
+    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Manual")
+    set(CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "")
+    set(CMAKE_XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "NO")
+endif()
+
 # Sanitizers for memory safety debugging
 # By default, sanitizers are ON for Debug builds, OFF for Release builds
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

@@ -102,8 +102,19 @@ if(ENABLE_SANITIZERS)
 endif()
 
 catch_discover_tests(idiff_tests
+    DISCOVERY_MODE PRE_TEST
     PROPERTIES ${_test_properties}
 )
+
+# Xcode leaves arm64 binaries unsigned (no ad-hoc signature) when no
+# developer identity is set, so they are killed by the kernel at launch.
+# Sign the test executable right after link so it can run under ctest.
+if(XCODE AND APPLE)
+    add_custom_command(TARGET idiff_tests POST_BUILD
+        COMMAND /usr/bin/codesign --force --sign - "$<TARGET_FILE:idiff_tests>"
+        VERBATIM
+    )
+endif()
 
 # --- Test video generation (FFmpeg) ---
 # Generate a short test video for the video decoder unit tests:
@@ -157,11 +168,11 @@ if(IDIFF_HAVE_FFMPEG)
                 -aspect 4:3
                 -frames:v 3
                 "${TEST_SAR_VIDEO_PATH}"
-            DEPENDS "${TEST_VIDEO_PATH}"
             COMMENT "Generating SAR test video: ${TEST_SAR_VIDEO_PATH}"
             VERBATIM
         )
         add_custom_target(generate_sar_test_video DEPENDS "${TEST_SAR_VIDEO_PATH}")
+        add_dependencies(generate_sar_test_video generate_test_video)
         add_dependencies(idiff_tests generate_sar_test_video)
 
         target_compile_definitions(idiff_tests PRIVATE

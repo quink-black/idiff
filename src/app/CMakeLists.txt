@@ -106,6 +106,16 @@ if(WIN32)
     target_compile_options(idiff PRIVATE /utf-8)
 endif()
 
+# Xcode leaves arm64 binaries unsigned when no developer identity is set,
+# so they are killed by the kernel at launch. Sign the bundle executable
+# after link so it runs directly from the build directory.
+if(XCODE AND APPLE)
+    add_custom_command(TARGET idiff POST_BUILD
+        COMMAND /usr/bin/codesign --force --sign - "$<TARGET_FILE:idiff>"
+        VERBATIM
+    )
+endif()
+
 # Copy idiff.png next to the executable so set_window_icon() can find it
 # at runtime.  On macOS the png is also placed in Contents/Resources so
 # the bundle is self-contained.
