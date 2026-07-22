@@ -22,7 +22,26 @@ namespace idiff {
 class LazyLoadCache {
 public:
     static constexpr int kRemoved = -1;
-    static constexpr std::size_t kCapacity = 4;
+
+    // Default capacity: 20 entries.  At ~33 MB per 4K RGBA8 image
+    // this caps the LRU near ~660 MB for the largest common images;
+    // for 1080p (~8 MB each) it sits around ~160 MB.  The user can
+    // tune this via the settings file.
+    static constexpr std::size_t kDefaultCapacity = 20;
+
+    explicit LazyLoadCache(std::size_t capacity = kDefaultCapacity)
+        : capacity_(capacity) {}
+
+    std::size_t capacity() const noexcept { return capacity_; }
+
+    // Change the capacity at runtime.  If the new capacity is smaller
+    // than the current size, excess entries are evicted immediately
+    // via evict_excess().
+    template <class F>
+    void set_capacity(std::size_t new_capacity, F&& evict_cb) {
+        capacity_ = new_capacity;
+        evict_excess(std::forward<F>(evict_cb));
+    }
 
     // Promote `index` to the most-recently-used position.  If the
     // index is already cached, it is moved to the front; otherwise it
@@ -76,13 +95,13 @@ public:
         }
     }
 
-    // Evict from the least-recently-used end until size <= kCapacity.
+    // Evict from the least-recently-used end until size <= capacity_.
     // `evict_cb(index)` is invoked once per evicted index, in
     // oldest-first order.  The callback is responsible for releasing
     // the entry's pixels and GPU texture.
     template <class F>
     void evict_excess(F&& evict_cb) {
-        while (order_.size() > kCapacity) {
+        while (order_.size() > capacity_) {
             int idx = order_.back();
             order_.pop_back();
             pos_.erase(idx);
@@ -97,6 +116,7 @@ public:
     std::size_t size() const noexcept { return order_.size(); }
 
 private:
+    std::size_t capacity_;
     std::list<int> order_;
     std::unordered_map<int, std::list<int>::iterator> pos_;
 };
