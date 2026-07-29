@@ -10,8 +10,9 @@
 //     label recomputation and a diff dirty mark in one shot.
 //   * sort_entries_by_name and move_entry both keep the selection in
 //     sync with the new positions.
-//   * compute_display_labels disambiguates duplicate filenames using
-//     parent directories.
+//   * compute_display_labels shows each entry's parent directory (shortest
+//     distinguishing path suffix) so origins stay visible, but preserves
+//     custom labels such as comparison-config titles.
 //   * timeline_length, has_running_sr_tasks and get_ref_index forward
 //     to the underlying service without modification.
 
@@ -506,7 +507,91 @@ TEST_CASE("AppController::compute_display_labels disambiguates duplicates",
 
     REQUIRE(controller.library().all()[0].display_label == "run1/frame.png");
     REQUIRE(controller.library().all()[1].display_label == "run2/frame.png");
-    REQUIRE(controller.library().all()[2].display_label == "unique.png");
+    REQUIRE(controller.library().all()[2].display_label == "run1/unique.png");
+}
+
+// Regression: entries that share a stem but differ only by extension
+// (e.g. output/foo.jpeg vs input/foo.jpg) must still show their parent
+// directory.  Filename-only disambiguation missed this because the
+// filenames are technically distinct, yet the user cannot tell which
+// directory each came from.
+TEST_CASE("AppController::compute_display_labels shows parent dir for same-stem "
+          "different-extension entries",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(
+        make_entry("/Volumes/aigc/output/foo.jpeg", "foo.jpeg"));
+    controller.library().add(
+        make_entry("/Volumes/aigc/input/foo.jpg", "foo.jpg"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "output/foo.jpeg");
+    REQUIRE(controller.library().all()[1].display_label == "input/foo.jpg");
+}
+
+// Regression: when the immediate parent directory is shared, the label
+// must grow further up the tree to the shortest component that actually
+// distinguishes the entries (foo/aaa vs bar/aaa), not just the nearest
+// directory.  This is the case the original filename-only logic never
+// handled -- two same-named files under the same subfolder in different
+// roots.
+TEST_CASE("AppController::compute_display_labels grows past a shared parent",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/foo/aaa/1.png", "1.png"));
+    controller.library().add(make_entry("/bar/aaa/1.png", "1.png"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "foo/aaa/1.png");
+    REQUIRE(controller.library().all()[1].display_label == "bar/aaa/1.png");
+}
+
+// Regression: the shortest distinguishing suffix is kept -- only as many
+// directory components as needed for uniqueness, never the full path.
+TEST_CASE("AppController::compute_display_labels keeps shortest distinguishing "
+          "path suffix",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/a/b/c/1.png", "1.png"));
+    controller.library().add(make_entry("/a/b/d/1.png", "1.png"));
+    controller.library().add(make_entry("/x/y/z/2.png", "2.png"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "c/1.png");
+    REQUIRE(controller.library().all()[1].display_label == "d/1.png");
+    REQUIRE(controller.library().all()[2].display_label == "z/2.png");
+}
+
+// Regression: a mix of shared and distinct immediate parents -- the
+// distinguishing depth differs per entry, so each gets the minimal suffix
+// it needs (foo/aaa vs bar/aaa for the shared 1.png, but just z for 2.png).
+TEST_CASE("AppController::compute_display_labels uses per-entry minimal depth",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    controller.library().add(make_entry("/foo/aaa/1.png", "1.png"));
+    controller.library().add(make_entry("/bar/aaa/1.png", "1.png"));
+    controller.library().add(make_entry("/x/y/z/2.png", "2.png"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "foo/aaa/1.png");
+    REQUIRE(controller.library().all()[1].display_label == "bar/aaa/1.png");
+    REQUIRE(controller.library().all()[2].display_label == "z/2.png");
 }
 
 TEST_CASE("AppController::compute_display_labels is a no-op on empty library",

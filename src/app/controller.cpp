@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace idiff {
@@ -87,25 +88,105 @@ void AppController::compute_display_labels() {
     auto& entries = library_->all();
     if (entries.empty()) return;
 
-    std::unordered_map<std::string, int> name_counts;
-    for (const auto& entry : entries) {
-        name_counts[entry.filename]++;
+    // Split each path into its directory-prefix and filename-suffix
+    // components so we can grow the shown prefix only as far as needed
+    // to make every entry's label unique (e.g. foo/abc/1.png vs
+    // bar/abc/1.png instead of always the full path).
+    struct Parts {
+        std::vector<std::string> dirs;
+        std::string name;
+    };
+    std::vector<Parts> parts(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const std::string& p = entries[i].path;
+        size_t start = 0;
+        std::vector<std::string> comps;
+        for (;;) {
+            size_t sep = p.find_first_of("/\\", start);
+            if (sep == std::string::npos) {
+                parts[i].name = p.substr(start);
+                break;
+            }
+            // Skip the empty token produced by a leading path separator
+            // (e.g. the root "/") so it does not appear in the label.
+            if (sep > start) {
+                comps.push_back(p.substr(start, sep - start));
+            }
+            start = sep + 1;
+        }
+        parts[i].dirs = std::move(comps);
     }
 
-    for (auto& entry : entries) {
-        if (name_counts[entry.filename] > 1) {
-            auto sep = entry.path.find_last_of("/\\");
-            if (sep != std::string::npos) {
-                auto parent = entry.path.substr(0, sep);
-                auto sep2 = parent.find_last_of("/\\");
-                std::string dir_name = (sep2 != std::string::npos)
-                    ? parent.substr(sep2 + 1) : parent;
-                entry.display_label = dir_name + "/" + entry.filename;
-            } else {
-                entry.display_label = entry.filename;
+    // A custom label (e.g. a comparison-config title) is one whose
+    // filename was replaced with a title that no longer matches the
+    // basename of its path.  Such entries must keep their label verbatim;
+    // we only derive labels for entries still carrying their plain
+    // filename.
+    auto basename_of = [](const std::string& p) {
+        auto sep = p.find_last_of("/\\");
+        return (sep == std::string::npos) ? p : p.substr(sep + 1);
+    };
+    std::vector<bool> custom(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i) {
+        custom[i] = (entries[i].filename != basename_of(entries[i].path));
+    }
+
+    // Build the derived label for one entry from its trailing `keep`
+    // directory components plus the filename.  Emits at least the
+    // immediate parent directory so the entry's origin is always visible
+    // (e.g. output/1.jpeg vs input/1.jpg); directory components grow only
+    // as needed for uniqueness, keeping the result to the shortest
+    // distinguishing path suffix.
+    auto build_label = [](const Parts& p, int keep) {
+        int start = static_cast<int>(p.dirs.size()) - keep;
+        if (start < 0) start = 0;
+        std::string label;
+        for (int j = start; j < static_cast<int>(p.dirs.size()); ++j) {
+            if (!label.empty()) label += "/";
+            label += p.dirs[j];
+        }
+        if (!label.empty()) label += "/";
+        label += p.name;
+        return label;
+    };
+
+    // Each entry carries its own `keep` (how many trailing directory
+    // components it shows).  Always begin with the immediate parent
+    // directory; grow an entry's depth only when its own label still
+    // collides with another entry.  A shared global depth would
+    // over-qualify unrelated entries (e.g. forcing z/2.png to y/z/2.png
+    // just because two 1.png files needed more path).  Iterate to a
+    // fixpoint so every entry keeps only the shortest distinguishing
+    // suffix.
+    std::vector<int> keep(entries.size(), 1);
+    int max_keep = 0;
+    for (const auto& p : parts) {
+        max_keep = std::max(max_keep, static_cast<int>(p.dirs.size()));
+    }
+    for (;;) {
+        std::vector<std::string> labels(entries.size());
+        for (size_t i = 0; i < entries.size(); ++i) {
+            labels[i] = custom[i] ? entries[i].display_label
+                                  : build_label(parts[i], keep[i]);
+        }
+        bool changed = false;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (custom[i]) continue;
+            for (size_t j = 0; j < entries.size(); ++j) {
+                if (j == i) continue;
+                if (labels[i] == labels[j] && keep[i] < max_keep) {
+                    ++keep[i];
+                    changed = true;
+                    break;
+                }
             }
-        } else {
-            entry.display_label = entry.filename;
+        }
+        if (!changed) break;
+    }
+
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (!custom[i]) {
+            entries[i].display_label = build_label(parts[i], keep[i]);
         }
     }
 }
