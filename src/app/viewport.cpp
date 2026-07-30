@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/geom_utils.h"
 #include "core/ruler_utils.h"
 
 namespace idiff {
@@ -530,7 +531,7 @@ void Viewport::draw_image_label(const char* label,
     ImVec2 rect_min;
     ImU32 bg_color;
     if (fits_above) {
-        float x = std::clamp(img_pos.x,
+        float x = clamp_safe(img_pos.x,
                              cell_pos.x,
                              cell_pos.x + cell_size.x - box_w);
         rect_min = ImVec2(x, above_y);
@@ -541,7 +542,7 @@ void Viewport::draw_image_label(const char* label,
     } else {
         // Fallback: overlay on the image, but below the ruler strip and
         // subtle enough that the underlying pixels still show through.
-        float x = std::clamp(img_pos.x + 2.0f,
+        float x = clamp_safe(img_pos.x + 2.0f,
                              cell_pos.x,
                              cell_pos.x + cell_size.x - box_w);
         float y = std::max(img_pos.y + 2.0f, cell_effective_top + 2.0f);
@@ -628,7 +629,7 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", px);
             ImVec2 text_size = ImGui::CalcTextSize(buf);
-            float label_x = std::clamp(sx + 2.0f, cell_left + 1.0f, cell_right - text_size.x - 1.0f);
+            float label_x = clamp_safe(sx + 2.0f, cell_left + 1.0f, cell_right - text_size.x - 1.0f);
             dl->AddText(ImVec2(label_x, h_ruler_y + 1), label_color, buf);
         }
 
@@ -669,7 +670,7 @@ void Viewport::draw_ruler(ImVec2 img_pos, ImVec2 img_size,
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", py);
             ImVec2 text_size = ImGui::CalcTextSize(buf);
-            float label_y = std::clamp(sy + 1.0f, h_ruler_bottom + 1.0f, cell_bottom - text_size.y - 1.0f);
+            float label_y = clamp_safe(sy + 1.0f, h_ruler_bottom + 1.0f, cell_bottom - text_size.y - 1.0f);
             dl->AddText(ImVec2(v_ruler_x + 2, label_y), label_color, buf);
         }
 
