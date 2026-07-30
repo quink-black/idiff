@@ -50,6 +50,15 @@ struct ImageEntry {
     std::string path;
     std::string filename;
     std::string display_label;
+    // When true, display_label was set by an external source (comparison-
+    // config title, SR result name) and compute_display_labels() must
+    // preserve it verbatim instead of deriving a path-based label.
+    bool label_custom = false;
+    // A suffix appended after the path-derived label by
+    // compute_display_labels(), e.g. " (300 frames)" for multi-frame
+    // sources.  Kept separate so the path-disambiguation logic can
+    // rebuild the label without losing the suffix.
+    std::string label_suffix;
     // Source of pixel data.  For still images, this is an ImageFileSource
     // with frame_count() == 1.  For video streams (e.g. raw YUV) it
     // exposes multiple frames.  The field is always non-null for an

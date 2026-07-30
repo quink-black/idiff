@@ -912,11 +912,13 @@ bool App::add_yuv_entry(const std::string& path, const YuvStreamParams& params) 
     auto sep = path.find_last_of("/\\");
     entry.filename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
     // Include frame count in the label so the list shows e.g.
-    // "clip.yuv (300 frames)" for multi-frame streams.
+    // "clip.yuv (300 frames)" for multi-frame streams.  Stored in
+    // label_suffix so compute_display_labels() can rebuild the
+    // path-derived label without losing it.
     entry.display_label = entry.filename;
     if (source->frame_count() > 1) {
-        entry.display_label += " (" + std::to_string(source->frame_count())
-                            + " frames)";
+        entry.label_suffix = " (" + std::to_string(source->frame_count())
+                             + " frames)";
     }
     entry.source = std::move(source);
     // image, display_image, texture all default-constructed (nullptr).
@@ -1000,14 +1002,15 @@ bool App::update_yuv_entry_params(int index, const YuvStreamParams& params) {
 
     // Refresh "(N frames)" suffix: may change if the new params produce a
     // different frame count.  compute_display_labels() will reconcile
-    // uniqueness and path stripping for free.
+    // uniqueness and path stripping, appending label_suffix for free.
     auto sep = entry.path.find_last_of("/\\");
     entry.filename = (sep != std::string::npos)
                        ? entry.path.substr(sep + 1) : entry.path;
     entry.display_label = entry.filename;
+    entry.label_suffix.clear();
     if (entry.source->frame_count() > 1) {
-        entry.display_label += " (" + std::to_string(entry.source->frame_count())
-                            + " frames)";
+        entry.label_suffix = " (" + std::to_string(entry.source->frame_count())
+                             + " frames)";
     }
     compute_display_labels();
 
@@ -1851,6 +1854,7 @@ void App::poll_sr_tasks() {
             }
             new_entry.display_label = input_name + " (SR " +
                 std::to_string(scale) + "x)";
+            new_entry.label_custom = true;
 
             // Auto-select: input as the reference, output as a partner
             // for comparison.

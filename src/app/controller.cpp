@@ -117,18 +117,12 @@ void AppController::compute_display_labels() {
         parts[i].dirs = std::move(comps);
     }
 
-    // A custom label (e.g. a comparison-config title) is one whose
-    // filename was replaced with a title that no longer matches the
-    // basename of its path.  Such entries must keep their label verbatim;
-    // we only derive labels for entries still carrying their plain
-    // filename.
-    auto basename_of = [](const std::string& p) {
-        auto sep = p.find_last_of("/\\");
-        return (sep == std::string::npos) ? p : p.substr(sep + 1);
-    };
+    // Entries marked label_custom (comparison-config titles, SR result
+    // names) keep their display_label verbatim; we only derive labels
+    // for entries still carrying their plain filename.
     std::vector<bool> custom(entries.size());
     for (size_t i = 0; i < entries.size(); ++i) {
-        custom[i] = (entries[i].filename != basename_of(entries[i].path));
+        custom[i] = entries[i].label_custom;
     }
 
     // Build the derived label for one entry from its trailing `keep`
@@ -186,7 +180,8 @@ void AppController::compute_display_labels() {
 
     for (size_t i = 0; i < entries.size(); ++i) {
         if (!custom[i]) {
-            entries[i].display_label = build_label(parts[i], keep[i]);
+            entries[i].display_label =
+                build_label(parts[i], keep[i]) + entries[i].label_suffix;
         }
     }
 }
@@ -850,10 +845,12 @@ AppController::load_images(const std::vector<std::string>& paths) {
             entry.filename = (sep != std::string::npos) ? path.substr(sep + 1)
                                                         : path;
             entry.display_label = entry.filename;
-            // Show frame count for multi-frame sources (video files)
+            // Show frame count for multi-frame sources (video files).
+            // Stored in label_suffix so compute_display_labels() can
+            // rebuild the path-derived label without losing it.
             if (source->frame_count() > 1) {
-                entry.display_label += " (" + std::to_string(source->frame_count())
-                                    + " frames)";
+                entry.label_suffix = " (" + std::to_string(source->frame_count())
+                                     + " frames)";
             }
             entry.source = std::move(source);
             // image, display_image, texture all default-constructed
@@ -992,6 +989,8 @@ AppController::switch_to_comparison_group(int group_idx) {
                 if (it == label_by_path.end()) continue;
                 e.filename = it->second;
                 e.display_label = it->second;
+                e.label_custom = true;
+                e.label_suffix.clear();
             }
             // compute_display_labels() will uniquify duplicates.
             compute_display_labels();
