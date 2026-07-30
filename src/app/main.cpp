@@ -229,8 +229,11 @@ int main(int argc, char** argv) {
 
     set_window_icon(window);
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    Uint32 renderer_flags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
+    if (smoke) {
+        renderer_flags = SDL_RENDERER_SOFTWARE;
+    }
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, renderer_flags);
     if (!renderer) {
         std::fprintf(stderr, "SDL_CreateRenderer Error: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
