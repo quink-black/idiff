@@ -54,6 +54,7 @@ std::vector<std::string> collect_startup_paths(int argc, char** argv) {
         std::string s(static_cast<size_t>(utf8_len - 1), '\0');
         WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1,
                             s.data(), utf8_len, nullptr, nullptr);
+        if (!s.empty() && s.front() == '-') continue; // skip flags
         paths.emplace_back(std::move(s));
     }
     LocalFree(wargv);
@@ -61,7 +62,10 @@ std::vector<std::string> collect_startup_paths(int argc, char** argv) {
 #else
     std::vector<std::string> paths;
     paths.reserve(argc > 1 ? argc - 1 : 0);
-    for (int i = 1; i < argc; ++i) paths.emplace_back(argv[i]);
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i][0] == '-') continue; // skip flags like --smoke
+        paths.emplace_back(argv[i]);
+    }
     return paths;
 #endif
 }
@@ -113,6 +117,17 @@ void set_window_icon(SDL_Window* window) {
 }
 
 int main(int argc, char** argv) {
+    // --smoke: initialize the app and exit immediately.  Used by the
+    // headless launch test (SDL_VIDEODRIVER=dummy) to assert the real
+    // App::init path does not crash on startup.
+    bool smoke = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--smoke") == 0) {
+            smoke = true;
+            break;
+        }
+    }
+
 #ifdef _WIN32
     // Make this a UTF-8 process top to bottom.  The application
     // manifest already declares activeCodePage=UTF-8 so the Win32
@@ -258,6 +273,15 @@ int main(int argc, char** argv) {
 
     // Make sure drag-and-drop file events are delivered.
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
+
+    if (smoke) {
+        LOG_INFO("idiff smoke test: init OK, shutting down");
+        app.shutdown();
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 0;
+    }
 
     bool running = true;
 

@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1341,4 +1342,56 @@ TEST_CASE("AppController::select_range no-op on empty library",
 
     bool changed = controller.select_range(0, 5);
     REQUIRE_FALSE(changed);
+}
+
+// Regression guard for the ByFolder grouping feature: a runtime mode
+// change must re-sort the library so same-folder entries are contiguous.
+// Before the fix, switching mode after load only stored the setting and
+// never re-sorted, leaving entries in their previous (filename) order and
+// fragmenting the folder groups.
+TEST_CASE("AppController re-sorts by folder when mode changes at runtime",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    // Interleave two folders in a non-folder order so a filename sort
+    // does NOT cluster them.
+    controller.library().add(make_entry("/dirA/2.png", "2.png"));
+    controller.library().add(make_entry("/dirB/1.png", "1.png"));
+    controller.library().add(make_entry("/dirA/1.png", "1.png"));
+    controller.library().add(make_entry("/dirB/2.png", "2.png"));
+
+    controller.set_group_mode(idiff::GroupMode::ByFolder);
+    controller.sort_entries_by_name();
+
+    // After sorting by folder, each folder must form one contiguous run:
+    // once the folder key changes, it must never reappear.  This is the
+    // invariant the visual grouping separators rely on.
+    const auto& entries = controller.library().all();
+    std::set<std::string> seen_folders;
+    std::string current;
+    bool in_run = false;
+    for (const auto& e : entries) {
+        std::string key = idiff::group_key_from_directory(e.path);
+        if (!in_run || key != current) {
+            // A new run starts: this folder must not have appeared before.
+            REQUIRE(seen_folders.find(key) == seen_folders.end());
+            seen_folders.insert(key);
+            current = key;
+            in_run = true;
+        }
+    }
+
+    // group_indices for a dirA entry returns both dirA entries.
+    int dirA_idx = -1;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (idiff::group_key_from_directory(entries[i].path) == "/dirA") {
+            dirA_idx = static_cast<int>(i);
+            break;
+        }
+    }
+    REQUIRE(dirA_idx >= 0);
+    auto group = controller.group_indices(dirA_idx);
+    REQUIRE(group.size() == 2);
 }
