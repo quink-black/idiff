@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/media_source.h"
+#include "domain/group_key.h"
 
 namespace idiff {
 
@@ -54,9 +55,10 @@ struct AppSettings {
     bool show_image_list = true;
     bool show_inspector = true;
 
-    // Image grouping.  When true, clicking an entry selects all
-    // entries sharing the same filename stem.
-    bool group_by_name = true;
+    // Image grouping mode.  ByName groups entries sharing the same
+    // filename stem; ByFolder groups entries in the same parent
+    // directory; None disables grouping entirely.
+    GroupMode group_mode = GroupMode::ByName;
 
     // Upscale method: 0 = Nearest, 1 = Bilinear, 2 = Bicubic,
     // 3 = Lanczos.

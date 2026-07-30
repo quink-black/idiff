@@ -13,6 +13,19 @@
 
 namespace idiff {
 
+// Image-list grouping mode.  Controls how entries are sorted,
+// visually separated, and click-selected in the image-list panel.
+//   None     -- flat list, no group separators
+//   ByName   -- group by filename stem (files with the same stem
+//               from different directories form one group)
+//   ByFolder -- group by parent directory (files in the same
+//               directory form one group)
+enum class GroupMode {
+    None,
+    ByName,
+    ByFolder,
+};
+
 // Split a filename into (stem, extension) at the last '.' that is
 // not the leading character.  A name with no extension or a
 // single-character name returns the whole string as the stem and an
@@ -26,6 +39,13 @@ split_stem_ext(std::string_view name);
 // everything after the last separator and before the last
 // extension dot, or the whole string when there is no extension.
 std::string group_key_from_filename(const std::string& filename);
+
+// Extract the group key from a filesystem path's parent directory.
+// Returns everything before the last path separator, normalized to
+// '/' separators.  Returns an empty string when the path has no
+// directory component.  Used by GroupMode::ByFolder so files in the
+// same directory form one group.
+std::string group_key_from_directory(const std::string& path);
 
 } // namespace idiff
 
