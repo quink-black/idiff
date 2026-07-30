@@ -8,13 +8,11 @@
 
 #include "app/app.h"            // ImageEntry
 #include "app/pixel_sampler.h"
-#include "app/sr_infer_engine.h" // SREngineStatus
 #include "app/viewport.h"
 #include "core/image.h"
 #include "core/media_source.h"
 #include "domain/diff_service.h"
 #include "domain/selection_model.h"
-#include "domain/sr_task_service.h"
 #include "domain/timeline_model.h"
 
 #include <imgui.h>
@@ -33,7 +31,6 @@ void render_status_bar(const StatusBarInputs& in) {
     const auto& selection = *in.selection;
     const auto& vport = *in.viewport;
     const auto& diff_service = *in.diff_service;
-    const auto& sr_service = *in.sr_service;
     const auto& slot_to_entry = *in.viewport_slot_to_entry;
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -213,24 +210,6 @@ void render_status_bar(const StatusBarInputs& in) {
                 append(" | %s", in.status_text->c_str());
             }
 
-            // Show active SR task progress in the status bar.
-            if (!sr_service.empty()) {
-                for (const auto& task : sr_service.tasks()) {
-                    if (task.engine &&
-                        task.engine->get_status() == SREngineStatus::Running) {
-                        float p = task.engine->get_progress();
-                        if (p >= 0) {
-                            append(" | SR: %d%%", static_cast<int>(p * 100));
-                        } else {
-                            append(" | SR: running...");
-                        }
-                    }
-                }
-            }
-
-            if (!in.status_msg->empty()) {
-                append(" | %s", in.status_msg->c_str());
-            }
             ImGui::TextUnformatted(buf);
             ImGui::EndMenuBar();
         }

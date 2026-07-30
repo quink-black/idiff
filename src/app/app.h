@@ -28,13 +28,11 @@ class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
 class DiffService;
-class SrTaskService;
 class ComparisonConfigService;
 struct YuvStreamParams;
 #ifdef IDIFF_HAVE_FFMPEG
 class YuvRawSource;
 #endif
-struct SRDialogState;
 
 #ifdef IDIFF_HAVE_RPC
 namespace rpc {
@@ -156,20 +154,16 @@ public:
 
     void load_images(const std::vector<std::string>& paths);
 
-    // Returns true if any super-resolution task is currently running.
-    bool has_running_sr_tasks() const;
     // Called when the user requests to quit (e.g. closes the window or
-    // presses Alt+F4).  If SR tasks are running, shows a confirmation
-    // dialog instead of quitting immediately.  Otherwise sets the
-    // internal quit flag so wants_quit() returns true next frame.
+    // presses Alt+F4).  Sets the internal quit flag so wants_quit()
+    // returns true next frame.
     void request_quit();
-    // Returns true once the app is ready to exit (either no SR tasks
-    // were running, or the user confirmed the quit dialog).
+    // Returns true once the app is ready to exit (request_quit() has
+    // been called).
     bool wants_quit() const;
 
     // Snapshot the current media paths into settings, then signal the
-    // event loop to exit so main() can re-exec the binary.  Refused
-    // with a status message while SR tasks are running.
+    // event loop to exit so main() can re-exec the binary.
     void request_restart();
     // True after request_restart() has armed a restart.  main() checks
     // this after the event loop exits.
@@ -287,19 +281,10 @@ private:
 
     // Render an error notification popup (modal dialog).
     void render_error_dialog();
-    // Render the quit-while-SR-running confirmation dialog.
-    void render_quit_confirm_dialog();
     // Render the file-changed-on-disk reload prompt.
     void render_reload_dialog();
     // Poll the file watcher and trigger the reload dialog if files changed.
     void poll_file_watcher();
-    // Render the super-resolution configuration dialog.
-    void render_sr_dialog();
-    // Poll all running SR tasks, update status, and add completed
-    // output images to the image list.
-    void poll_sr_tasks();
-    // Start SR inference for the given task parameters.
-    void start_sr_task(const struct SRTaskParams& params);
 
 #ifdef IDIFF_HAVE_RPC
     // Wire the 7 Phase-1 method handlers into rpc_dispatcher_.  Defined
@@ -368,7 +353,6 @@ private:
     SelectionModel* selection_ = nullptr;
     TimelineModel* timeline_ = nullptr;
     DiffService* diff_service_ = nullptr;
-    SrTaskService* sr_service_ = nullptr;
     ComparisonConfigService* comparison_config_ = nullptr;
 
     // Convenience accessors so call sites can keep using the same
@@ -386,6 +370,8 @@ private:
     // Set by request_restart() so main() knows to re-exec the binary
     // after the event loop exits and shutdown completes.
     bool restart_requested_ = false;
+    // Set by request_quit() so main() knows to exit the event loop.
+    bool quit_requested_ = false;
 
     // Callback invoked when RPC/MCP requests are dispatched.  Set by
     // main.cpp to idle_tracker.on_mcp_activity so the IdleTracker
@@ -397,14 +383,6 @@ private:
     // consumed by render_status_bar() to map the viewport's hover pixel
     // back to a concrete image.
     std::vector<int> viewport_slot_to_entry_;
-
-    // Super-resolution feature state
-    // True when the seedvr2-upscaler (or any registered SR engine) is
-    // available next to the executable or via SEEDVR2_UPSCALER_PATH.
-    bool sr_enabled_ = false;
-
-    // SR configuration dialog state.
-    std::unique_ptr<SRDialogState> sr_dialog_;
 
 #ifdef IDIFF_HAVE_RPC
     // JSON-RPC 2.0 server.  The dispatcher owns method handlers and is

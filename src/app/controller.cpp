@@ -1,8 +1,5 @@
 #include "app/controller.h"
 
-#include "app/sr_dialog.h"
-#include "app/sr_infer_engine.h"
-#include "app/sr_infer_engine_factory.h"
 #include "app/status_reporter.h"
 #include "core/image.h"
 #include "core/image_loader.h"
@@ -15,7 +12,6 @@
 #include "domain/group_key.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
-#include "domain/sr_task_service.h"
 #include "domain/timeline_model.h"
 #include "util/logger.h"
 
@@ -45,7 +41,6 @@ AppController::AppController(ITextureUploader& texture_uploader,
       selection_(std::make_unique<SelectionModel>()),
       timeline_(std::make_unique<TimelineModel>()),
       diff_(std::make_unique<DiffService>(texture_uploader)),
-      sr_tasks_(std::make_unique<SrTaskService>()),
       comparison_config_(std::make_unique<ComparisonConfigService>()),
       status_reporter_(&status_reporter) {}
 
@@ -55,7 +50,6 @@ ImageLibrary& AppController::library() noexcept { return *library_; }
 SelectionModel& AppController::selection() noexcept { return *selection_; }
 TimelineModel& AppController::timeline() noexcept { return *timeline_; }
 DiffService& AppController::diff() noexcept { return *diff_; }
-SrTaskService& AppController::sr_tasks() noexcept { return *sr_tasks_; }
 ComparisonConfigService& AppController::comparison_config() noexcept {
     return *comparison_config_;
 }
@@ -595,10 +589,6 @@ void AppController::remove_entry(int index) {
     on_selection_changed();
 }
 
-bool AppController::has_running_sr_tasks() const {
-    return sr_tasks_->has_running();
-}
-
 void AppController::sync_entries_to_timeline() {
     std::string status_buf;
     if (timeline_->sync_to(library_->all(), status_buf)) {
@@ -634,17 +624,6 @@ void AppController::preview_entries_to_timeline() {
             e.source->frame_count() > 1) {
             touch_lazy(static_cast<int>(i));
         }
-    }
-}
-
-void AppController::start_sr_task(const SRTaskParams& params) {
-    auto factory = []() -> std::unique_ptr<SRInferEngine> {
-        return SRInferEngineFactory::instance().create_engine("seedvr2");
-    };
-    const auto result = sr_tasks_->start(params, factory);
-    if (!result.ok) {
-        status_reporter_->show_error(result.error_title,
-                                     result.error_message);
     }
 }
 

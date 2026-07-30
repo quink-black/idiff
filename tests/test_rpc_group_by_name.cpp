@@ -67,7 +67,6 @@ class SilentStatusReporter : public idiff::IStatusReporter {
 public:
     void set_status(const std::string&) override {}
     void append_status(const std::string&) override {}
-    void set_sr_status(const std::string&) override {}
     void show_error(const std::string&, const std::string&) override {}
 };
 

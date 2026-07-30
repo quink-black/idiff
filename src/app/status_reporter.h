@@ -5,7 +5,7 @@
 //
 // The non-UI domain services (and the orchestration code in
 // AppController) need a way to surface short user-visible messages
-// (status bar text, SR badges, error dialogs) without depending on
+// (status bar text, error dialogs) without depending on
 // App's State struct or any ImGui type.  IStatusReporter is the
 // narrow seam: any side that needs to talk back to the user takes a
 // reference, and the concrete UI implementation (App owns one)
@@ -32,10 +32,6 @@ public:
     // without overwriting the message produced by the operation it
     // chained into.
     virtual void append_status(const std::string& text) = 0;
-
-    // Replace the SR/notification status (the secondary line shown for
-    // long-running super-resolution jobs).
-    virtual void set_sr_status(const std::string& text) = 0;
 
     // Surface a modal error notification with the given title and
     // body.  Called for unrecoverable failures the user must

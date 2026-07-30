@@ -13,14 +13,13 @@
 //   * compute_display_labels shows each entry's parent directory (shortest
 //     distinguishing path suffix) so origins stay visible, but preserves
 //     custom labels such as comparison-config titles.
-//   * timeline_length, has_running_sr_tasks and get_ref_index forward
+//   * timeline_length and get_ref_index forward
 //     to the underlying service without modification.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "app/controller.h"
 #include "app/io/texture_uploader.h"
-#include "app/sr_dialog.h"
 #include "app/status_reporter.h"
 #include "app/app.h"
 #include "domain/comparison_config_service.h"
@@ -75,9 +74,6 @@ public:
         if (!current_status.empty()) current_status += " | ";
         current_status += text;
     }
-    void set_sr_status(const std::string& text) override {
-        sr_status_calls.push_back(text);
-    }
     void show_error(const std::string& title,
                     const std::string& message) override {
         error_titles.push_back(title);
@@ -86,7 +82,6 @@ public:
 
     std::vector<std::string> status_calls;
     std::vector<std::string> append_calls;
-    std::vector<std::string> sr_status_calls;
     std::vector<std::string> error_titles;
     std::vector<std::string> error_messages;
     std::string current_status;
@@ -661,9 +656,6 @@ TEST_CASE("AppController forwards trivial queries to its services",
 
     // No multi-frame entries -> timeline length clamps to 1.
     REQUIRE(controller.timeline_length() == 1);
-
-    // No SR tasks have been started.
-    REQUIRE_FALSE(controller.has_running_sr_tasks());
 }
 
 TEST_CASE("AppController::sync_entries_to_timeline is silent on empty library",
@@ -679,35 +671,6 @@ TEST_CASE("AppController::sync_entries_to_timeline is silent on empty library",
     // (dirty) state without an extra mark_dirty edge.
     REQUIRE(reporter.status_calls.empty());
     REQUIRE(reporter.append_calls.empty());
-}
-
-TEST_CASE("AppController::start_sr_task surfaces missing-engine errors",
-          "[controller]") {
-    CountingUploader uploader;
-    RecordingStatusReporter reporter;
-    idiff::AppController controller(uploader, reporter);
-
-    // No SR engine is registered in the test binary; the underlying
-    // SrTaskService should refuse to enqueue a task and the
-    // controller must forward the diagnostic to the reporter as a
-    // modal error rather than as a status-bar string.
-    idiff::SRTaskParams params{};
-    params.input_path = "/tmp/missing.png";
-    params.output_path = "/tmp/missing_sr_2x.png";
-
-    controller.start_sr_task(params);
-
-    REQUIRE(reporter.error_titles.size() == 1);
-    REQUIRE(reporter.error_messages.size() == 1);
-    REQUIRE(reporter.error_titles.front() == "Super Resolution Error");
-    REQUIRE_FALSE(reporter.error_messages.front().empty());
-
-    // Failed start must not enqueue anything.
-    REQUIRE_FALSE(controller.has_running_sr_tasks());
-
-    // Status bar untouched; only the modal channel was used.
-    REQUIRE(reporter.status_calls.empty());
-    REQUIRE(reporter.sr_status_calls.empty());
 }
 
 TEST_CASE("AppController::reload_all_images is silent on empty library",

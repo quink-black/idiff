@@ -2,14 +2,13 @@
 // together.  Single-operation coverage lives in test_app_controller;
 // this file exercises combinations that match real user journeys
 // (load a batch, reorder, remove, reload with a different backend,
-// start a failing SR task twice, etc.) so regressions in cross-
-// service state hand-offs are caught headlessly.
+// etc.) so regressions in cross-service state hand-offs are caught
+// headlessly.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "app/controller.h"
 #include "app/io/texture_uploader.h"
-#include "app/sr_dialog.h"
 #include "app/status_reporter.h"
 #include "app/app.h"
 #include "core/image_loader.h"
@@ -60,9 +59,6 @@ public:
         if (!current_status.empty()) current_status += " | ";
         current_status += text;
     }
-    void set_sr_status(const std::string& text) override {
-        sr_status_calls.push_back(text);
-    }
     void show_error(const std::string& title,
                     const std::string& message) override {
         error_titles.push_back(title);
@@ -71,7 +67,6 @@ public:
 
     std::vector<std::string> status_calls;
     std::vector<std::string> append_calls;
-    std::vector<std::string> sr_status_calls;
     std::vector<std::string> error_titles;
     std::vector<std::string> error_messages;
     std::string current_status;
@@ -225,30 +220,6 @@ TEST_CASE("Integration: sync_entries_to_timeline is silent for still images",
 
     // Timeline length stays clamped to 1 for single-frame libraries.
     REQUIRE(controller.timeline_length() == 1);
-}
-
-TEST_CASE("Integration: two failing SR starts yield two modal errors",
-          "[controller][integration]") {
-    CountingUploader uploader;
-    RecordingStatusReporter reporter;
-    idiff::AppController controller(uploader, reporter);
-
-    idiff::SRTaskParams params{};
-    params.input_path = "/tmp/missing.png";
-    params.output_path = "/tmp/missing_sr_2x.png";
-
-    controller.start_sr_task(params);
-    controller.start_sr_task(params);
-
-    // Each failed start must surface through show_error(), not
-    // through the status bar, and must not leave a ghost task in
-    // the queue.
-    REQUIRE(reporter.error_titles.size() == 2);
-    REQUIRE(reporter.error_titles[0] == "Super Resolution Error");
-    REQUIRE(reporter.error_titles[1] == "Super Resolution Error");
-    REQUIRE_FALSE(controller.has_running_sr_tasks());
-    REQUIRE(reporter.status_calls.empty());
-    REQUIRE(reporter.sr_status_calls.empty());
 }
 
 TEST_CASE("Integration: duplicate filenames across dirs get disambiguated",

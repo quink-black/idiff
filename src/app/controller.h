@@ -19,9 +19,7 @@ class ImageLibrary;
 class SelectionModel;
 class TimelineModel;
 class DiffService;
-class SrTaskService;
 class ComparisonConfigService;
-struct SRTaskParams;
 
 // Owns every non-UI service that drives the application.  Constructed
 // once per process inside App::init() after the platform IO seam (the
@@ -49,7 +47,6 @@ public:
     SelectionModel& selection() noexcept;
     TimelineModel& timeline() noexcept;
     DiffService& diff() noexcept;
-    SrTaskService& sr_tasks() noexcept;
     ComparisonConfigService& comparison_config() noexcept;
 
     // ---- Business orchestration ------------------------------------
@@ -245,9 +242,6 @@ public:
     // are ignored.
     void remove_entry(int index);
 
-    // True while at least one super-resolution task is still running.
-    bool has_running_sr_tasks() const;
-
     // Re-decode every multi-frame entry so it matches the shared
     // timeline index (plus each entry's per-entry frame_offset).
     // No-op for libraries with only single-frame entries.  Marks the
@@ -259,12 +253,6 @@ public:
     // instead of read_frame().  Updates viewport pixels but does not
     // mark the diff cache dirty (diff is too expensive for scrub).
     void preview_entries_to_timeline();
-
-    // Spawn an SR engine for `params` and append it to the task queue.
-    // The engine is built via the global SRInferEngineFactory; on
-    // failure the error is forwarded to the status reporter as a modal
-    // dialog and no task is enqueued.
-    void start_sr_task(const SRTaskParams& params);
 
     // Image loader backend that load_images() / reload_all_images()
     // currently honour.  Owned here so the headless tests can switch
@@ -348,7 +336,6 @@ private:
     std::unique_ptr<SelectionModel> selection_;
     std::unique_ptr<TimelineModel> timeline_;
     std::unique_ptr<DiffService> diff_;
-    std::unique_ptr<SrTaskService> sr_tasks_;
     std::unique_ptr<ComparisonConfigService> comparison_config_;
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();

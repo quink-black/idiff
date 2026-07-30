@@ -17,11 +17,7 @@
 #include "app/pixel_sampler.h"
 #include "app/properties_panel.h"
 #include "app/settings.h"
-#include "app/sr_infer_engine.h"
-#include "app/sr_infer_engine_factory.h"
-#include "app/seedvr2_engine.h"
 #include "app/platform/platform.h"
-#include "app/sr_dialog.h"
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
 #include "app/screenshot_composer.h"
@@ -35,7 +31,6 @@
 #include "domain/selection_model.h"
 #include "domain/timeline_model.h"
 #include "domain/diff_service.h"
-#include "domain/sr_task_service.h"
 #include "domain/comparison_config_service.h"
 #include "util/logger.h"
 
@@ -89,10 +84,8 @@ namespace {
 class StateStatusReporter : public IStatusReporter {
 public:
     StateStatusReporter(std::string* status_text,
-                        std::string* status_msg,
                         ErrorDialogState* error_dialog) noexcept
         : status_text_(status_text),
-          status_msg_(status_msg),
           error_dialog_(error_dialog) {}
 
     void set_status(const std::string& text) override {
@@ -105,10 +98,6 @@ public:
         *status_text_ += text;
     }
 
-    void set_sr_status(const std::string& text) override {
-        *status_msg_ = text;
-    }
-
     void show_error(const std::string& title,
                     const std::string& message) override {
         error_dialog_->title = title;
@@ -119,7 +108,6 @@ public:
 
 private:
     std::string* status_text_;
-    std::string* status_msg_;
     ErrorDialogState* error_dialog_;
 };
 
@@ -136,7 +124,6 @@ struct App::State {
     UpscaleMethod upscale_method = UpscaleMethod::Lanczos;
 
     std::string status_text;
-    std::string status_msg;   // Last SR/notification message
 
     // Error notification popup state.  Visible flag, transient open
     // request, and the title / message strings rendered by the modal.
@@ -144,9 +131,6 @@ struct App::State {
     // button.
     ErrorDialogState error_dialog;
 
-    // Quit-while-SR-running confirmation dialog state.  When confirmed
-    // flips to true the next frame() begins the shutdown sequence.
-    QuitConfirmDialogState quit_confirm_dialog;
     bool show_inspector = true;
     bool show_image_list = true;
     GroupMode group_mode = GroupMode::ByName;
@@ -479,7 +463,6 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // pointers stay stable for the controller's full lifetime.
     state_->status_reporter = std::make_unique<StateStatusReporter>(
         &state_->status_text,
-        &state_->status_msg,
         &state_->error_dialog);
 
     // Bring up every domain service in one place.  The controller
@@ -496,7 +479,6 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     selection_ = &controller_->selection();
     timeline_ = &controller_->timeline();
     diff_service_ = &controller_->diff();
-    sr_service_ = &controller_->sr_tasks();
     comparison_config_ = &controller_->comparison_config();
 
     // Restore image loader backend.  Has to happen after controller_
@@ -510,20 +492,6 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
         static_cast<std::size_t>(state_->settings.lru_capacity));
 
     state_->file_watcher = std::make_unique<FileWatcher>();
-
-    // Detect whether a super-resolution upscaler is available next to
-    // the executable (or via SEEDVR2_UPSCALER_PATH).  Register the
-    // SeedVR2 engine only when detected so the UI can hide SR controls
-    // gracefully on systems without the upscaler installed.
-    auto upscaler_path = platform::seedvr2_detect_upscaler();
-    if (!upscaler_path.empty()) {
-        sr_enabled_ = true;
-        SRInferEngineFactory::instance().register_engine(
-            "seedvr2",
-            [upscaler_path]() -> std::unique_ptr<SRInferEngine> {
-                return std::make_unique<SeedVR2Engine>(upscaler_path);
-            });
-    }
 
 #ifdef IDIFF_HAVE_RPC
     // Sweep stale /tmp/idiff-*.sock files left behind by hard-killed
@@ -619,7 +587,6 @@ void App::shutdown() {
     selection_ = nullptr;
     timeline_ = nullptr;
     diff_service_ = nullptr;
-    sr_service_ = nullptr;
     comparison_config_ = nullptr;
 
     // Status reporter is borrowed by the controller, so it must be
@@ -640,7 +607,6 @@ void App::tick_idle() {
         }
     }
 #endif
-    poll_sr_tasks();
     poll_file_watcher();
 }
 
@@ -785,10 +751,7 @@ void App::frame() {
     render_yuv_params_dialog();
 #endif
     render_error_dialog();
-    render_quit_confirm_dialog();
     render_reload_dialog();
-    render_sr_dialog();
-    poll_sr_tasks();
     poll_file_watcher();
 
     ImGui::Render();
@@ -1502,9 +1465,7 @@ void App::render_image_list() {
     in.selection = selection_;
     in.diff_service = diff_service_;
     in.comparison_config = comparison_config_;
-    in.sr_service = sr_service_;
     in.show_image_list = &state_->show_image_list;
-    in.sr_enabled = sr_enabled_;
     in.group_mode_ptr = &state_->group_mode;
     in.last_clicked_index = &state_->last_clicked_index;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
@@ -1555,12 +1516,6 @@ void App::render_image_list() {
 #else
     in.on_edit_yuv_entry = nullptr;
 #endif
-    in.on_open_sr_dialog = [this](int idx) {
-        std::vector<std::filesystem::path> inputs;
-        inputs.emplace_back(entries_view()[idx].path);
-        if (!sr_dialog_) sr_dialog_ = std::make_unique<SRDialogState>();
-        sr_dialog_open(*sr_dialog_, inputs, state_->settings);
-    };
     in.on_select_all = [this]() {
         for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
             selection_->insert(i);
@@ -1726,30 +1681,15 @@ void App::render_error_dialog() {
     idiff::render_error_dialog(state_->error_dialog);
 }
 
-bool App::has_running_sr_tasks() const {
-    return controller_->has_running_sr_tasks();
-}
-
 void App::request_quit() {
-    if (has_running_sr_tasks()) {
-        // Show confirmation dialog instead of quitting immediately.
-        state_->quit_confirm_dialog.visible = true;
-        state_->quit_confirm_dialog.needs_open = true;
-    } else {
-        state_->quit_confirm_dialog.confirmed = true;
-    }
+    quit_requested_ = true;
 }
 
 bool App::wants_quit() const {
-    return state_->quit_confirm_dialog.confirmed;
+    return quit_requested_;
 }
 
 void App::request_restart() {
-    if (has_running_sr_tasks()) {
-        state_->status_text =
-            "Cannot restart while SR tasks are running.";
-        return;
-    }
     // Snapshot current media paths so the next process restores them.
     // A comparison-config JSON path is just another path here --
     // load_paths() routes by extension on the next launch.
@@ -1764,11 +1704,6 @@ void App::request_restart() {
 
 bool App::wants_restart() const noexcept {
     return restart_requested_;
-}
-
-void App::render_quit_confirm_dialog() {
-    idiff::render_quit_confirm_dialog(state_->quit_confirm_dialog,
-                                      *sr_service_);
 }
 
 void App::render_reload_dialog() {
@@ -1816,114 +1751,14 @@ void App::poll_file_watcher() {
     }
 }
 
-void App::render_sr_dialog() {
-    if (!sr_dialog_) return;
-    if (sr_dialog_render(*sr_dialog_)) {
-        // User confirmed the dialog — start SR tasks
-        for (const auto& params : sr_dialog_->task_params) {
-            start_sr_task(params);
-        }
-        // Persist the last-used SR settings
-        state_->settings.sr_scale = sr_dialog_->scale;
-        state_->settings.sr_tile_size = sr_dialog_->tile_size;
-        state_->settings.sr_tile_overlap = sr_dialog_->tile_overlap;
-        state_->settings.sr_model = sr_dialog_->model_buf;
-        state_->settings.sr_color_correction = sr_dialog_->color_correction_buf;
-        state_->settings.save();
-    }
-}
-
-void App::start_sr_task(const SRTaskParams& params) {
-    controller_->start_sr_task(params);
-}
-
-void App::poll_sr_tasks() {
-    std::vector<SrCompletion> completions;
-    std::vector<SrFailure> failures;
-    sr_service_->poll(completions, failures);
-
-    for (const auto& done : completions) {
-        // Add the output image to the image list.  load_images() calls
-        // sort_entries_by_name(), so indices computed before the call
-        // are invalid afterwards.  We must look up entries by path.
-        std::vector<std::string> paths = { done.output_path };
-        load_images(paths);
-
-        int new_idx = -1;
-        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
-            if (entries_view()[i].path == done.output_path) {
-                new_idx = i;
-                break;
-            }
-        }
-
-        int input_idx = -1;
-        for (int i = 0; i < static_cast<int>(entries_view().size()); ++i) {
-            if (entries_view()[i].path == done.input_path) {
-                input_idx = i;
-                break;
-            }
-        }
-
-        if (new_idx >= 0) {
-            auto& new_entry = entries_view()[new_idx];
-            const std::string input_name = (input_idx >= 0)
-                ? entries_view()[input_idx].filename
-                : new_entry.filename;
-
-            // Extract scale from the output path naming convention
-            // <stem>_sr_<scale>x.<ext>; default to 2x on parse failure.
-            int scale = 2;
-            const std::filesystem::path out_path(done.output_path);
-            const auto fname = out_path.stem().string();
-            const auto pos = fname.find("_sr_");
-            if (pos != std::string::npos) {
-                scale = std::atoi(fname.c_str() + pos + 4);
-                if (scale <= 0) scale = 2;
-            }
-            new_entry.display_label = input_name + " (SR " +
-                std::to_string(scale) + "x)";
-            new_entry.label_custom = true;
-
-            // Auto-select: input as the reference, output as a partner
-            // for comparison.
-            selection_->clear();
-            if (input_idx >= 0) {
-                selection_->insert(input_idx);
-            }
-            selection_->insert(new_idx);
-            diff_service_->mark_dirty();
-            controller_->on_selection_changed();
-
-            for (int s : selection_->indices()) {
-                if (s >= 0 && s < static_cast<int>(entries_view().size())) {
-                    entries_view()[s].texture_dirty = true;
-                }
-            }
-        }
-
-        state_->status_msg = done.status_msg;
-    }
-
-    for (const auto& fail : failures) {
-        state_->status_msg = fail.status_msg;
-        // Persistent error dialog so the user can read the message
-        // before the status bar scrolls past.
-        state_->status_reporter->show_error(
-            "Super Resolution Failed", fail.description);
-    }
-}
-
 void App::render_status_bar() {
     StatusBarInputs in;
     in.entries = &entries_view();
     in.selection = selection_;
     in.viewport = state_->viewport.get();
     in.diff_service = diff_service_;
-    in.sr_service = sr_service_;
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.status_text = &state_->status_text;
-    in.status_msg = &state_->status_msg;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.identity_label = &identity_label();
     in.identity_socket_path = &identity_socket_path();

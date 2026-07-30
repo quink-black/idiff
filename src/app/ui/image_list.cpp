@@ -1,12 +1,10 @@
 #include "app/ui/image_list.h"
 
 #include "app/app.h"             // ImageEntry
-#include "app/sr_infer_engine.h" // SREngineStatus
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/group_key.h"
 #include "domain/selection_model.h"
-#include "domain/sr_task_service.h"
 
 #include <imgui.h>
 
@@ -20,7 +18,6 @@ void render_image_list(const ImageListInputs& in) {
     auto& entries = *in.entries;
     auto& selection = *in.selection;
     auto& diff_service = *in.diff_service;
-    const auto& sr_service = *in.sr_service;
 
     // Track whether the panel close button was clicked so we can
     // persist the change.
@@ -278,24 +275,6 @@ void render_image_list(const ImageListInputs& in) {
                 }
             }
 
-            // Show SR progress indicator if this entry is being processed
-            for (const auto& task : sr_service.tasks()) {
-                if (task.input_path == entry.path && task.engine &&
-                    task.engine->get_status() == SREngineStatus::Running) {
-                    ImGui::SameLine();
-                    float p = task.engine->get_progress();
-                    if (p >= 0) {
-                        ImGui::TextColored(
-                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f),
-                            "SR %d%%", static_cast<int>(p * 100));
-                    } else {
-                        ImGui::TextColored(
-                            ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "SR...");
-                    }
-                    break;
-                }
-            }
-
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", entry.path.c_str());
             }
@@ -323,69 +302,6 @@ void render_image_list(const ImageListInputs& in) {
                 if (in.entry_is_yuv && in.entry_is_yuv(i)) {
                     if (ImGui::MenuItem("Edit YUV parameters...")) {
                         if (in.on_edit_yuv_entry) in.on_edit_yuv_entry(i);
-                    }
-                    ImGui::Separator();
-                }
-                // Super Resolution -- only shown when an upscaler is
-                // detected and at least one entry is selected.
-                if (in.sr_enabled && !selection.empty()) {
-                    bool any_running = false;
-                    for (const auto& task : sr_service.tasks()) {
-                        if (task.engine &&
-                            task.engine->get_status() == SREngineStatus::Running) {
-                            any_running = true;
-                            break;
-                        }
-                    }
-                    if (any_running) {
-                        // Collect progress info for the tooltip.
-                        float total_progress = 0.0f;
-                        int running_count = 0;
-                        for (const auto& task : sr_service.tasks()) {
-                            if (task.engine &&
-                                task.engine->get_status() == SREngineStatus::Running) {
-                                float p = task.engine->get_progress();
-                                if (p >= 0) total_progress += p;
-                                ++running_count;
-                            }
-                        }
-                        char sr_label[64];
-                        if (running_count > 0 && total_progress >= 0) {
-                            int pct = static_cast<int>(
-                                total_progress / running_count * 100.0f);
-                            std::snprintf(sr_label, sizeof(sr_label),
-                                          "Super Resolution... (%d%%)", pct);
-                        } else {
-                            std::snprintf(sr_label, sizeof(sr_label),
-                                          "Super Resolution... (running)");
-                        }
-                        ImGui::MenuItem(sr_label, nullptr, false, false);
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                            ImGui::BeginTooltip();
-                            if (running_count == 1) {
-                                ImGui::TextUnformatted(
-                                    "A super resolution task is running.");
-                            } else {
-                                char buf[64];
-                                std::snprintf(buf, sizeof(buf),
-                                    "%d super resolution tasks are running.",
-                                    running_count);
-                                ImGui::TextUnformatted(buf);
-                            }
-                            ImGui::TextDisabled(
-                                "Please wait for it to finish before\n"
-                                "starting a new task.");
-                            ImGui::EndTooltip();
-                        }
-                    } else {
-                        if (ImGui::MenuItem("Super Resolution...")) {
-                            // Use only the right-clicked entry as the SR
-                            // input.  Previously we gathered all selected
-                            // entries, which caused stale selections (e.g.
-                            // auto-selected input+output from a previous
-                            // SR run) to spawn duplicate tasks.
-                            if (in.on_open_sr_dialog) in.on_open_sr_dialog(i);
-                        }
                     }
                     ImGui::Separator();
                 }

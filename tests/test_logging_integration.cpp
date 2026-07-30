@@ -5,7 +5,7 @@
 // test_logger.cpp cover the sink mechanics).  Here we install a
 // capturing sink and drive each service through the failure paths
 // that are most relevant to support / triage (bad JSON, out-of-
-// range indices, missing SR engine, upload into an empty library).
+// range indices, upload into an empty library).
 
 #include "util/logger.h"
 
@@ -13,7 +13,6 @@
 
 #include "app/controller.h"
 #include "app/io/texture_uploader.h"
-#include "app/sr_dialog.h"
 #include "app/status_reporter.h"
 #include "app/app.h"
 #include "core/media_source.h" // IWYU pragma: keep
@@ -92,7 +91,6 @@ class SilentStatusReporter : public idiff::IStatusReporter {
 public:
     void set_status(const std::string&) override {}
     void append_status(const std::string&) override {}
-    void set_sr_status(const std::string&) override {}
     void show_error(const std::string&, const std::string&) override {}
 };
 
@@ -145,24 +143,4 @@ TEST_CASE("Logging: ImageLibrary upload with bad index warns",
 
     REQUIRE(scope.sink->any(ilog::Level::Warn,
                             "library upload index out of range"));
-}
-
-TEST_CASE("Logging: SR start without engine logs warn and error title",
-          "[logging][sr]") {
-    SinkScope scope;
-
-    NoopUploader uploader;
-    SilentStatusReporter reporter;
-    idiff::AppController controller(uploader, reporter);
-
-    idiff::SRTaskParams params{};
-    params.input_path = "/tmp/missing.png";
-    params.output_path = "/tmp/missing_sr_2x.png";
-    controller.start_sr_task(params);
-
-    // The exact warn string depends on whether the factory was
-    // registered in the test binary; both known paths log via
-    // SrTaskService::start.  Asserting the function-name prefix keeps
-    // the test stable across build configurations.
-    REQUIRE(scope.sink->any(ilog::Level::Warn, "SrTaskService::start"));
 }

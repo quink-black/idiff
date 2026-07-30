@@ -11,16 +11,9 @@ float get_dpi_scale();
 std::string get_resource_path();
 
 // Full path to the running executable, or an empty path on failure.
-// Used by the Restart feature to re-exec the binary; also replaces the
-// ad-hoc per-platform exe-dir detection that seedvr2_detect_upscaler()
-// and the window-icon loader used to inline.
+// Used by the Restart feature to re-exec the binary and by the
+// window-icon loader.
 std::filesystem::path get_executable_path();
-
-// Resolve the full path to the seedvr2-upscaler directory.
-// Checks environment variable SEEDVR2_UPSCALER_PATH first, then
-// looks for a "seedvr2-upscaler" directory next to the running
-// executable.  Returns an empty path when the upscaler cannot be found.
-std::filesystem::path seedvr2_detect_upscaler();
 
 } // namespace platform
 } // namespace idiff
