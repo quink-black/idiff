@@ -45,29 +45,22 @@ LoadConfigResult ComparisonConfigService::load(const std::string& path) {
         return result;
     }
 
-    // Resolve the cache directory before tearing down anything.  If
-    // this fails the caller's previous session is preserved.
-    std::filesystem::path cache_root = cache_root_override_.empty()
-        ? UrlCache::resolve_default_root()
+    // Local-first loading: resolve images from the JSON's own directory
+    // (and a few ancestors) before any download, so a config whose
+    // images were unpacked next to the JSON loads with zero network
+    // access and no separate cache directory.  The cache root is the
+    // JSON directory itself (or the test override) so any genuinely
+    // remote URL still needing a download lands beside the JSON rather
+    // than in ~/Downloads.
+    std::filesystem::path json_path(path);
+    std::filesystem::path cache_dir = cache_root_override_.empty()
+        ? json_path.parent_path()
         : cache_root_override_;
-    std::string cache_status;
-    std::filesystem::path cache_dir = UrlCache::prepare_for_config(
-        cache_root, std::filesystem::path(path), &cache_status);
-    if (cache_dir.empty()) {
-        result.ok = false;
-        result.status_message = "Config load aborted: " + cache_status;
-        LOG_WARN("ComparisonConfigService::load: cache prepare failed: %s",
-                 cache_status.c_str());
-        return result;
-    }
-    if (!cache_status.empty()) {
-        LOG_INFO("ComparisonConfigService::load: %s at %s",
-                 cache_status.c_str(), cache_dir.string().c_str());
-    }
 
     config_ = std::move(cfg);
     current_index_ = -1;
     url_cache_ = std::make_unique<UrlCache>(cache_dir);
+    url_cache_->set_local_base(json_path.parent_path());
 
     // Register every URL up front so the cache can compute the
     // longest common prefix and keep the cache directory shallow.
@@ -84,9 +77,10 @@ LoadConfigResult ComparisonConfigService::load(const std::string& path) {
     result.ok = true;
     result.status_message = "Loaded config: " +
         std::to_string(config_.groups.size()) + " group(s), " +
-        std::to_string(total_items) + " image(s). " + cache_status;
-    LOG_INFO("ComparisonConfigService::load: %zu group(s), %zu item(s)",
-             config_.groups.size(), total_items);
+        std::to_string(total_items) + " image(s). Local root: " +
+        cache_dir.string();
+    LOG_INFO("ComparisonConfigService::load: %zu group(s), %zu item(s) at %s",
+             config_.groups.size(), total_items, cache_dir.string().c_str());
     return result;
 }
 

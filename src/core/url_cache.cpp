@@ -501,8 +501,53 @@ std::filesystem::path UrlCache::prepare_for_config(
     return primary;
 }
 
+std::vector<std::string> UrlCache::url_segments(const std::string& url) {
+    ParsedUrl p = parse_url(url);
+    std::vector<std::string> segs;
+    if (p.path_no_query.empty()) return segs;
+    segs.reserve(8);
+    std::size_t start = 0;
+    while (start <= p.path_no_query.size()) {
+        std::size_t slash = p.path_no_query.find('/', start);
+        std::size_t end = (slash == std::string::npos)
+                              ? p.path_no_query.size()
+                              : slash;
+        std::string seg(p.path_no_query.data() + start, end - start);
+        if (!seg.empty()) {
+            segs.push_back(sanitize_segment(url_decode(seg)));
+        }
+        if (slash == std::string::npos) break;
+        start = slash + 1;
+    }
+    return segs;
+}
+
+std::filesystem::path UrlCache::local_candidate(const std::string& url) const {
+    namespace fs = std::filesystem;
+    if (local_bases_.empty()) return {};
+    auto segs = url_segments(url);
+    if (segs.empty()) return {};
+
+    std::error_code ec;
+    for (const auto& base : local_bases_) {
+        fs::path cand = base;
+        for (const auto& s : segs) cand /= s;
+        if (fs::is_regular_file(cand, ec)) return cand;
+    }
+    return {};
+}
+
 std::filesystem::path UrlCache::path_for(const std::string& url) const {
     namespace fs = std::filesystem;
+
+    // Local-first: if the URL already exists on disk beside the JSON,
+    // return that path directly.  fetch()/prefetch()/is_cached() all
+    // route through path_for(), so this short-circuits every download
+    // for satisfied URLs without touching curl.
+    if (auto local = local_candidate(url); !local.empty()) {
+        return local;
+    }
+
     ParsedUrl p = parse_url(url);
 
     fs::path result = root_;
@@ -528,30 +573,11 @@ std::filesystem::path UrlCache::path_for(const std::string& url) const {
     if (p.path_no_query.empty()) {
         result /= "index";
     } else {
-        // First, collect all sanitized segments so we can honour the
-        // register_urls()-computed "strip N leading segments" setting
-        // in one place.  Keeping the original split logic here (so the
-        // trailing-slash "index" leaf still works) would double up the
-        // bookkeeping; gathering into a vector is clearer.
-        std::vector<std::string> segs;
-        segs.reserve(8);
-        std::size_t start = 0;
-        while (start <= p.path_no_query.size()) {
-            std::size_t slash = p.path_no_query.find('/', start);
-            std::size_t end = (slash == std::string::npos)
-                                  ? p.path_no_query.size()
-                                  : slash;
-            std::string seg(p.path_no_query.data() + start, end - start);
-            if (!seg.empty()) {
-                segs.push_back(sanitize_segment(url_decode(seg)));
-            }
-            if (slash == std::string::npos) break;
-            start = slash + 1;
-        }
-        // Only drop common prefix segments when this URL actually
-        // shares them -- URLs outside the registered set might not,
-        // and we must not strip past the last segment (otherwise
-        // different URLs could collapse onto the same local path).
+        // Honour the register_urls()-computed "strip N leading
+        // segments" setting in one place.  We must not strip past the
+        // last segment (otherwise different URLs could collapse onto
+        // the same local path).
+        std::vector<std::string> segs = url_segments(url);
         std::size_t skip = 0;
         if (drop_host && !segs.empty() && strip_segments_ > 0) {
             skip = std::min<std::size_t>(strip_segments_,
@@ -567,6 +593,20 @@ std::filesystem::path UrlCache::path_for(const std::string& url) const {
         }
     }
     return result;
+}
+
+void UrlCache::set_local_base(const std::filesystem::path& json_dir,
+                               unsigned ancestors) {
+    local_bases_.clear();
+    if (json_dir.empty()) return;
+    local_bases_.push_back(json_dir);
+    std::filesystem::path cur = json_dir;
+    for (unsigned i = 0; i < ancestors; ++i) {
+        std::filesystem::path parent = cur.parent_path();
+        if (parent == cur) break;  // reached filesystem root
+        local_bases_.push_back(parent);
+        cur = parent;
+    }
 }
 
 void UrlCache::register_urls(const std::vector<std::string>& urls) {
