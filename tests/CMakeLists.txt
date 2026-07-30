@@ -189,3 +189,25 @@ endif()
 
 # --- HEIF / AVIF sample paths ---
 #
+
+# --- Launch smoke test ---
+# Runs the real binary with --smoke under a headless SDL driver so the
+# full App::init path (settings restore, controller construction, RPC
+# bring-up) is exercised at least once in CI.  This would have caught the
+# startup null-deref where App::init dereferenced controller_ before it
+# was constructed.  Guarded by the executable target being built.
+if(TARGET idiff)
+    add_test(NAME idiff_smoke_launch
+        COMMAND idiff --smoke
+        # Dummy video driver needs no display; the smoke path creates a
+        # window/renderer, inits, then shuts down without the event loop.
+        COMMAND_EXPAND_LISTS
+    )
+    set_tests_properties(idiff_smoke_launch PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+        # init + shutdown is fast; allow generous slack for font loading.
+        TIMEOUT 60
+        SKIP_RETURN_CODE 4
+    )
+endif()
+
