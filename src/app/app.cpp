@@ -149,7 +149,7 @@ struct App::State {
     QuitConfirmDialogState quit_confirm_dialog;
     bool show_inspector = true;
     bool show_image_list = true;
-    bool group_by_name = true;
+    GroupMode group_mode = GroupMode::ByName;
     int last_clicked_index = -1;  // anchor for Shift+click range select
     int sidebar_tab = 0;
 
@@ -216,13 +216,37 @@ Viewport& App::rpc_viewport() noexcept {
     return *state_->viewport;
 }
 
+GroupMode App::rpc_group_mode() const noexcept {
+    return state_->group_mode;
+}
+
+void App::apply_group_mode() {
+    controller_->set_group_mode(state_->group_mode);
+    // Re-sort so the visual grouping separators align with the sort
+    // boundaries for the new mode.  Without this, switching modes after
+    // load leaves entries in the previous order and fragments the groups.
+    sort_entries_by_name();
+    // When entering a grouped mode, collapse the selection to the first
+    // group so the initial view stays consistent, matching load time.
+    if (state_->group_mode != GroupMode::None && !selection_->empty()) {
+        controller_->select_group(0);
+    }
+    save_settings();
+}
+
+void App::rpc_set_group_mode(GroupMode mode) {
+    state_->group_mode = mode;
+    apply_group_mode();
+}
+
 bool App::rpc_group_by_name() const noexcept {
-    return state_->group_by_name;
+    return state_->group_mode != GroupMode::None;
 }
 
 void App::rpc_set_group_by_name(bool on) {
-    state_->group_by_name = on;
-    save_settings();
+    // Legacy RPC: true -> ByName, false -> None.  Never produces
+    // ByFolder since the old API has no way to express it.
+    rpc_set_group_mode(on ? GroupMode::ByName : GroupMode::None);
 }
 
 int App::rpc_pid() const noexcept {
@@ -426,7 +450,7 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Restore panel visibility and grouping.
     state_->show_image_list = state_->settings.show_image_list;
     state_->show_inspector = state_->settings.show_inspector;
-    state_->group_by_name = state_->settings.group_by_name;
+    state_->group_mode = state_->settings.group_mode;
 
     // Restore upscale method.
     state_->upscale_method = static_cast<UpscaleMethod>(
@@ -464,6 +488,10 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // App::shutdown / ~App).
     controller_ = std::make_unique<AppController>(
         *state_->texture_uploader, *state_->status_reporter);
+    // controller_ is now constructed, so the grouping mode restored
+    // above can be pushed into it.  Doing this before construction
+    // would dereference a null unique_ptr.
+    controller_->set_group_mode(state_->group_mode);
     library_ = &controller_->library();
     selection_ = &controller_->selection();
     timeline_ = &controller_->timeline();
@@ -868,7 +896,7 @@ void App::load_images(const std::vector<std::string>& paths) {
         // In group mode the default "first two entries" selection may
         // span two groups.  Replace it with the first group so the
         // initial view is consistent with the grouped UI.
-        if (state_->group_by_name) {
+        if (state_->group_mode != GroupMode::None) {
             controller_->select_group(0);
         }
         if (state_->viewport) {
@@ -1200,7 +1228,7 @@ void App::save_settings() {
     // Panel visibility and grouping.
     s.show_image_list = state_->show_image_list;
     s.show_inspector = state_->show_inspector;
-    s.group_by_name = state_->group_by_name;
+    s.group_mode = state_->group_mode;
 
     // Viewport display options.
     s.upscale_method = static_cast<int>(state_->upscale_method);
@@ -1477,7 +1505,7 @@ void App::render_image_list() {
     in.sr_service = sr_service_;
     in.show_image_list = &state_->show_image_list;
     in.sr_enabled = sr_enabled_;
-    in.group_by_name_ptr = &state_->group_by_name;
+    in.group_mode_ptr = &state_->group_mode;
     in.last_clicked_index = &state_->last_clicked_index;
     in.get_ref_index = [this](int& r) { get_ref_index(r); };
     in.entry_is_yuv = [this](int idx) -> bool {
@@ -1589,6 +1617,7 @@ void App::render_image_list() {
         controller_->on_selection_changed();
     };
     in.on_settings_changed = [this]() { save_settings(); };
+    in.on_group_mode_changed = [this]() { apply_group_mode(); };
     idiff::render_image_list(in);
 }
 

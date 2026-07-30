@@ -4,6 +4,7 @@
 #include "app/measurement.h"
 #include "core/channel_view.h"
 #include "core/image.h"
+#include "domain/group_key.h"
 
 #include <functional>
 #include <memory>
@@ -235,6 +236,9 @@ private:
     void upload_texture(ImageEntry& entry);
     void compute_display_labels();
     void sort_entries_by_name();
+    // Re-sort and refresh selection after the group mode changes at
+    // runtime (RPC or UI).  Reads the current mode from state_.
+    void apply_group_mode();
     void move_entry(int from, int to);
 
 #ifdef IDIFF_HAVE_FFMPEG
@@ -309,14 +313,20 @@ private:
     // definition.  Defined in app.cpp.
     Viewport& rpc_viewport() noexcept;
 
-    // Group-by-name runtime flag, used by selection.set (to enforce
-    // the single-comparison invariant), state.get (to report it), and
-    // view.set_group_by_name (to toggle it).  The flag lives inside the
+    // Group-mode runtime flag, used by selection.set (to enforce the
+    // single-comparison invariant), state.get (to report it), and
+    // view.set_group_mode (to change it).  The flag lives inside the
     // opaque State struct; these accessors expose it to
     // app_rpc_methods.cpp without leaking State.  The setter mirrors
-    // the GUI checkbox: it updates the flag and persists settings, but
-    // does not re-select -- toggling only changes how subsequent clicks
-    // / selections behave.  Defined in app.cpp.
+    // the GUI combo: it updates the flag, syncs the controller, and
+    // persists settings, but does not re-select -- changing the mode
+    // only affects how subsequent clicks / selections behave.
+    // Defined in app.cpp.
+    GroupMode rpc_group_mode() const noexcept;
+    void rpc_set_group_mode(GroupMode mode);
+    // Legacy alias for rpc_group_mode() that maps ByName/ByFolder ->
+    // true and None -> false.  Kept so old RPC clients calling
+    // view.set_group_by_name keep working.
     bool rpc_group_by_name() const noexcept;
     void rpc_set_group_by_name(bool on);
 

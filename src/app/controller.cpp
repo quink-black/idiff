@@ -187,20 +187,54 @@ void AppController::compute_display_labels() {
 }
 
 void AppController::sort_entries_by_name() {
-    auto remap = library_->sort_with(&filename_less);
+    std::vector<int> remap;
+    switch (group_mode_) {
+        case GroupMode::ByFolder:
+            remap = library_->sort_by_directory();
+            break;
+        case GroupMode::None:
+            remap = library_->sort_by_filename();
+            break;
+        case GroupMode::ByName:
+        default:
+            remap = library_->sort_with(&filename_less);
+            break;
+    }
     selection_->apply_remap(remap);
 }
+
+namespace {
+
+// Extract the group key for an entry according to the active mode.
+// ByName: filename stem.  ByFolder: parent directory.  None: the
+// filename itself (so group_indices returns only the entry).
+std::string group_key_for_entry(const idiff::ImageEntry& entry,
+                                idiff::GroupMode mode) {
+    switch (mode) {
+        case idiff::GroupMode::ByFolder:
+            return idiff::group_key_from_directory(entry.path);
+        case idiff::GroupMode::None:
+            return entry.filename;
+        case idiff::GroupMode::ByName:
+        default:
+            return idiff::group_key_from_filename(entry.filename);
+    }
+}
+
+} // namespace
 
 std::set<int> AppController::group_indices(int index) const {
     const int n = static_cast<int>(library_->all().size());
     if (index < 0 || index >= n) return {};
 
+    if (group_mode_ == GroupMode::None) return {index};
+
     const auto& entries = library_->all();
-    std::string key = group_key_from_filename(entries[index].filename);
+    std::string key = group_key_for_entry(entries[index], group_mode_);
 
     std::set<int> result;
     for (int i = 0; i < n; ++i) {
-        if (group_key_from_filename(entries[i].filename) == key) {
+        if (group_key_for_entry(entries[i], group_mode_) == key) {
             result.insert(i);
         }
     }
@@ -418,8 +452,11 @@ namespace {
 // Build the comparison key for an entry given the current comparison
 // config state.  Two namespaces ("config:" / "file:") so a session
 // that mixes a config load with a later flat load never collides.
+// In file namespace, the key body follows the controller's group_mode_
+// (filename stem for ByName, parent directory for ByFolder).
 std::string compute_comparison_key(const idiff::ImageEntry& entry,
-                                   const idiff::ComparisonConfigService& cfg) {
+                                   const idiff::ComparisonConfigService& cfg,
+                                   idiff::GroupMode mode) {
     if (cfg.has_config()) {
         int idx = cfg.current_index();
         if (idx < 0) return {};
@@ -429,7 +466,7 @@ std::string compute_comparison_key(const idiff::ImageEntry& entry,
         if (!name.empty()) return "config:" + name;
         return "config:#" + std::to_string(idx);
     }
-    return "file:" + idiff::group_key_from_filename(entry.filename);
+    return "file:" + group_key_for_entry(entry, mode);
 }
 
 } // namespace
@@ -437,7 +474,8 @@ std::string compute_comparison_key(const idiff::ImageEntry& entry,
 std::string AppController::comparison_key_of(int index) const {
     const int n = static_cast<int>(library_->all().size());
     if (index < 0 || index >= n) return {};
-    return compute_comparison_key(library_->all()[index], *comparison_config_);
+    return compute_comparison_key(library_->all()[index],
+                                  *comparison_config_, group_mode_);
 }
 
 std::vector<AppController::ComparisonView>
@@ -475,17 +513,18 @@ AppController::list_comparisons() const {
     }
 
     // Filename-stem comparisons.  Build them in insertion order so
-    // the output is stable across calls.
+    // the output is stable across calls.  The key body follows
+    // group_mode_ (stem for ByName, directory for ByFolder).
     std::unordered_map<std::string, std::size_t> key_to_idx;
     for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
-        std::string stem = group_key_from_filename(entries[i].filename);
-        std::string key = "file:" + stem;
+        std::string body = group_key_for_entry(entries[i], group_mode_);
+        std::string key = "file:" + body;
         auto it = key_to_idx.find(key);
         if (it == key_to_idx.end()) {
             key_to_idx[key] = result.size();
             ComparisonView cv;
             cv.key = std::move(key);
-            cv.name = std::move(stem);
+            cv.name = std::move(body);
             cv.current = true;
             cv.entries.push_back(i);
             result.push_back(std::move(cv));
@@ -520,7 +559,8 @@ void AppController::apply_comparison_reference() {
     int probe = *sel.begin();
     if (probe < 0 || probe >= static_cast<int>(entries.size())) return;
     std::string key = compute_comparison_key(entries[probe],
-                                             *comparison_config_);
+                                             *comparison_config_,
+                                             group_mode_);
     if (key.empty()) return;
 
     auto it = comparison_reference_.find(key);

@@ -36,10 +36,39 @@ void render_image_list(const ImageListInputs& in) {
         if (in.on_open_files) in.on_open_files();
     }
 
-    // Group by Name toggle -- directly in the panel for easy access.
-    if (in.group_by_name_ptr) {
-        if (ImGui::Checkbox("Group by Name", in.group_by_name_ptr)) {
-            if (in.on_settings_changed) in.on_settings_changed();
+    // Group mode combo -- directly in the panel for easy access.
+    if (in.group_mode_ptr) {
+        const char* preview;
+        switch (*in.group_mode_ptr) {
+            case GroupMode::None:    preview = "No Grouping"; break;
+            case GroupMode::ByName:  preview = "Group by Name"; break;
+            case GroupMode::ByFolder: preview = "Group by Folder"; break;
+            default:                  preview = "No Grouping"; break;
+        }
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##group_mode", preview)) {
+            if (ImGui::Selectable("No Grouping",
+                    *in.group_mode_ptr == GroupMode::None)) {
+                *in.group_mode_ptr = GroupMode::None;
+                if (in.on_group_mode_changed) in.on_group_mode_changed();
+            }
+            if (*in.group_mode_ptr == GroupMode::None)
+                ImGui::SetItemDefaultFocus();
+            if (ImGui::Selectable("Group by Name",
+                    *in.group_mode_ptr == GroupMode::ByName)) {
+                *in.group_mode_ptr = GroupMode::ByName;
+                if (in.on_group_mode_changed) in.on_group_mode_changed();
+            }
+            if (*in.group_mode_ptr == GroupMode::ByName)
+                ImGui::SetItemDefaultFocus();
+            if (ImGui::Selectable("Group by Folder",
+                    *in.group_mode_ptr == GroupMode::ByFolder)) {
+                *in.group_mode_ptr = GroupMode::ByFolder;
+                if (in.on_group_mode_changed) in.on_group_mode_changed();
+            }
+            if (*in.group_mode_ptr == GroupMode::ByFolder)
+                ImGui::SetItemDefaultFocus();
+            ImGui::EndCombo();
         }
     }
 
@@ -102,16 +131,27 @@ void render_image_list(const ImageListInputs& in) {
         int ref_idx = -1;
         if (in.get_ref_index) in.get_ref_index(ref_idx);
 
-        const bool group_mode = in.group_by_name_ptr &&
-                                *in.group_by_name_ptr;
+        const bool group_mode = in.group_mode_ptr &&
+                                *in.group_mode_ptr != GroupMode::None;
 
         // Pre-compute group keys so group boundaries can be drawn
         // without recomputing keys on every iteration.
         std::vector<std::string> group_keys;
         if (group_mode) {
             group_keys.reserve(entries.size());
-            for (const auto& e : entries)
-                group_keys.push_back(group_key_from_filename(e.filename));
+            for (const auto& e : entries) {
+                switch (*in.group_mode_ptr) {
+                    case GroupMode::ByFolder:
+                        group_keys.push_back(
+                            group_key_from_directory(e.path));
+                        break;
+                    case GroupMode::ByName:
+                    default:
+                        group_keys.push_back(
+                            group_key_from_filename(e.filename));
+                        break;
+                }
+            }
         }
 
         int group_color_idx = 0;  // alternates at each group boundary
@@ -148,7 +188,8 @@ void render_image_list(const ImageListInputs& in) {
 
             bool checked = is_sel;
             if (ImGui::Checkbox("##sel", &checked)) {
-                if (in.group_by_name_ptr && *in.group_by_name_ptr &&
+                if (in.group_mode_ptr &&
+                    *in.group_mode_ptr != GroupMode::None &&
                     in.on_click_in_group) {
                     // Group mode: route the checkbox through the same
                     // group-aware policy as a Selectable click.  The
@@ -210,7 +251,8 @@ void render_image_list(const ImageListInputs& in) {
                     *in.last_clicked_index != i &&
                     in.on_select_range) {
                     in.on_select_range(*in.last_clicked_index, i);
-                } else if (in.group_by_name_ptr && *in.group_by_name_ptr &&
+                } else if (in.group_mode_ptr &&
+                           *in.group_mode_ptr != GroupMode::None &&
                            in.on_click_in_group) {
                     // Group mode: defer the same-group / cross-group
                     // decision to the controller so the policy stays
@@ -356,7 +398,9 @@ void render_image_list(const ImageListInputs& in) {
                 if (ImGui::MenuItem("Select Only This")) {
                     if (in.on_select_only_this) in.on_select_only_this(i);
                 }
-                if (in.group_by_name_ptr && *in.group_by_name_ptr && in.on_select_group) {
+                if (in.group_mode_ptr &&
+                    *in.group_mode_ptr != GroupMode::None &&
+                    in.on_select_group) {
                     if (ImGui::MenuItem("Select Group")) {
                         in.on_select_group(i);
                     }

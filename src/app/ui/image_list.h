@@ -4,6 +4,8 @@
 #include <functional>
 #include <vector>
 
+#include "domain/group_key.h"
+
 namespace idiff {
 
 class ComparisonConfigService;
@@ -37,11 +39,11 @@ struct ImageListInputs {
     // "Super Resolution..." context-menu item.
     bool sr_enabled;
 
-    // "Group by Name" toggle.  When true, clicking an entry selects
-    // all entries sharing its group key (filename stem before the
-    // last extension dot).  The checkbox in the panel writes through
-    // this pointer.
-    bool* group_by_name_ptr = nullptr;
+    // Grouping mode for the image list.  ByName groups entries
+    // sharing the same filename stem; ByFolder groups entries in the
+    // same parent directory; None disables grouping.  The combo
+    // dropdown in the panel writes through this pointer.
+    GroupMode* group_mode_ptr = nullptr;
 
     // Current "anchor" for Shift+click range selection.  -1 means no
     // anchor.  Owned by App::State; the renderer updates it on click.
@@ -84,9 +86,13 @@ struct ImageListInputs {
     std::function<void(int entry_idx)> on_edit_yuv_entry;
     std::function<void(int entry_idx)> on_open_sr_dialog;
 
-    // Invoked after any persistent setting changed (group_by_name,
-    // panel visibility) so the host can save settings.
+    // Invoked after any persistent setting changed (panel visibility)
+    // so the host can save settings.
     std::function<void()> on_settings_changed;
+
+    // Invoked after group_mode_ptr changes so the host can re-sort the
+    // library and refresh the selection to match the new grouping.
+    std::function<void()> on_group_mode_changed;
 };
 
 void render_image_list(const ImageListInputs& in);

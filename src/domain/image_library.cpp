@@ -7,6 +7,7 @@
 // visible even though no explicit Image / MediaSource symbol is used.
 #include "core/image.h"        // IWYU pragma: keep
 #include "core/media_source.h" // IWYU pragma: keep
+#include "domain/group_key.h"
 #include "util/logger.h"
 
 #include <algorithm>
@@ -127,6 +128,42 @@ std::vector<int> ImageLibrary::sort_with(const FilenameLess& less) {
     }
     entries_ = std::move(sorted);
     LOG_DEBUG("library sort_with (n=%zu)", n);
+    return remap;
+}
+
+std::vector<int> ImageLibrary::sort_by_directory() {
+    const std::size_t n = entries_.size();
+    if (n < 2) {
+        std::vector<int> identity(n);
+        std::iota(identity.begin(), identity.end(), 0);
+        return identity;
+    }
+
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](std::size_t a, std::size_t b) {
+                  const std::string& pa = entries_[a].path;
+                  const std::string& pb = entries_[b].path;
+                  std::string da = group_key_from_directory(pa);
+                  std::string db = group_key_from_directory(pb);
+                  int c = icmp(da, db);
+                  if (c != 0) return c < 0;
+                  // Tie-break by filename (case-insensitive).
+                  return icmp(entries_[a].filename,
+                              entries_[b].filename) < 0;
+              });
+
+    std::vector<ImageEntry> sorted;
+    sorted.reserve(n);
+    std::vector<int> remap(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::size_t src = order[i];
+        remap[src] = static_cast<int>(i);
+        sorted.push_back(std::move(entries_[src]));
+    }
+    entries_ = std::move(sorted);
+    LOG_DEBUG("library sort_by_directory (n=%zu)", n);
     return remap;
 }
 

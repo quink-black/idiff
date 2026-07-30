@@ -2,6 +2,7 @@
 #define IDIFF_APP_CONTROLLER_H
 
 #include "core/image_loader.h"
+#include "domain/group_key.h"
 #include "domain/lazy_load_cache.h"
 
 #include <memory>
@@ -74,14 +75,23 @@ public:
     // an empty library.
     void compute_display_labels();
 
-    // Sort the library by filename and patch the selection model so
-    // selected indices follow their entries to the new positions.
+    // Sort the library and patch the selection model so selected
+    // indices follow their entries to the new positions.  Dispatches
+    // on group_mode_: ByName uses stem/extension ordering, ByFolder
+    // uses parent-directory ordering, None falls back to plain
+    // case-insensitive filename sort.
     void sort_entries_by_name();
 
+    // Current grouping mode.  Drives the sort strategy, the
+    // group_indices() key, and the comparison_key_of() namespace.
+    GroupMode group_mode() const noexcept { return group_mode_; }
+    void set_group_mode(GroupMode mode) { group_mode_ = mode; }
+
     // Return all entry indices that share the same group key as
-    // `index`.  Group key = filename stem (everything before the
-    // last extension dot).  Returns an empty set when the index is
-    // out of range or no matching entries are found.
+    // `index`.  The group key depends on group_mode_: ByName uses
+    // filename stem, ByFolder uses parent directory, None returns
+    // just {index}.  Returns an empty set when the index is out of
+    // range.
     std::set<int> group_indices(int index) const;
 
     // Replace the selection with all entries that share `index`'s
@@ -342,6 +352,10 @@ private:
     std::unique_ptr<ComparisonConfigService> comparison_config_;
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();
+
+    // Current grouping mode (ByName / ByFolder / None).  Drives sort
+    // strategy, group key extraction, and comparison key namespace.
+    GroupMode group_mode_ = GroupMode::ByName;
 
     // Per-comparison reference map.  Keys are comparison keys (see
     // ComparisonView doc above); values are entry paths.  Persisted

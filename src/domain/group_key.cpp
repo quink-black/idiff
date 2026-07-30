@@ -33,4 +33,15 @@ std::string group_key_from_filename(const std::string& filename) {
     return std::string(stem);
 }
 
+std::string group_key_from_directory(const std::string& path) {
+    std::string_view view(path);
+    auto sep = view.find_last_of("/\\");
+    if (sep == std::string_view::npos) return {};
+    std::string dir(view.substr(0, sep));
+    for (auto& c : dir) {
+        if (c == '\\') c = '/';
+    }
+    return dir;
+}
+
 } // namespace idiff

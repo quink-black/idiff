@@ -75,6 +75,13 @@ public:
                                             const std::string& b)>;
     std::vector<int> sort_with(const FilenameLess& less);
 
+    // Sort entries by parent directory (case-insensitive), breaking
+    // ties by filename via the same stem/extension-aware ordering as
+    // sort_with(filename_less).  Cannot reuse sort_with() because that
+    // only sees the filename field, not the path field needed to
+    // extract the directory.  Returns the same kind of remap table.
+    std::vector<int> sort_by_directory();
+
     // Destroy all textures and drop every entry.
     void clear();
 

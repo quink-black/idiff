@@ -121,6 +121,24 @@ const char* mode_to_string(ComparisonMode m) {
     return "split";
 }
 
+const char* group_mode_to_string(GroupMode m) {
+    switch (m) {
+        case GroupMode::None:    return "none";
+        case GroupMode::ByName:  return "by_name";
+        case GroupMode::ByFolder: return "by_folder";
+    }
+    return "none";
+}
+
+GroupMode parse_group_mode(const std::string& s) {
+    if (s == "none")     return GroupMode::None;
+    if (s == "by_name")  return GroupMode::ByName;
+    if (s == "by_folder") return GroupMode::ByFolder;
+    throw RpcException(ErrorCode::InvalidParams,
+        "group_mode must be one of: none, by_name, by_folder (got \""
+        + s + "\")");
+}
+
 void check_index(int idx, std::size_t size, const char* what) {
     if (idx < 0 || static_cast<std::size_t>(idx) >= size) {
         char buf[128];
@@ -269,6 +287,7 @@ void App::register_rpc_methods() {
                 {"reference", ref_idx < 0 ? json(nullptr) : json(ref_idx)},
                 {"explicit_reference",
                     selection_->has_explicit_reference()},
+                {"group_mode", group_mode_to_string(rpc_group_mode())},
                 {"group_by_name", rpc_group_by_name()},
                 {"view",      std::move(view)},
                 {"timeline",  std::move(timeline)},
@@ -455,16 +474,18 @@ void App::register_rpc_methods() {
                 new_sel.insert(idx);
             }
 
-            // Honor the Group-by-Name invariant the GUI enforces via
-            // AppController::click_in_group: when grouping is on, a
-            // selection must live in exactly one comparison.  The GUI
-            // physically cannot produce a cross-comparison selection;
-            // a raw selection.set could, leaving the viewport diffing
-            // unrelated images.  Reject it (rather than silently
-            // narrowing) so the caller learns the selection was wrong
-            // instead of wondering why images disappeared.  The anchor
-            // is the smallest index, matching the reference-image rule.
-            if (rpc_group_by_name() && new_sel.size() >= 2) {
+            // Honor the grouping invariant the GUI enforces via
+            // AppController::click_in_group: when grouping is on (any
+            // mode other than None), a selection must live in exactly
+            // one comparison.  The GUI physically cannot produce a
+            // cross-comparison selection; a raw selection.set could,
+            // leaving the viewport diffing unrelated images.  Reject
+            // it (rather than silently narrowing) so the caller learns
+            // the selection was wrong instead of wondering why images
+            // disappeared.  The anchor is the smallest index, matching
+            // the reference-image rule.
+            if (rpc_group_mode() != GroupMode::None &&
+                new_sel.size() >= 2) {
                 int anchor = *new_sel.begin();
                 std::string anchor_key = controller_->comparison_key_of(anchor);
                 if (!anchor_key.empty()) {
@@ -521,14 +542,26 @@ void App::register_rpc_methods() {
             return json::object();
         });
 
+    // --- view.set_group_mode ---------------------------------------
+    //
+    // Set the image-list grouping mode -- the same enum the GUI combo
+    // drives.  "none" disables grouping, "by_name" groups by filename
+    // stem, "by_folder" groups by parent directory.  The setting is
+    // persisted, matching the GUI combo path; changing the mode does
+    // not change the current selection, only how future selections
+    // are validated.
+    d.register_method("view.set_group_mode",
+        [this](const json& params) -> json {
+            require_object(params);
+            const std::string& s = require_string_field(params, "mode");
+            rpc_set_group_mode(parse_group_mode(s));
+            return json::object();
+        });
+
     // --- view.set_group_by_name ------------------------------------
     //
-    // Toggle the image-list "Group by Name" mode -- the same flag the
-    // GUI checkbox drives.  When on, selection.set rejects selections
-    // that span more than one comparison (filename-stem group).  The
-    // setting is persisted, matching the GUI checkbox path; toggling
-    // does not change the current selection, only how future
-    // selections are validated.
+    // Deprecated alias for view.set_group_mode.  Kept so old RPC
+    // clients keep working; maps true -> by_name, false -> none.
     d.register_method("view.set_group_by_name",
         [this](const json& params) -> json {
             require_object(params);

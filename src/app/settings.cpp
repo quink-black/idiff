@@ -171,8 +171,21 @@ AppSettings AppSettings::load(const std::string& path) {
             s.show_image_list = parse_bool(val, s.show_image_list);
         } else if (key == "panel.show_inspector") {
             s.show_inspector = parse_bool(val, s.show_inspector);
+        } else if (key == "panel.group_mode") {
+            if (val == "none") {
+                s.group_mode = GroupMode::None;
+            } else if (val == "by_name") {
+                s.group_mode = GroupMode::ByName;
+            } else if (val == "by_folder") {
+                s.group_mode = GroupMode::ByFolder;
+            }
         } else if (key == "panel.group_by_name") {
-            s.group_by_name = parse_bool(val, s.group_by_name);
+            // Legacy key.  Only honoured when the new key was absent;
+            // the new panel.group_mode takes precedence because it is
+            // written after this key in the file and parsed later.
+            if (s.group_mode == GroupMode::ByName && !parse_bool(val, true)) {
+                s.group_mode = GroupMode::None;
+            }
         } else if (key == "viewport.upscale_method") {
             s.upscale_method = std::atoi(val.c_str());
         } else if (key == "viewport.channel_view_mode") {
@@ -238,7 +251,13 @@ bool AppSettings::save(const std::string& path) const {
     out << "inspector.panel="      << inspector_panel << "\n";
     out << "panel.show_image_list=" << (show_image_list ? "true" : "false") << "\n";
     out << "panel.show_inspector="  << (show_inspector  ? "true" : "false") << "\n";
-    out << "panel.group_by_name="   << (group_by_name   ? "true" : "false") << "\n";
+    out << "panel.group_mode=";
+    switch (group_mode) {
+        case GroupMode::None:    out << "none";     break;
+        case GroupMode::ByName:  out << "by_name";  break;
+        case GroupMode::ByFolder: out << "by_folder"; break;
+    }
+    out << "\n";
     out << "viewport.upscale_method="    << upscale_method    << "\n";
     out << "viewport.channel_view_mode=" << channel_view_mode << "\n";
     out << "viewport.view_background="   << view_background   << "\n";
