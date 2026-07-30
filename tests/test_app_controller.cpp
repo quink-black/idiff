@@ -594,6 +594,48 @@ TEST_CASE("AppController::compute_display_labels uses per-entry minimal depth",
     REQUIRE(controller.library().all()[2].display_label == "z/2.png");
 }
 
+// Regression: the "(N frames)" suffix on multi-frame entries must survive
+// compute_display_labels().  Previously the suffix was baked into
+// display_label and got overwritten when the path-derived label was
+// rebuilt.
+TEST_CASE("AppController::compute_display_labels preserves frame-count suffix",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    auto e = make_entry("/run1/clip.yuv", "clip.yuv");
+    e.label_suffix = " (300 frames)";
+    controller.library().add(std::move(e));
+    controller.library().add(make_entry("/run2/clip.yuv", "clip.yuv"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "run1/clip.yuv (300 frames)");
+    REQUIRE(controller.library().all()[1].display_label == "run2/clip.yuv");
+}
+
+// Regression: entries flagged label_custom (SR result names, comparison-
+// config titles) must keep their display_label verbatim even when
+// compute_display_labels() runs after another image is loaded.
+TEST_CASE("AppController::compute_display_labels preserves custom labels",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    auto sr = make_entry("/cache/out_sr_2x.png", "out_sr_2x.png");
+    sr.display_label = "input.png (SR 2x)";
+    sr.label_custom = true;
+    controller.library().add(std::move(sr));
+    controller.library().add(make_entry("/cache/input.png", "input.png"));
+
+    controller.compute_display_labels();
+
+    REQUIRE(controller.library().all()[0].display_label == "input.png (SR 2x)");
+    REQUIRE(controller.library().all()[1].display_label == "cache/input.png");
+}
+
 TEST_CASE("AppController::compute_display_labels is a no-op on empty library",
           "[controller]") {
     CountingUploader uploader;
