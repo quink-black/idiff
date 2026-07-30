@@ -9,7 +9,6 @@ namespace idiff {
 
 class Viewport;
 class DiffService;
-class SrTaskService;
 class TimelineModel;
 class SelectionModel;
 struct ImageEntry;
@@ -22,7 +21,6 @@ struct StatusBarInputs {
     const SelectionModel* selection;
     const Viewport* viewport;
     const DiffService* diff_service;
-    const SrTaskService* sr_service;
 
     // Maps a viewport slot index back to an entries index.  Populated
     // by the viewport renderer earlier in the same frame and consumed
@@ -30,9 +28,7 @@ struct StatusBarInputs {
     // cursor".
     const std::vector<int>* viewport_slot_to_entry;
 
-    // Most recent persistent and SR-notification status text.
     const std::string* status_text;
-    const std::string* status_msg;
 
     // Returns the entries-index currently used as the reference image
     // for overlay / diff (-1 when the selection is empty).  Provided

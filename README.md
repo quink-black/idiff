@@ -1,6 +1,6 @@
 # idiff
 
-Cross-platform image comparison tool for super-resolution workflows.
+Cross-platform image comparison tool.
 
 ![img.png](resource/img.png)
 

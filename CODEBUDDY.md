@@ -45,7 +45,7 @@ idiff_core   -> Image, ImageLoader, ImageComparator, MediaSource,
                 MetricsEngine, UrlCache, ComparisonConfig, ChannelView,
                 DepthUtils
 idiff_domain -> ImageLibrary, SelectionModel, TimelineModel, DiffService,
-                SrTaskService, ComparisonConfigService
+                ComparisonConfigService
 idiff_rpc    -> JSON-RPC 2.0 dispatcher + Asio UDS transport (POSIX only,
                 gated on IDIFF_HAVE_RPC). See docs/rpc-design.md.
 idiff        -> GUI executable (App, Viewport, ImGui panels)
@@ -78,7 +78,6 @@ Phase 2 (Windows) handoff.
 - **Multi-backend loading**: `ImageLoader` tries ImageMagick first (ICC profiles, wide format support), falls back to OpenCV imgcodecs. Selectable at runtime via `LoaderBackend`.
 - **MediaSource abstraction**: `ImageFileSource` (still images) and `YuvRawSource` (raw YUV streams) share a common interface for multi-frame support.
 - **Lazy diff cache**: `DiffService` invalidates via `mark_dirty()` and recomputes on next `update()`.
-- **SR engine abstraction**: `SRInferEngine` interface; `SeedVr2Engine` implements it as a subprocess runner.
 - **URL cache**: `UrlCache` downloads via system `curl`, caches to disk, background-prefetches adjacent comparison groups.
 
 ### Data Flow (Core Comparison)
@@ -104,7 +103,7 @@ File path / URL
 
 Catch2 v3 with `catch_discover_tests()`. Tests live in `tests/` and mirror the source structure. Integration tests exercise `AppController` with mock `ITextureUploader` and `IStatusReporter`.
 
-Some app-layer source files (controller, SR engine, IO adapters) are compiled directly into the test executable rather than linked as a library — see `tests/CMakeLists.txt`.
+Some app-layer source files (controller, IO adapters) are compiled directly into the test executable rather than linked as a library — see `tests/CMakeLists.txt`.
 
 ## Platform Notes
 

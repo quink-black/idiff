@@ -155,16 +155,6 @@ AppSettings AppSettings::load(const std::string& path) {
             s.heatmap_color = std::atoi(val.c_str());
         } else if (key == "diff.amplification") {
             s.diff_amplification = std::atof(val.c_str());
-        } else if (key == "sr.scale") {
-            s.sr_scale = std::atoi(val.c_str());
-        } else if (key == "sr.tile_size") {
-            s.sr_tile_size = std::atoi(val.c_str());
-        } else if (key == "sr.tile_overlap") {
-            s.sr_tile_overlap = std::atoi(val.c_str());
-        } else if (key == "sr.model") {
-            s.sr_model = val;
-        } else if (key == "sr.color_correction") {
-            s.sr_color_correction = val;
         } else if (key == "inspector.panel") {
             s.inspector_panel = std::atoi(val.c_str());
         } else if (key == "panel.show_image_list") {
@@ -243,11 +233,6 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.grid_cols="   << grid_cols   << "\n";
     out << "diff.heatmap_color="   << heatmap_color << "\n";
     out << "diff.amplification="   << diff_amplification << "\n";
-    out << "sr.scale="             << sr_scale << "\n";
-    out << "sr.tile_size="         << sr_tile_size << "\n";
-    out << "sr.tile_overlap="      << sr_tile_overlap << "\n";
-    out << "sr.model="             << sr_model << "\n";
-    out << "sr.color_correction="  << sr_color_correction << "\n";
     out << "inspector.panel="      << inspector_panel << "\n";
     out << "panel.show_image_list=" << (show_image_list ? "true" : "false") << "\n";
     out << "panel.show_inspector="  << (show_inspector  ? "true" : "false") << "\n";

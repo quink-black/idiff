@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**idiff** is a cross-platform C++17 image comparison tool for super-resolution workflows. It provides split view, A/B overlay, and pixel-level difference heatmap modes with quality metrics (PSNR, SSIM, MSE). Built with SDL2 + Dear ImGui, using OpenCV for image processing.
+**idiff** is a cross-platform C++17 image comparison tool. It provides split view, A/B overlay, and pixel-level difference heatmap modes with quality metrics (PSNR, SSIM, MSE). Built with SDL2 + Dear ImGui, using OpenCV for image processing.
 
 ## Build Commands
 
@@ -53,7 +53,7 @@ idiff_util    Logger (console + rotating file sinks)
 idiff_core    Image, ImageLoader, ImageComparator, MediaSource, MetricsEngine,
               UrlCache, ComparisonConfig, ChannelView, DepthUtils
 idiff_domain  ImageLibrary, SelectionModel, TimelineModel, DiffService,
-              SrTaskService, ComparisonConfigService
+              ComparisonConfigService
 idiff (exe)   App, AppController, Viewport, ImGui panels, platform layer
 ```
 

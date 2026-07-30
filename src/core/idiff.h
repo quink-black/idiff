@@ -1,4 +1,4 @@
-// idiff -- cross-platform image comparison tool for super resolution workflows
+// idiff -- cross-platform image comparison tool
 // Public umbrella header for libidiff core library
 
 #ifndef IDIFF_H

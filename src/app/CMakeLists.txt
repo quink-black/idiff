@@ -9,10 +9,6 @@ add_executable(idiff
     pixel_inspector_panel.cpp
     properties_panel.cpp
     settings.cpp
-    sr_infer_engine.cpp
-    sr_infer_engine_factory.cpp
-    seedvr2_engine.cpp
-    sr_dialog.cpp
     screenshot_composer.cpp
     io/texture_uploader.cpp
     io/file_dialog.cpp

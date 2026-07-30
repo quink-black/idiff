@@ -7,7 +7,6 @@ add_executable(idiff_tests
     test_metrics_engine.cpp
     test_ruler_utils.cpp
     test_yuv_source.cpp
-    test_sr_engine.cpp
     test_channel_view.cpp
     test_depth_utils.cpp
     test_file_watcher.cpp
@@ -17,7 +16,6 @@ add_executable(idiff_tests
     test_selection_model.cpp
     test_timeline_model.cpp
     test_diff_service.cpp
-    test_sr_task_service.cpp
     test_comparison_config_service.cpp
     test_group_key.cpp
     test_app_controller.cpp
@@ -27,11 +25,6 @@ add_executable(idiff_tests
     test_idle_policy.cpp
     test_lazy_load_cache.cpp
     # test_logging_integration.cpp  # FIXME: linking issue with ImageLibrary::upload
-    # SR engine sources needed by test_sr_engine.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/sr_infer_engine_factory.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/seedvr2_engine.cpp
-    ${CMAKE_SOURCE_DIR}/src/app/sr_dialog.cpp
     ${CMAKE_SOURCE_DIR}/src/app/settings.cpp
     # Pixel sampler is exercised by test_pixel_sampler.cpp
     ${CMAKE_SOURCE_DIR}/src/app/pixel_sampler.cpp
@@ -68,9 +61,8 @@ if(IDIFF_HAVE_RPC)
     target_compile_definitions(idiff_tests PRIVATE IDIFF_HAVE_RPC=1)
 endif()
 
-# sr_dialog.cpp uses ImGui — provide a stub-free include path.
-# The test only calls sr_default_output_path() which does not
-# touch ImGui, but the translation unit still needs the header.
+# App-layer sources compiled directly into the test executable need
+# the project source root on the include path.
 target_include_directories(idiff_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )

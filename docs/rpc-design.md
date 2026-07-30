@@ -298,9 +298,8 @@ passing.
 
 ### Phase 3 — Async / events (deferred, no design yet)
 
-- [ ] Long-running operations (e.g. SR inference) should not block
-  `drain()`. Move to `task.start` returning a token + `task.poll` /
-  `task.wait`.
+- [ ] Long-running operations should not block `drain()`. Move to
+  `task.start` returning a token + `task.poll` / `task.wait`.
 - [ ] Subscriptions: `events.subscribe` returns a stream of state-
   change notifications. Probably a separate channel (a second pipe
   or a server-streamed JSON-RPC dialect).

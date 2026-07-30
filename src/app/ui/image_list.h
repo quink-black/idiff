@@ -11,7 +11,6 @@ namespace idiff {
 class ComparisonConfigService;
 class DiffService;
 class SelectionModel;
-class SrTaskService;
 struct ImageEntry;
 
 // Inputs to render_image_list.  Pointers are non-owning views; the
@@ -30,14 +29,9 @@ struct ImageListInputs {
     SelectionModel* selection;
     DiffService* diff_service;
     const ComparisonConfigService* comparison_config;
-    const SrTaskService* sr_service;
 
     // Panel close button writes through this pointer.
     bool* show_image_list;
-
-    // True when an upscaler is detected at startup; gates the
-    // "Super Resolution..." context-menu item.
-    bool sr_enabled;
 
     // Grouping mode for the image list.  ByName groups entries
     // sharing the same filename stem; ByFolder groups entries in the
@@ -84,7 +78,6 @@ struct ImageListInputs {
     std::function<void()> on_remove_selected;
     std::function<void()> on_remove_all;
     std::function<void(int entry_idx)> on_edit_yuv_entry;
-    std::function<void(int entry_idx)> on_open_sr_dialog;
 
     // Invoked after any persistent setting changed (panel visibility)
     // so the host can save settings.
