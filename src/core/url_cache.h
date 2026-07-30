@@ -121,6 +121,19 @@ public:
     // one.  Passing an empty vector resets the trimming to a no-op.
     void register_urls(const std::vector<std::string>& urls);
 
+    // Register a directory to search for a local copy of a URL before
+    // any download.  A URL resolves locally when <base>/<url-path-suffix>
+    // exists as a regular file.  The search also walks up to `ancestors`
+    // parent directories of `base`, so a JSON file living one level
+    // inside the tree that mirrors the URLs still finds its images.
+    // When a local copy exists, fetch()/prefetch()/is_cached()/path_for()
+    // return it directly and never invoke curl -- a comparison config
+    // whose images were unpacked next to the JSON loads with zero
+    // network access and no cache directory.  Calling this supersedes
+    // any previous local base.  Pass an empty path to disable.
+    void set_local_base(const std::filesystem::path& json_dir,
+                        unsigned ancestors = 3);
+
     // Make sure the given URL is present in the cache.  If the cached
     // file already exists (and is non-empty), this is a no-op and
     // returns the cached path.  Otherwise curl is invoked to download
@@ -178,6 +191,21 @@ private:
     // registered URL and can therefore also be dropped.
     std::string strip_host_;
     std::size_t strip_segments_ = 0;
+
+    // Local search bases populated by set_local_base().  Each is a
+    // directory (json_dir plus a bounded set of its ancestors) checked
+    // for a pre-existing copy of a URL before downloading.
+    std::vector<std::filesystem::path> local_bases_;
+
+    // Split a URL into its sanitized, URL-decoded path segments, in
+    // order, for building a local path.  Returns an empty vector when
+    // the URL has no path component.  Shared by path_for() and
+    // local_candidate() so both emit identical segment shapes.
+    static std::vector<std::string> url_segments(const std::string& url);
+
+    // Return the local file path for `url` if it already exists on disk
+    // under one of local_bases_; otherwise an empty path.
+    std::filesystem::path local_candidate(const std::string& url) const;
 
     // --- Background prefetch pool ------------------------------------
     //

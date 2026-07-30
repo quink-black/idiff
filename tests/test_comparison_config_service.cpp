@@ -237,6 +237,45 @@ TEST_CASE("switch_to: missing items are reported as failures",
     REQUIRE_FALSE(result.last_error.empty());
 }
 
+TEST_CASE("load: resolves images from local JSON dir (no download)",
+          "[comparison_config_service]") {
+    // Mirrors the real layout: the JSON lives one level inside the tree
+    // that mirrors the URL path (the URL carries an extra "sr/" segment
+    // matching the JSON's own folder name).  A local copy must be found
+    // by walking up to an ancestor of the JSON directory, and no curl /
+    // cache directory is involved.
+    TempDir tmp;
+    auto json_dir = tmp.path() / "sr";
+    auto json_path = json_dir / "compare.json";
+    // Local image sits under json_dir (the extra "sr/" in the URL is the
+    // JSON's own folder name).  The ancestor base (tmp) + URL suffix
+    // "sr/src/g1/a.png" resolves to tmp/sr/src/g1/a.png == json_dir/src/g1/a.png.
+    auto local_image = json_dir / "src" / "g1" / "a.png";
+    write_text(json_path, R"({"groups": [{"name": "g1", "items": [
+        {"url": "https://host.example.com/sr/src/g1/a.png", "title": "A"}
+    ]}]})");
+    write_text(local_image, "real image bytes");
+
+    ComparisonConfigService svc;
+    // No cache-root override: load() should default to the JSON's own
+    // directory and resolve the local file, not create an idiff_cache_*
+    // directory under Downloads.
+    REQUIRE(svc.load(json_path.string()).ok);
+    REQUIRE(svc.has_config());
+
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.requested == 1);
+    REQUIRE(result.failures == 0);
+    REQUIRE(result.entries.size() == 1);
+    REQUIRE_FALSE(result.entries.empty());
+    // The returned local path must be the on-disk file, not a download
+    // cache path.
+    REQUIRE(result.entries[0].local_path == local_image.string());
+    REQUIRE(result.entries[0].display_label == "A");
+}
+
 TEST_CASE("clear: drops config and cache", "[comparison_config_service]") {
     TempDir tmp;
     auto json_path = tmp.path() / "ok.json";
