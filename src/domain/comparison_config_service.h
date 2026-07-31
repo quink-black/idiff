@@ -77,11 +77,10 @@ public:
     ComparisonConfigService(const ComparisonConfigService&) = delete;
     ComparisonConfigService& operator=(const ComparisonConfigService&) = delete;
 
-    // Override the cache-root directory used by load().  Pass an empty
-    // path to restore the default behaviour (resolve_default_root()
-    // -> Downloads).  Tests use this so they never write into the
-    // user's real Downloads folder.  The override only takes effect
-    // for subsequent load() calls.
+    // Override the cache-root directory used by load().  When empty,
+    // load() defaults to the JSON file's own directory.  Tests use
+    // this so they never write into the user's real Downloads folder.
+    // The override only takes effect for subsequent load() calls.
     void set_cache_root_override(std::filesystem::path root);
 
     // Parse the JSON file at `path`, prepare the per-config cache
