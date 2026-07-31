@@ -296,3 +296,53 @@ TEST_CASE("clear: drops config and cache", "[comparison_config_service]") {
     REQUIRE(svc.current_index() == -1);
     REQUIRE(svc.url_cache_for_test() == nullptr);
 }
+
+TEST_CASE("load: absent local file falls through to cache path",
+          "[comparison_config_service]") {
+    // When no local file matches the URL, path_for() must return a
+    // cache-root-based path so the caller can download into it.
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "https://host.example.com/img/x.png", "title": "X"}
+    ]}]})");
+
+    ComparisonConfigService svc;
+    svc.set_cache_root_override(tmp.path() / "cache");
+    REQUIRE(svc.load(json_path.string()).ok);
+
+    // The image does not exist locally, so path_for() should return
+    // a path under the cache root, not under json_dir.
+    auto* cache = svc.url_cache_for_test();
+    REQUIRE(cache);
+    auto resolved = cache->path_for("https://host.example.com/img/x.png");
+    // The resolved path must be under the cache root, not under
+    // json_dir's parent (the ancestor-walk base).
+    REQUIRE(resolved.string().find("cache") != std::string::npos);
+}
+
+TEST_CASE("load: empty local base disables local resolution",
+          "[comparison_config_service]") {
+    // After set_local_base(""), local_candidate must return empty so
+    // path_for() falls through to the download path.
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    auto local_image = tmp.path() / "img" / "y.png";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "https://host.example.com/img/y.png", "title": "Y"}
+    ]}]})");
+    write_text(local_image, "bytes");
+
+    ComparisonConfigService svc;
+    svc.set_cache_root_override(tmp.path() / "cache");
+    REQUIRE(svc.load(json_path.string()).ok);
+
+    auto* cache = svc.url_cache_for_test();
+    REQUIRE(cache);
+    cache->set_local_base("");  // disable local resolution
+
+    auto resolved = cache->path_for("https://host.example.com/img/y.png");
+    // Must NOT be the local_image path; should be under cache root.
+    REQUIRE(resolved != local_image);
+    REQUIRE(resolved.string().find("cache") != std::string::npos);
+}

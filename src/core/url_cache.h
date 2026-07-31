@@ -70,31 +70,6 @@ public:
     // when it cannot be determined (extremely rare on desktop systems).
     static std::filesystem::path downloads_dir();
 
-    // Resolve the cache directory for a particular comparison-config
-    // file and make sure it exists.  The returned path has the form
-    //   "<cache_root>/idiff_cache_<json_stem>_<12-hex-content-hash>"
-    // so re-opening the same JSON file (byte-identical content) always
-    // lands in the same directory and re-uses every image previously
-    // downloaded there -- no duplicate-download when you quit and come
-    // back, even across machines if the cache root is shared.
-    //
-    // To defend against the (astronomically unlikely) case of two
-    // different JSON files sharing the same short hash, every
-    // materialized cache directory stores an exact byte copy of the
-    // JSON next to the cached images as "source.json".  Before reusing
-    // a directory we compare the caller's JSON against that copy; a
-    // mismatch falls back to a timestamp-suffixed sibling directory so
-    // the old cache stays intact and the new session starts clean.
-    //
-    // `out_status` (optional) receives a short, human-readable line
-    // describing the outcome ("Reused cache …", "Created cache …",
-    // or an error).  On unrecoverable I/O failure an empty path is
-    // returned and `out_status` explains why.
-    static std::filesystem::path prepare_for_config(
-        const std::filesystem::path& cache_root,
-        const std::filesystem::path& json_file,
-        std::string* out_status = nullptr);
-
     // Return the local path where `url` is (or will be) cached.  The
     // path mirrors the URL structure: `<root>/<host>/<url_path>`.  This
     // is deterministic for a given URL and cache root; it is NOT a
@@ -123,14 +98,21 @@ public:
 
     // Register a directory to search for a local copy of a URL before
     // any download.  A URL resolves locally when <base>/<url-path-suffix>
-    // exists as a regular file.  The search also walks up to `ancestors`
-    // parent directories of `base`, so a JSON file living one level
-    // inside the tree that mirrors the URLs still finds its images.
-    // When a local copy exists, fetch()/prefetch()/is_cached()/path_for()
-    // return it directly and never invoke curl -- a comparison config
-    // whose images were unpacked next to the JSON loads with zero
-    // network access and no cache directory.  Calling this supersedes
-    // any previous local base.  Pass an empty path to disable.
+    // exists as a regular file, where <url-path-suffix> is every
+    // URL path segment appended to the base.  Matching is by path
+    // structure, not by host: the URL "https://host/sr/img/a.png"
+    // resolves to <base>/sr/img/a.png, so the local directory tree
+    // must mirror the URL path from a shared ancestor.  If no match
+    // is found, the URL falls through to the normal download path.
+    //
+    // The search also walks up to `ancestors` parent directories of
+    // `base`, so a JSON file living one level inside the tree that
+    // mirrors the URLs still finds its images.  When a local copy
+    // exists, fetch()/prefetch()/is_cached()/path_for() return it
+    // directly and never invoke curl -- a comparison config whose
+    // images were unpacked next to the JSON loads with zero network
+    // access and no cache directory.  Calling this supersedes any
+    // previous local base.  Pass an empty path to disable.
     void set_local_base(const std::filesystem::path& json_dir,
                         unsigned ancestors = 3);
 
