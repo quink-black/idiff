@@ -103,10 +103,17 @@ struct FileWatcher::Impl {
         wake();
         if (thread_.joinable()) thread_.join();
 
+        // Deregister every watched fd before closing it (see
+        // deregister_and_close).  Then close the kqueue itself so
+        // any lingering kernel state is gone before the watched fds
+        // are released.
         for (auto& [path, fd] : watched_) {
-            close(fd);
+            deregister_and_close(fd);
         }
-        if (kq_ >= 0) close(kq_);
+        if (kq_ >= 0) {
+            close(kq_);
+            kq_ = -1;
+        }
         if (wake_pipe_[0] >= 0) close(wake_pipe_[0]);
         if (wake_pipe_[1] >= 0) close(wake_pipe_[1]);
     }
@@ -121,6 +128,22 @@ struct FileWatcher::Impl {
     void drain_wake_pipe() {
         char buf[64];
         while (read(wake_pipe_[0], buf, sizeof(buf)) > 0) {}
+    }
+
+    // Deregister a fd from the kqueue, then close it.  Closing a fd
+    // that is still on a kqueue forces the kernel to do synchronous
+    // teardown under the kqueue mutex, which can block for seconds
+    // when kernel cleanup work is pending.  EV_DELETE first makes the
+    // close a plain file-descriptor release.  Idempotent: kevent
+    // silently ignores EV_DELETE for filters that are not registered.
+    void deregister_and_close(int fd) {
+        if (fd < 0) return;
+        if (kq_ >= 0) {
+            struct kevent ev;
+            EV_SET(&ev, fd, EVFILT_VNODE, EV_DELETE, 0, 0, nullptr);
+            (void)kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+        }
+        close(fd);
     }
 
     void add_path(const std::string& path) {
@@ -159,8 +182,7 @@ struct FileWatcher::Impl {
         if (it == watched_.end()) return;
 
         int fd = it->second;
-        // EV_DELETE is automatic when the fd is closed
-        close(fd);
+        deregister_and_close(fd);
         fd_to_path_.erase(fd);
         watched_.erase(it);
         changed_.erase(path);
@@ -170,7 +192,7 @@ struct FileWatcher::Impl {
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& [path, fd] : watched_) {
-            close(fd);
+            deregister_and_close(fd);
         }
         watched_.clear();
         fd_to_path_.clear();
@@ -189,7 +211,7 @@ struct FileWatcher::Impl {
     // Caller must hold mutex_.  Takes path by value because the
     // caller passes a reference into fd_to_path_ which is erased below.
     void rewatch(std::string path, int old_fd) {
-        close(old_fd);
+        deregister_and_close(old_fd);
         fd_to_path_.erase(old_fd);
 
         int new_fd = open(path.c_str(), O_EVTONLY);
