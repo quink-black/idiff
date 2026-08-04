@@ -589,6 +589,13 @@ void App::shutdown() {
     diff_service_ = nullptr;
     comparison_config_ = nullptr;
 
+    // Stop the file watcher here rather than in ~App().  The watcher
+    // holds open fds against the library's paths; releasing them in
+    // the explicit shutdown path keeps teardown predictable instead
+    // of leaving it for the implicit State destructor after main()
+    // returns and SDL is gone.
+    state_->file_watcher.reset();
+
     // Status reporter is borrowed by the controller, so it must be
     // released after the controller is gone.
     state_->status_reporter.reset();
