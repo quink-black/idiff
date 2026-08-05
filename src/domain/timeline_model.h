@@ -17,6 +17,7 @@
 //
 // Threading: not thread-safe; main thread only.
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -65,8 +66,38 @@ public:
     // lengths are coerced to length=1 -> current_frame_=0.
     bool clamp_to_length(const std::vector<ImageEntry>& entries) noexcept;
 
+    // ---- Playback -------------------------------------------------------
+    //
+    // Auto-play advances current_frame_ at a fixed fps driven by a
+    // steady-clock accumulator ticked once per App::frame().  At end
+    // the index loops back to 0.  The caller (App) is responsible
+    // for calling sync_entries_to_timeline() when tick_playback()
+    // reports an advance.
+
+    bool playing() const noexcept { return playing_; }
+    // Resetting to play re-arms next_frame_time_ to now so playback
+    // starts immediately rather than waiting for a stale deadline.
+    void set_playing(bool v) noexcept {
+        playing_ = v;
+        if (v) next_frame_time_ = std::chrono::steady_clock::now();
+    }
+    double playback_fps() const noexcept { return playback_fps_; }
+    // Clamp to [1, 120]; values outside that range are pinned.
+    void set_playback_fps(double fps) noexcept;
+
+    // Advance current_frame_ by one when the steady clock has passed
+    // next_frame_time_, looping back to 0 at length-1.  Returns true
+    // when a frame advance actually happened so the caller can call
+    // sync_to().  Returns false when playing is false, the clock has
+    // not yet reached the next frame time, or length(entries) <= 1.
+    bool tick_playback(const std::vector<ImageEntry>& entries) noexcept;
+
 private:
     int current_frame_ = 0;
+
+    bool playing_ = false;
+    double playback_fps_ = 30.0;
+    std::chrono::steady_clock::time_point next_frame_time_{};
 };
 
 } // namespace idiff

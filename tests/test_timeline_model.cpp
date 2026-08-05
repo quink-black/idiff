@@ -248,3 +248,59 @@ TEST_CASE("TimelineModel: clamp_to_length pins indices into [0, len-1]",
     REQUIRE_FALSE(tl.clamp_to_length(entries));  // already in range
     REQUIRE(tl.current_frame() == 0);
 }
+
+// ---- Playback tests --------------------------------------------------
+//
+// tick_playback's clock-driven advance is wall-time dependent and
+// covered by the smoke test.  Here we exercise the gating conditions
+// (not playing, length <= 1) and the fps setter clamping, which are
+// the parts that can be asserted deterministically.
+
+TEST_CASE("TimelineModel: playback defaults to paused, 30 fps",
+          "[timeline_model][playback]") {
+    TimelineModel tl;
+    REQUIRE_FALSE(tl.playing());
+    REQUIRE(tl.playback_fps() == 30.0);
+}
+
+TEST_CASE("TimelineModel: set_playing toggles playing flag",
+          "[timeline_model][playback]") {
+    TimelineModel tl;
+    tl.set_playing(true);
+    REQUIRE(tl.playing());
+    tl.set_playing(false);
+    REQUIRE_FALSE(tl.playing());
+}
+
+TEST_CASE("TimelineModel: set_playback_fps clamps to [1, 120]",
+          "[timeline_model][playback]") {
+    TimelineModel tl;
+    tl.set_playback_fps(0.0);
+    REQUIRE(tl.playback_fps() == 1.0);
+    tl.set_playback_fps(-5.0);
+    REQUIRE(tl.playback_fps() == 1.0);
+    tl.set_playback_fps(999.0);
+    REQUIRE(tl.playback_fps() == 120.0);
+    tl.set_playback_fps(60.0);
+    REQUIRE(tl.playback_fps() == 60.0);
+}
+
+TEST_CASE("TimelineModel: tick_playback returns false when not playing",
+          "[timeline_model][playback]") {
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("clip", std::make_unique<StubSource>(10)));
+    TimelineModel tl;
+    // playing is false by default; tick must be a no-op.
+    REQUIRE_FALSE(tl.tick_playback(entries));
+    REQUIRE(tl.current_frame() == 0);
+}
+
+TEST_CASE("TimelineModel: tick_playback returns false when length <= 1",
+          "[timeline_model][playback]") {
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("still", std::make_unique<StubSource>(1)));
+    TimelineModel tl;
+    tl.set_playing(true);
+    REQUIRE_FALSE(tl.tick_playback(entries));
+    REQUIRE(tl.current_frame() == 0);
+}
