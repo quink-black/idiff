@@ -101,4 +101,27 @@ bool TimelineModel::clamp_to_length(const std::vector<ImageEntry>& entries) noex
     return true;
 }
 
+void TimelineModel::set_playback_fps(double fps) noexcept {
+    if (fps < 1.0) fps = 1.0;
+    if (fps > 120.0) fps = 120.0;
+    playback_fps_ = fps;
+}
+
+bool TimelineModel::tick_playback(
+    const std::vector<ImageEntry>& entries) noexcept {
+    if (!playing_) return false;
+    const int len = length(entries);
+    if (len <= 1) return false;
+    auto now = std::chrono::steady_clock::now();
+    if (now < next_frame_time_) return false;
+    int next = current_frame_ + 1;
+    if (next >= len) next = 0;  // loop
+    current_frame_ = next;
+    using double_sec = std::chrono::duration<double>;
+    auto interval = std::chrono::duration_cast<
+        std::chrono::steady_clock::duration>(double_sec(1.0 / playback_fps_));
+    next_frame_time_ = now + interval;
+    return true;
+}
+
 } // namespace idiff

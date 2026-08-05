@@ -636,6 +636,18 @@ void App::frame() {
     }
 #endif
 
+    // Auto-playback: advance the shared timeline index at the
+    // configured fps when playing.  Done before NewFrame so the UI
+    // already reflects the advanced index this iteration.  Wake the
+    // idle tracker so the main loop keeps rendering while playback
+    // is active.
+    if (timeline_ && timeline_length() > 1) {
+        if (timeline_->tick_playback(entries_view())) {
+            sync_entries_to_timeline();
+            if (idle_wake_fn_) idle_wake_fn_();
+        }
+    }
+
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -656,6 +668,29 @@ void App::frame() {
             if (!entries_view().empty() &&
                 ImGui::IsKeyPressed(ImGuiKey_F5)) {
                 reload_all_images();
+            }
+
+            // Timeline playback / step shortcuts.  Space toggles
+            // play/pause; Left/Right step one frame.  Only active
+            // when at least one multi-frame source is loaded.
+            if (timeline_length() > 1) {
+                if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+                    timeline_->set_playing(!timeline_->playing());
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
+                    int f = timeline_->current_frame();
+                    if (f > 0) {
+                        timeline_->set_current_frame(f - 1);
+                        sync_entries_to_timeline();
+                    }
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
+                    int f = timeline_->current_frame();
+                    if (f < timeline_length() - 1) {
+                        timeline_->set_current_frame(f + 1);
+                        sync_entries_to_timeline();
+                    }
+                }
             }
 
             // Channel view shortcuts: 1-9 cycle through modes.

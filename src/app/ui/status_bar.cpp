@@ -264,6 +264,12 @@ float render_timeline_bar(const TimelineBarInputs& in) {
             }
         }
         ImGui::SameLine();
+        // Play/Pause toggle.  Pausing on click also stops playback at
+        // the current frame rather than advancing.
+        if (ImGui::SmallButton(timeline.playing() ? "Pause" : "Play")) {
+            timeline.set_playing(!timeline.playing());
+        }
+        ImGui::SameLine();
         if (ImGui::SmallButton(">")) {
             if (timeline.current_frame() < length - 1) {
                 timeline.set_current_frame(timeline.current_frame() + 1);
@@ -287,6 +293,13 @@ float render_timeline_bar(const TimelineBarInputs& in) {
         }
         ImGui::SameLine();
         ImGui::Text("of %d", length);
+        ImGui::SameLine();
+        // Editable playback fps; clamped to [1, 120] by the model.
+        ImGui::SetNextItemWidth(60.0f);
+        double fps = timeline.playback_fps();
+        if (ImGui::InputDouble("fps", &fps, 0.0, 0.0, "%.0f")) {
+            timeline.set_playback_fps(fps);
+        }
 
         if (offset_rows > 0) {
             ImGui::BeginChild("##offsets",
