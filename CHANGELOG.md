@@ -2,6 +2,100 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-08-06
+
+### Added
+
+- **Lazy-load pixel cache**: Media entries decode on demand when they
+  enter the selection instead of at load time. A fixed-capacity LRU
+  (`LazyLoadCache`) keeps recently deselected entries resident and
+  evicts the rest via `ImageLibrary::release_entry_pixels`, so large
+  comparison sets no longer hold every frame's pixels and textures in
+  memory. Cache capacity is configurable (larger default than the
+  previous hard-coded N=4). Timeline scrub touches the LRU so the
+  scrubbed frame survives the next eviction sweep.
+- **Group by Folder**: Image-list arrangement gains a `GroupMode`
+  enum (`None` / `ByName` / `ByFolder`) replacing the boolean
+  group-by-name flag. ByFolder groups entries by parent directory;
+  switching modes at runtime re-sorts the library and collapses the
+  selection to the first group. RPC exposes `view.set_group_mode`
+  (`view.set_group_by_name` remains as a deprecated alias). Settings
+  serialize `panel.group_mode` with a `panel.group_by_name` legacy
+  fallback.
+- **Timeline auto-playback**: Space toggles play/pause; Left/Right
+  step one frame. The timeline bar adds a Play/Pause button and an
+  editable fps field (default 30, clamped to [1, 120]). Playback
+  advances on a steady-clock deadline and loops at the end; the idle
+  tracker wakes on each advance so the render loop keeps spinning
+  while playing.
+- **File > Restart (Reload Media)**: Snapshots the loaded media list
+  into session settings, re-execs the binary, and restores those
+  paths on the next launch so a rebuild no longer forces a manual
+  reopen. Uses the new `platform::get_executable_path()` helper.
+- **Local-first comparison loading**: When a comparison JSON's images
+  are already unpacked next to the file (or under a nearby ancestor
+  that mirrors the URL path), `UrlCache` resolves them locally and
+  skips curl. A fully local config writes nothing under Downloads;
+  remote URLs still download into the JSON directory as the cache
+  root.
+- **Origin directory in image-list labels**: Entries show their source
+  directory; custom labels and frame-count suffixes live in dedicated
+  fields (`label_custom`, `label_suffix`) so path-derived rebuilds no
+  longer overwrite them.
+- **Inspector Properties for every selected image**: The Properties
+  sub-panel lists all selected entries (A, B, C, ...) instead of only
+  the reference and first partner.
+- **Launch smoke test**: Headless `--smoke` run under
+  `SDL_VIDEODRIVER=dummy` exercises the full `App::init` path so
+  startup crashes fail CI. Uses the software renderer because the
+  dummy video driver has no accelerated backend.
+- **Xcode generator support** in the CMake build.
+
+### Changed
+
+- **User-facing "images" renamed to "media"** in menus, dock titles,
+  and empty-state hints (Media List) so the wording matches stills,
+  video, and raw YUV. Internal identifiers are unchanged.
+- **Idle and minimized loop timeouts unified** to 500 ms. Idle
+  detection also skips the full render pass when the window is
+  visible but inactive (not only when minimized), cutting idle CPU
+  to near zero.
+- **SDL render scale refreshed every frame** from
+  `io.DisplayFramebufferScale` so maximize and display moves no
+  longer leave docked panels clipped against a stale DPI scale.
+
+### Removed
+
+- **Super-resolution feature**: SRInferEngine, SeedVR2 subprocess
+  engine, SR dialog, SrTaskService, status-bar SR progress, and the
+  image-list SR context menu are deleted. The quit-confirm dialog
+  that only existed to warn about running SR tasks is gone;
+  `request_quit()` sets a plain flag. Related settings, the
+  `IStatusReporter::set_sr_status` seam, and
+  `seedvr2_detect_upscaler()` are dropped.
+- **Dead config-cache prepare path** made unreachable by local-first
+  URL resolution.
+- **HEIF sample-dependent multi-tile test** and its CMake scaffolding
+  (the sample was never committed; the test always skipped).
+
+### Fixed
+
+- **Exit hang in FileWatcher kqueue teardown**: Watched fds were
+  closed while still registered on the kqueue, forcing synchronous
+  kernel teardown under the kqueue mutex. Deregister with `EV_DELETE`
+  before close, close the kqueue before the watched fds, and reset
+  the watcher in `App::shutdown()` rather than in `~App()` after SDL
+  is gone.
+- **`std::clamp` UB crash** when an image label is wider than its
+  Overlay cell (inverted lo/hi). `clamp_safe()` pins to the cell
+  start edge instead; the same fix covers ruler label placement.
+- **Windows MSVC LNK1220**: Embed the UTF-8 process manifest with
+  `/MANIFEST:EMBED` when `/MANIFESTINPUT` is set.
+- **ByFolder null-deref on first launch**: Restored group mode is
+  applied after controller construction; a regression test asserts
+  runtime mode switches re-sort so same-folder entries form one
+  contiguous run.
+
 ## [0.3.2] - 2026-06-23
 
 ### Added
