@@ -21,6 +21,7 @@
 
 #include <SDL.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace idiff {
@@ -30,6 +31,13 @@ struct UploadRequest {
     int width = 0;
     int height = 0;
     int channels = 4;
+    std::size_t row_stride = 0;
+    bool linear_filter = true;
+};
+
+struct TextureLimits {
+    int max_width = 0;
+    int max_height = 0;
 };
 
 class ITextureUploader {
@@ -44,6 +52,8 @@ public:
     // Destroy a texture previously returned from upload().  Calling
     // with nullptr is a no-op.
     virtual void destroy(SDL_Texture* tex) = 0;
+
+    virtual TextureLimits limits() const noexcept { return {}; }
 };
 
 // Default SDL-backed implementation.  Holds a non-owning pointer to
@@ -55,9 +65,11 @@ public:
 
     SDL_Texture* upload(const UploadRequest& req) override;
     void destroy(SDL_Texture* tex) override;
+    TextureLimits limits() const noexcept override { return limits_; }
 
 private:
     SDL_Renderer* renderer_;
+    TextureLimits limits_;
 };
 
 } // namespace idiff

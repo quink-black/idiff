@@ -1,11 +1,14 @@
 #include "app/settings.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -109,6 +112,8 @@ std::string AppSettings::default_path() {
 
 AppSettings AppSettings::load(const std::string& path) {
     AppSettings s;
+    bool loaded_legacy_capacity = false;
+    bool loaded_cpu_budget = false;
     std::string p = path.empty() ? default_path() : path;
 
     std::ifstream in(p);
@@ -188,7 +193,19 @@ AppSettings AppSettings::load(const std::string& path) {
             s.loader_backend = std::atoi(val.c_str());
         } else if (key == "cache.lru_capacity") {
             int v = std::atoi(val.c_str());
-            if (v > 0) s.lru_capacity = v;
+            if (v > 0) {
+                s.lru_capacity = v;
+                loaded_legacy_capacity = true;
+            }
+        } else if (key == "cache.cpu_mib") {
+            int v = std::atoi(val.c_str());
+            if (v > 0) {
+                s.cpu_cache_mib = v;
+                loaded_cpu_budget = true;
+            }
+        } else if (key == "cache.gpu_tile_mib") {
+            int v = std::atoi(val.c_str());
+            if (v > 0) s.gpu_tile_cache_mib = v;
         } else if (key.rfind("session.path.", 0) == 0) {
             // session.path.0=..., session.path.1=... -- collected in
             // file order.  Hand-edited files may have gaps or duplicate
@@ -196,6 +213,11 @@ AppSettings AppSettings::load(const std::string& path) {
             // so the user gets their list back as they had it.
             s.session_paths.push_back(val);
         }
+    }
+    if (loaded_legacy_capacity && !loaded_cpu_budget) {
+        s.cpu_cache_mib = static_cast<int>(std::min<std::int64_t>(
+            static_cast<std::int64_t>(s.lru_capacity) * 32,
+            std::numeric_limits<int>::max()));
     }
     return s;
 }
@@ -248,7 +270,8 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.view_background="   << view_background   << "\n";
     out << "viewport.comparison_mode="   << comparison_mode   << "\n";
     out << "viewport.loader_backend="    << loader_backend    << "\n";
-    out << "cache.lru_capacity="          << lru_capacity      << "\n";
+    out << "cache.cpu_mib="               << cpu_cache_mib     << "\n";
+    out << "cache.gpu_tile_mib="          << gpu_tile_cache_mib << "\n";
     for (size_t i = 0; i < session_paths.size(); ++i) {
         out << "session.path." << i << "=" << session_paths[i] << "\n";
     }

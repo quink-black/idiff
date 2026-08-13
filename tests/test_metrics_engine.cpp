@@ -6,6 +6,10 @@
 #include "core/image_impl.h"
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/quality.hpp>
+
+#include <cmath>
 
 using namespace idiff;
 using Catch::Matchers::WithinAbs;
@@ -83,6 +87,10 @@ TEST_CASE("MetricsEngine: identical images have zero MSE and SSIM 1.0",
     auto ssim = engine.compute_ssim(*a, *b);
     REQUIRE(ssim.has_value());
     REQUIRE_THAT(*ssim, WithinAbs(1.0, 1e-3));
+
+    auto psnr = engine.compute_psnr(*a, *b);
+    REQUIRE(psnr.has_value());
+    REQUIRE(std::isinf(*psnr));
 }
 
 TEST_CASE(
@@ -110,6 +118,27 @@ TEST_CASE(
     REQUIRE(all->psnr > 0.0);
     REQUIRE(all->ssim > 0.0);
     REQUIRE(all->ssim <= 1.0);
+}
+
+TEST_CASE("MetricsEngine: striped SSIM matches OpenCV across strip boundaries",
+          "[metrics][large_image]") {
+    cv::Mat a_data(600, 320, CV_8UC3);
+    cv::Mat b_data(600, 320, CV_8UC3);
+    cv::RNG rng(12345);
+    rng.fill(a_data, cv::RNG::UNIFORM, 0, 256);
+    a_data.copyTo(b_data);
+    cv::rectangle(b_data, cv::Rect(40, 240, 120, 80),
+                  cv::Scalar(20, 40, 60), cv::FILLED);
+    auto a = make_image(a_data);
+    auto b = make_image(b_data);
+
+    auto reference = cv::quality::QualitySSIM::compute(a->mat(), b->mat(),
+                                                       cv::noArray());
+    MetricsEngine engine;
+    auto striped = engine.compute_ssim(*a, *b);
+
+    REQUIRE(striped.has_value());
+    REQUIRE_THAT(*striped, WithinAbs(reference[0], 1e-5));
 }
 
 // -----------------------------------------------------------------------------

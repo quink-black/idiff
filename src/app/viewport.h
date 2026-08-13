@@ -4,6 +4,7 @@
 #include <imgui.h>
 
 #include "app/measurement.h"
+#include "app/texture_types.h"
 #include "core/channel_view.h"
 
 #include <cstdint>
@@ -27,6 +28,14 @@ enum class GridLayout {
     RowsCols,   // User-specified columns; rows derived
 };
 
+struct TextureTileView {
+    SDL_Texture* texture = nullptr;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
 class Viewport {
 public:
     Viewport();
@@ -46,7 +55,13 @@ public:
                 const std::vector<SDL_Texture*>& diff_tex_ptrs = {},
                 const std::vector<int>& diff_tex_ws = {},
                 const std::vector<int>& diff_tex_hs = {},
-                const std::vector<const char*>& diff_labels = {});
+                const std::vector<const char*>& diff_labels = {},
+                const std::vector<std::vector<TextureTileView>>& tiles = {},
+                const std::vector<std::vector<TextureTileView>>& diff_tiles = {});
+
+    const std::vector<VisibleImageRegion>& visible_regions() const noexcept {
+        return visible_regions_;
+    }
 
     ComparisonMode mode() const noexcept { return mode_; }
     void set_mode(ComparisonMode mode) { mode_ = mode; }
@@ -203,6 +218,12 @@ private:
                            ImVec2 cell_pos, ImVec2 cell_size,
                            bool ruler_visible);
     void draw_selection_rect();
+    void draw_tiled_image(SDL_Texture* proxy,
+                          const std::vector<TextureTileView>& tiles,
+                          int source_w, int source_h,
+                          ImVec2 image_pos, ImVec2 image_size,
+                          ImVec2 clip_min, ImVec2 clip_max,
+                          int slot, bool difference);
 
     // --- Measurement helpers ---
     //
@@ -323,6 +344,9 @@ private:
         int grid_cell = 0;     // which on-screen grid cell this slot occupies
     };
     std::vector<CellLayout> cell_layouts_;
+    const std::vector<std::vector<TextureTileView>>* frame_tiles_ = nullptr;
+    const std::vector<std::vector<TextureTileView>>* frame_diff_tiles_ = nullptr;
+    std::vector<VisibleImageRegion> visible_regions_;
 
     // Hover state populated during render()
     bool hover_valid_ = false;

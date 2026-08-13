@@ -92,6 +92,8 @@ TEST_CASE("Image: mat access on valid image", "[image]")
     REQUIRE_FALSE(img.mat().empty());
     REQUIRE(img.pixels() != nullptr);
     REQUIRE(img.info().width == 10);
+    REQUIRE(img.resident_bytes() ==
+            img.mat().step[0] * static_cast<std::size_t>(img.mat().rows));
 }
 
 TEST_CASE("Image: copy is deleted", "[image]")

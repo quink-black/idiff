@@ -3,6 +3,7 @@
 
 #include "app/measurement.h"
 #include "core/channel_view.h"
+#include "app/texture_types.h"
 #include "core/image.h"
 #include "domain/group_key.h"
 
@@ -72,6 +73,7 @@ struct ImageEntry {
     mutable std::unique_ptr<Image> image;
     mutable std::unique_ptr<Image> display_image;
     SDL_Texture* texture = nullptr;
+    std::vector<TextureTile> texture_tiles;
     int tex_w = 0;
     int tex_h = 0;
     bool texture_dirty = true;
@@ -100,6 +102,7 @@ struct ImageEntry {
         display_image.reset();
         image_decoded = false;
         texture = nullptr;
+        texture_tiles.clear();
         tex_w = 0;
         tex_h = 0;
         texture_dirty = true;
@@ -128,8 +131,11 @@ struct DiffSlot {
     int partner_entry_idx = -1;
     std::unique_ptr<Image> image;
     SDL_Texture* texture = nullptr;
+    std::vector<TextureTile> texture_tiles;
     int tex_w = 0;
     int tex_h = 0;
+    double normalization_max = 255.0;
+    std::uint64_t tile_tick = 0;
 };
 
 class App {
@@ -383,6 +389,7 @@ private:
     // consumed by render_status_bar() to map the viewport's hover pixel
     // back to a concrete image.
     std::vector<int> viewport_slot_to_entry_;
+    std::uint64_t gpu_tile_tick_ = 0;
 
 #ifdef IDIFF_HAVE_RPC
     // JSON-RPC 2.0 server.  The dispatcher owns method handlers and is

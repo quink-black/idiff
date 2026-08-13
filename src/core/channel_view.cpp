@@ -38,9 +38,9 @@ const char* view_background_label(ViewBackground bg) {
 namespace {
 
 cv::Mat extract_single_channel(const cv::Mat& src, int channel_idx) {
-    std::vector<cv::Mat> channels;
-    cv::split(src, channels);
-    return channels[channel_idx];
+    cv::Mat channel;
+    cv::extractChannel(src, channel, channel_idx);
+    return channel;
 }
 
 // Composite RGBA over a solid color background.
@@ -219,13 +219,13 @@ std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
             if (has_alpha) {
                 return apply_background(src, bg);
             }
-            return src.clone();
+            return src;
 
         case ChannelViewMode::RGB:
             if (has_alpha) {
                 return drop_alpha(src);
             }
-            return src.clone();
+            return src;
 
         case ChannelViewMode::R:
             if (channels < 3) return std::nullopt;
@@ -258,12 +258,9 @@ std::optional<cv::Mat> extract_channel_view(const cv::Mat& src,
             cv::Mat rgb8 = convert_to_8u(rgb);
             cv::cvtColor(rgb8, yuv, cv::COLOR_RGB2YUV);
 
-            std::vector<cv::Mat> planes;
-            cv::split(yuv, planes);
-
             int idx = (mode == ChannelViewMode::Y) ? 0
                     : (mode == ChannelViewMode::U) ? 1 : 2;
-            return planes[idx];
+            return extract_single_channel(yuv, idx);
         }
     }
 

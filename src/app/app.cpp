@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -487,9 +488,9 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     controller_->set_loader_backend(
         static_cast<LoaderBackend>(state_->settings.loader_backend));
 
-    // Apply persisted LRU cache capacity (default 20).
-    controller_->set_lru_capacity(
-        static_cast<std::size_t>(state_->settings.lru_capacity));
+    controller_->set_cpu_cache_budget(
+        static_cast<std::size_t>(state_->settings.cpu_cache_mib) *
+        1024u * 1024u);
 
     state_->file_watcher = std::make_unique<FileWatcher>();
 
@@ -1241,7 +1242,8 @@ void App::save_settings() {
     s.view_background = static_cast<int>(vp.view_background());
     s.comparison_mode = static_cast<int>(vp.mode());
     s.loader_backend = static_cast<int>(controller_->loader_backend());
-    s.lru_capacity = static_cast<int>(controller_->lru_capacity());
+    s.cpu_cache_mib = static_cast<int>(
+        controller_->cpu_cache_budget() / (1024u * 1024u));
 
     // Viewport overlay options (may also be written directly by the
     // viewport panel; sync from the viewport object so the settings
@@ -1387,7 +1389,12 @@ void App::update_display_image(int index) {
     bool needs_upscale = entry.image->info().width != target_w ||
                          entry.image->info().height != target_h;
 
-    if (needs_upscale) {
+    constexpr std::int64_t kMaxPersistentDisplayPixels =
+        static_cast<std::int64_t>(4096) * 4096;
+    const bool display_copy_fits =
+        static_cast<std::int64_t>(target_w) * target_h <=
+        kMaxPersistentDisplayPixels;
+    if (needs_upscale && display_copy_fits) {
         ImageProcessor proc;
         UpscaleOptions opts;
         opts.target_width = target_w;
@@ -1395,8 +1402,11 @@ void App::update_display_image(int index) {
         opts.method = state_->upscale_method;
         entry.display_image = proc.upscale(*entry.image, opts);
     } else {
-        // No upscale needed — clear any stale display_image from a previous comparison
         entry.display_image.reset();
+        if (needs_upscale) {
+            LOG_DEBUG("skipping persistent %dx%d display copy for %s",
+                      target_w, target_h, entry.path.c_str());
+        }
     }
 
     entry.texture_dirty = true;
@@ -1414,60 +1424,159 @@ void App::upload_texture(ImageEntry& entry) {
 
     const auto& mat = img->mat();
     if (mat.empty()) return;
-
-    // Apply channel view extraction if active.
-    cv::Mat channel_mat;
-    const cv::Mat* source_mat = &mat;
     ChannelViewMode mode = state_->viewport->channel_view_mode();
-    {
-        auto extracted = extract_channel_view(mat, mode,
-                            state_->viewport->view_background());
+
+    auto prepare_rgba = [&](const cv::Mat& source) {
+        cv::Mat channel_mat;
+        const cv::Mat* source_mat = &source;
+        auto extracted = extract_channel_view(source, mode,
+                                               state_->viewport->view_background());
         if (extracted) {
             channel_mat = std::move(*extracted);
             source_mat = &channel_mat;
         } else if (channel_view_requires_alpha(mode)) {
-            // Source has no alpha channel but mode requires one.
-            // Show a placeholder so the user knows the mode is active.
-            channel_mat = make_no_alpha_placeholder(mat.cols, mat.rows);
+            channel_mat = make_no_alpha_placeholder(source.cols, source.rows);
             source_mat = &channel_mat;
         }
-        // Otherwise (e.g. R/G/B on grayscale) fall through to original.
-    }
+        return convert_to_rgba8(*source_mat);
+    };
 
-    int w = source_mat->cols;
-    int h = source_mat->rows;
+    TextureLimits limits = state_->texture_uploader->limits();
+    const int max_w = limits.max_width > 0 ? limits.max_width : 4096;
+    const int max_h = limits.max_height > 0 ? limits.max_height : 4096;
+    constexpr int kMaxProxyDimension = 4096;
+    const bool needs_tiles =
+        mat.cols > std::min(max_w, kMaxProxyDimension) ||
+        mat.rows > std::min(max_h, kMaxProxyDimension);
 
-    // Convert to 8-bit RGBA for SDL texture upload. Handles any depth
-    // (CV_8U, CV_16U, CV_32F) and any channel count (1, 3, 4).
-    cv::Mat upload_mat = convert_to_rgba8(*source_mat);
-    if (upload_mat.empty()) return;
+    if (entry.texture_dirty || !entry.texture) {
+        cv::Mat proxy_source = mat;
+        if (needs_tiles) {
+            const double scale = std::min({
+                1.0,
+                static_cast<double>(std::min(max_w, kMaxProxyDimension)) / mat.cols,
+                static_cast<double>(std::min(max_h, kMaxProxyDimension)) / mat.rows});
+            const int proxy_w = std::max(1, static_cast<int>(std::floor(mat.cols * scale)));
+            const int proxy_h = std::max(1, static_cast<int>(std::floor(mat.rows * scale)));
+            cv::resize(mat, proxy_source, cv::Size(proxy_w, proxy_h), 0.0, 0.0,
+                       cv::INTER_AREA);
+        }
 
-    Uint32 sdl_format = SDL_PIXELFORMAT_RGBA32;
-    (void)sdl_format;
+        cv::Mat upload_mat = prepare_rgba(proxy_source);
+        if (upload_mat.empty()) return;
+        UploadRequest req;
+        req.pixels = upload_mat.ptr<std::uint8_t>();
+        req.width = upload_mat.cols;
+        req.height = upload_mat.rows;
+        req.channels = 4;
+        req.row_stride = upload_mat.step[0];
+        SDL_Texture* replacement = state_->texture_uploader->upload(req);
+        if (!replacement) {
+            LOG_WARN("texture upload failed for entry %s", entry.path.c_str());
+            return;
+        }
 
-    if (entry.texture) {
         state_->texture_uploader->destroy(entry.texture);
-        entry.texture = nullptr;
+        entry.texture = replacement;
+        for (auto& tile : entry.texture_tiles) {
+            state_->texture_uploader->destroy(tile.texture);
+        }
+        entry.texture_tiles.clear();
+        entry.tex_w = mat.cols;
+        entry.tex_h = mat.rows;
+        entry.texture_dirty = false;
+        LOG_DEBUG("prepared display proxy %dx%d for %dx%d image",
+                  req.width, req.height, mat.cols, mat.rows);
     }
 
-    if (!upload_mat.isContinuous()) {
-        upload_mat = upload_mat.clone();
+    if (!needs_tiles) return;
+
+    ++gpu_tile_tick_;
+    const int tile_w = std::max(1, std::min(max_w, kTextureTileDimension));
+    const int tile_h = std::max(1, std::min(max_h, kTextureTileDimension));
+    const VisibleImageRegion* requested = nullptr;
+    for (const auto& region : state_->viewport->visible_regions()) {
+        if (region.difference || region.slot < 0 ||
+            region.slot >= static_cast<int>(viewport_slot_to_entry_.size())) continue;
+        int entry_idx = static_cast<int>(&entry - entries_view().data());
+        if (viewport_slot_to_entry_[region.slot] == entry_idx) {
+            requested = &region;
+            break;
+        }
     }
-    UploadRequest req;
-    req.pixels = upload_mat.ptr<std::uint8_t>();
-    req.width = w;
-    req.height = h;
-    req.channels = 4;
-    entry.texture = state_->texture_uploader->upload(req);
-    if (!entry.texture) {
-        LOG_WARN("texture upload failed for entry %s",
-                 entry.path.c_str());
-        return;
+    if (!requested) return;
+
+    const int first_x = std::max(0, requested->x / tile_w - 1);
+    const int first_y = std::max(0, requested->y / tile_h - 1);
+    const int last_x = std::min((mat.cols - 1) / tile_w,
+                                (requested->x + requested->width - 1) / tile_w + 1);
+    const int last_y = std::min((mat.rows - 1) / tile_h,
+                                (requested->y + requested->height - 1) / tile_h + 1);
+    int uploaded_this_frame = 0;
+    for (int ty = first_y; ty <= last_y; ++ty) {
+        for (int tx = first_x; tx <= last_x; ++tx) {
+            const int x = tx * tile_w;
+            const int y = ty * tile_h;
+            auto existing = std::find_if(
+                entry.texture_tiles.begin(), entry.texture_tiles.end(),
+                [&](const TextureTile& tile) { return tile.x == x && tile.y == y; });
+            if (existing != entry.texture_tiles.end()) {
+                existing->last_used_frame = gpu_tile_tick_;
+                continue;
+            }
+            if (uploaded_this_frame >= 4) continue;
+
+            const int width = std::min(tile_w, mat.cols - x);
+            const int height = std::min(tile_h, mat.rows - y);
+            cv::Mat upload_mat = prepare_rgba(mat(cv::Rect(x, y, width, height)));
+            if (upload_mat.empty()) continue;
+            UploadRequest req;
+            req.pixels = upload_mat.ptr<std::uint8_t>();
+            req.width = upload_mat.cols;
+            req.height = upload_mat.rows;
+            req.channels = 4;
+            req.row_stride = upload_mat.step[0];
+            req.linear_filter = false;
+            SDL_Texture* texture = state_->texture_uploader->upload(req);
+            if (!texture) continue;
+            entry.texture_tiles.push_back(
+                {texture, x, y, width, height, gpu_tile_tick_});
+            ++uploaded_this_frame;
+        }
     }
 
-    entry.tex_w = w;
-    entry.tex_h = h;
-    entry.texture_dirty = false;
+    const std::size_t budget =
+        static_cast<std::size_t>(state_->settings.gpu_tile_cache_mib) *
+        1024u * 1024u / kGpuTileCachePartitions;
+    auto tile_bytes = [](const TextureTile& tile) {
+        return static_cast<std::size_t>(tile.width) *
+               static_cast<std::size_t>(tile.height) * 4u;
+    };
+    std::size_t total = 0;
+    for (const auto& candidate : entries_view()) {
+        for (const auto& tile : candidate.texture_tiles) total += tile_bytes(tile);
+    }
+    while (total > budget) {
+        ImageEntry* owner = nullptr;
+        std::size_t oldest_index = 0;
+        std::uint64_t oldest_tick = std::numeric_limits<std::uint64_t>::max();
+        for (auto& candidate : entries_view()) {
+            for (std::size_t i = 0; i < candidate.texture_tiles.size(); ++i) {
+                if (candidate.texture_tiles[i].last_used_frame < oldest_tick) {
+                    oldest_tick = candidate.texture_tiles[i].last_used_frame;
+                    owner = &candidate;
+                    oldest_index = i;
+                }
+            }
+        }
+        if (!owner) break;
+        total -= tile_bytes(owner->texture_tiles[oldest_index]);
+        state_->texture_uploader->destroy(
+            owner->texture_tiles[oldest_index].texture);
+        owner->texture_tiles.erase(
+            owner->texture_tiles.begin() +
+            static_cast<std::ptrdiff_t>(oldest_index));
+    }
 }
 
 void App::render_toolbar() {

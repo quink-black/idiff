@@ -31,6 +31,13 @@ int icmp(const std::string& a, const std::string& b) noexcept {
     return la < lb ? -1 : 1;
 }
 
+void destroy_entry_textures(ITextureUploader& uploader, ImageEntry& entry) {
+    uploader.destroy(entry.texture);
+    entry.texture = nullptr;
+    for (auto& tile : entry.texture_tiles) uploader.destroy(tile.texture);
+    entry.texture_tiles.clear();
+}
+
 } // namespace
 
 ImageLibrary::ImageLibrary(ITextureUploader& uploader) noexcept
@@ -47,8 +54,7 @@ void ImageLibrary::add(ImageEntry entry) {
 std::vector<int> ImageLibrary::remove(std::size_t index) {
     if (index >= entries_.size()) return {};
 
-    uploader_.destroy(entries_[index].texture);
-    entries_[index].texture = nullptr;
+    destroy_entry_textures(uploader_, entries_[index]);
 
     const std::size_t old_size = entries_.size();
     entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(index));
@@ -169,8 +175,7 @@ std::vector<int> ImageLibrary::sort_by_directory() {
 
 void ImageLibrary::clear() {
     for (auto& e : entries_) {
-        uploader_.destroy(e.texture);
-        e.texture = nullptr;
+        destroy_entry_textures(uploader_, e);
     }
     entries_.clear();
 }
@@ -178,7 +183,7 @@ void ImageLibrary::clear() {
 void ImageLibrary::release_entry_pixels(std::size_t index) {
     if (index >= entries_.size()) return;
     auto& e = entries_[index];
-    uploader_.destroy(e.texture);
+    destroy_entry_textures(uploader_, e);
     e.release_pixel_data();
 }
 
@@ -188,7 +193,7 @@ void ImageLibrary::upload(std::size_t index, const UploadRequest& req) {
         return;
     }
     auto& e = entries_[index];
-    uploader_.destroy(e.texture);
+    destroy_entry_textures(uploader_, e);
     e.texture = uploader_.upload(req);
     if (e.texture) {
         e.tex_w = req.width;

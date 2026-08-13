@@ -69,11 +69,15 @@ struct AppSettings {
     // Image loader backend: 0 = ImageMagick, 1 = OpenCV, 2 = FFmpeg.
     int loader_backend = 0;
 
-    // LRU cache capacity: number of recently-deselected entries whose
-    // pixels stay in memory to avoid re-decode on brief toggles.
-    // Default 20 ≈ 660 MB for 4K RGBA8 images (3840x2160x4), ~160 MB
-    // for 1080p (1920x1080x4).
+    /*
+     * The entry limit remains a secondary ceiling for small images.
+     * Old settings migrate each retained entry to a 32 MiB byte allowance.
+     */
     int lru_capacity = 20;
+    // Bounds decoded data retained after entries leave the selection.
+    int cpu_cache_mib = 2048;
+    // Bounds full-resolution source and difference tiles, excluding proxies.
+    int gpu_tile_cache_mib = 512;
 
     // Media paths to reload on next launch.  Populated by the Restart
     // menu item, consumed and cleared by main() at startup.  Empty for

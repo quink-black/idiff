@@ -67,6 +67,7 @@ public:
 
     const ImageInfo& info() const noexcept;
     const uint8_t* pixels() const noexcept;
+    std::size_t resident_bytes() const noexcept;
 
     const cv::Mat& mat() const noexcept;
 

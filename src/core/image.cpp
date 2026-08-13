@@ -1,5 +1,7 @@
 #include "core/image_impl.h"
 
+#include <limits>
+
 #ifdef IDIFF_HAVE_FFMPEG
 extern "C" {
 #include <libavutil/frame.h>
@@ -32,6 +34,15 @@ const ImageInfo& Image::info() const noexcept {
 const uint8_t* Image::pixels() const noexcept {
     if (!impl_ || impl_->mat.empty()) return nullptr;
     return impl_->mat.ptr<uint8_t>();
+}
+
+std::size_t Image::resident_bytes() const noexcept {
+    if (!impl_ || impl_->mat.empty() || impl_->mat.rows <= 0) return 0;
+    const std::size_t rows = static_cast<std::size_t>(impl_->mat.rows);
+    if (impl_->mat.step[0] > std::numeric_limits<std::size_t>::max() / rows) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return impl_->mat.step[0] * rows;
 }
 
 const cv::Mat& Image::mat() const noexcept {

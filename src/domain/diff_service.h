@@ -23,6 +23,7 @@
 #include "core/image_comparator.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ namespace idiff {
 
 class ITextureUploader;
 class SelectionModel;
+struct VisibleImageRegion;
 
 class DiffService {
 public:
@@ -83,6 +85,11 @@ public:
                 const SelectionModel& selection,
                 const Options& opts,
                 std::string& out_error);
+    void update_visible_tiles(const std::vector<ImageEntry>& entries,
+                              const SelectionModel& selection,
+                              const Options& opts,
+                              const std::vector<VisibleImageRegion>& regions,
+                              std::size_t gpu_budget_bytes);
 
     // Read-only views consumed by the UI layer.  Pointers and sizes
     // are stable until the next clear() / update() call.
@@ -100,6 +107,7 @@ private:
     ITextureUploader& uploader_;
     std::vector<DiffSlot> slots_;
     bool dirty_ = true;
+    std::uint64_t tile_tick_ = 0;
 };
 
 } // namespace idiff

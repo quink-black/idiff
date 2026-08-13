@@ -1,5 +1,6 @@
 #include "app/io/texture_uploader.h"
 #include "app/io/file_dialog.h"
+#include "app/texture_types.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -70,6 +71,18 @@ TEST_CASE("SdlTextureUploader rejects bad inputs without crashing", "[io]") {
 
     // Destroying nullptr is a no-op.
     up.destroy(nullptr);
+}
+
+TEST_CASE("Texture tiles project exactly into logical image space",
+          "[io][large_image]") {
+    const auto rect = idiff::project_tile_rect(
+        18000, 9000, 4096, 2048, 2048, 2048,
+        10.0f, 20.0f, 9000.0f, 4500.0f);
+
+    REQUIRE(rect.x0 == 2058.0f);
+    REQUIRE(rect.y0 == 1044.0f);
+    REQUIRE(rect.x1 == 3082.0f);
+    REQUIRE(rect.y1 == 2068.0f);
 }
 
 TEST_CASE("FakeFileDialog records what was asked of it", "[io]") {

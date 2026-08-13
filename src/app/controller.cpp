@@ -394,7 +394,13 @@ void AppController::on_selection_changed() {
     // (most-recently-departed).  Entries that entered are removed
     // from the LRU -- their pixels stay resident while selected.
     for (int idx : last_selection_) {
-        if (!selection_->contains(idx)) lazy_cache_.touch(idx);
+        if (!selection_->contains(idx) &&
+            idx >= 0 && idx < static_cast<int>(library_->all().size())) {
+            const auto& entry = library_->all()[static_cast<std::size_t>(idx)];
+            std::size_t bytes = entry.image ? entry.image->resident_bytes() : 0;
+            if (entry.display_image) bytes += entry.display_image->resident_bytes();
+            lazy_cache_.touch(idx, bytes);
+        }
     }
     for (int idx : current) {
         lazy_cache_.remove(idx);
@@ -424,7 +430,10 @@ void AppController::touch_lazy(int index) {
     // invariant when the caller (e.g. timeline scrub) touches every
     // decoded entry without filtering by selection.
     if (selection_->contains(index)) return;
-    lazy_cache_.touch(index);
+    const auto& entry = library_->all()[static_cast<std::size_t>(index)];
+    std::size_t bytes = entry.image ? entry.image->resident_bytes() : 0;
+    if (entry.display_image) bytes += entry.display_image->resident_bytes();
+    lazy_cache_.touch(index, bytes);
     lazy_cache_.evict_excess([this](int idx) {
         library_->release_entry_pixels(static_cast<std::size_t>(idx));
     });
@@ -436,6 +445,17 @@ std::size_t AppController::lru_capacity() const noexcept {
 
 void AppController::set_lru_capacity(std::size_t capacity) {
     lazy_cache_.set_capacity(capacity, [this](int idx) {
+        library_->release_entry_pixels(static_cast<std::size_t>(idx));
+    });
+    diff_->mark_dirty();
+}
+
+std::size_t AppController::cpu_cache_budget() const noexcept {
+    return lazy_cache_.byte_budget();
+}
+
+void AppController::set_cpu_cache_budget(std::size_t bytes) {
+    lazy_cache_.set_byte_budget(bytes, [this](int idx) {
         library_->release_entry_pixels(static_cast<std::size_t>(idx));
     });
     diff_->mark_dirty();

@@ -42,8 +42,8 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         if (s >= 0 && s < static_cast<int>(entries.size())) {
             if (entries[s].texture_dirty) {
                 if (in.on_update_display_image) in.on_update_display_image(s);
-                if (in.on_upload_texture) in.on_upload_texture(s);
             }
+            if (in.on_upload_texture) in.on_upload_texture(s);
         }
     }
 
@@ -53,12 +53,17 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         opts.heatmap_color = *in.heatmap_color;
         opts.channel_mode = in.viewport->channel_view_mode();
         diff_service.update(entries, selection, opts, *in.status_text);
+        diff_service.update_visible_tiles(
+            entries, selection, opts, in.viewport->visible_regions(),
+            static_cast<std::size_t>(settings.gpu_tile_cache_mib) *
+                1024u * 1024u / kGpuTileCachePartitions);
     }
 
     // Build texture list from selected images. Place the reference
     // image first, followed by any additional selected images in their
     // natural order.
     std::vector<SDL_Texture*> tex_ptrs;
+    std::vector<std::vector<TextureTileView>> texture_tiles;
     std::vector<int> tex_ws, tex_hs;
     std::vector<const char*> labels;
     // Hold label storage so const char* remains valid for the frame
@@ -77,6 +82,11 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         if (s < 0 || s >= static_cast<int>(entries.size())) return;
         const auto& e = entries[s];
         tex_ptrs.push_back(e.texture);
+        texture_tiles.emplace_back();
+        for (const auto& tile : e.texture_tiles) {
+            texture_tiles.back().push_back(
+                {tile.texture, tile.x, tile.y, tile.width, tile.height});
+        }
         // Report the source image's display dimensions (SAR-adjusted),
         // not the SDL texture size.  When two selected images differ in
         // resolution, update_display_image upscales the smaller one to
@@ -536,6 +546,7 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
     // is "A vs <partner>", in the same order DiffService::update()
     // populates the slot list, so metrics rows and viewport cells align.
     std::vector<SDL_Texture*> diff_tex_ptrs;
+    std::vector<std::vector<TextureTileView>> diff_texture_tiles;
     std::vector<int> diff_tex_ws, diff_tex_hs;
     std::vector<const char*> diff_labels;
     std::vector<std::string> diff_label_storage;
@@ -553,6 +564,11 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
                                     : std::string("Ref");
         for (const auto& slot : diff_service.slots()) {
             diff_tex_ptrs.push_back(slot.texture);
+            diff_texture_tiles.emplace_back();
+            for (const auto& tile : slot.texture_tiles) {
+                diff_texture_tiles.back().push_back(
+                    {tile.texture, tile.x, tile.y, tile.width, tile.height});
+            }
             diff_tex_ws.push_back(slot.tex_w);
             diff_tex_hs.push_back(slot.tex_h);
             std::string partner_name;
@@ -569,7 +585,8 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
 
     // Render viewport content
     vp.render(tex_ptrs, tex_ws, tex_hs, labels,
-              diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
+              diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels,
+              texture_tiles, diff_texture_tiles);
 
     // Detect channel view mode changes triggered inside the Viewport
     // combo and mark selected entries dirty so textures are re-uploaded

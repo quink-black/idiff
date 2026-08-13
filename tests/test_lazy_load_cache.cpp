@@ -210,3 +210,58 @@ TEST_CASE("LazyLoadCache::set_capacity grows without eviction",
     REQUIRE(c.capacity() == 20);
     REQUIRE(c.size() == 4);
 }
+
+TEST_CASE("LazyLoadCache evicts by resident byte budget", "[lazy_load]") {
+    idiff::LazyLoadCache c{10};
+    c.touch(1, 40);
+    c.touch(2, 50);
+    c.touch(3, 60);
+    REQUIRE(c.resident_bytes() == 150);
+
+    std::vector<int> evicted;
+    c.set_byte_budget(100, [&](int idx) { evicted.push_back(idx); });
+
+    REQUIRE(evicted == std::vector<int>{1, 2});
+    REQUIRE(c.resident_bytes() == 60);
+    REQUIRE(c.contains(3));
+}
+
+TEST_CASE("LazyLoadCache remap preserves resident byte accounting",
+          "[lazy_load]") {
+    idiff::LazyLoadCache c{10};
+    c.touch(1, 25);
+    c.touch(2, 75);
+    std::vector<int> remap = {0, idiff::LazyLoadCache::kRemoved, 5};
+    c.apply_remap(remap);
+
+    REQUIRE(c.resident_bytes() == 75);
+    REQUIRE_FALSE(c.contains(1));
+    REQUIRE(c.contains(5));
+}
+
+TEST_CASE("LazyLoadCache unweighted touch preserves an existing weight",
+          "[lazy_load]") {
+    idiff::LazyLoadCache c{10};
+    c.touch(1, 75);
+    c.touch(2, 25);
+
+    c.touch(1);
+
+    REQUIRE(c.resident_bytes() == 100);
+    std::vector<int> evicted;
+    c.set_byte_budget(80, [&](int idx) { evicted.push_back(idx); });
+    REQUIRE(evicted == std::vector<int>{2});
+    REQUIRE(c.contains(1));
+}
+
+TEST_CASE("LazyLoadCache drops duplicate remap targets", "[lazy_load]") {
+    idiff::LazyLoadCache c{10};
+    c.touch(1, 25);
+    c.touch(2, 75);
+
+    c.apply_remap({0, 5, 5});
+
+    REQUIRE(c.size() == 1);
+    REQUIRE(c.contains(5));
+    REQUIRE(c.resident_bytes() == 75);
+}

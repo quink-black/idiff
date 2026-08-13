@@ -89,7 +89,7 @@ TEST_CASE("ChannelView: rejects modes incompatible with input shape",
 // None-mode compositing: 8-bit and 16-bit, all backgrounds.
 // -----------------------------------------------------------------------------
 
-TEST_CASE("ChannelView: None returns clone of non-alpha RGB at native depth",
+TEST_CASE("ChannelView: None shares non-alpha RGB at native depth",
           "[channel_view]") {
     SECTION("CV_8UC3") {
         cv::Mat rgb = make_rgb8(4, 4, cv::Vec3b(10, 20, 30));
@@ -98,6 +98,7 @@ TEST_CASE("ChannelView: None returns clone of non-alpha RGB at native depth",
         REQUIRE(r.has_value());
         REQUIRE(r->channels() == 3);
         REQUIRE(r->depth() == CV_8U);
+        REQUIRE(r->data == rgb.data);
         REQUIRE(r->at<cv::Vec3b>(0, 0) == cv::Vec3b(10, 20, 30));
     }
     SECTION("CV_16UC3 keeps depth") {

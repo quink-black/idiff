@@ -59,6 +59,10 @@ public:
         live_.erase(tex);
     }
 
+    idiff::TextureLimits limits() const noexcept override {
+        return {64, 64};
+    }
+
     int upload_count() const { return upload_count_; }
     int destroy_count() const { return destroy_count_; }
     std::size_t live_count() const { return live_.size(); }
@@ -87,6 +91,7 @@ ImageEntry make_entry(const std::string& name, int w, int h, cv::Scalar fill) {
     e.filename = name;
     e.display_label = name;
     e.image = make_image(w, h, fill);
+    e.image_decoded = true;
     return e;
 }
 
@@ -169,6 +174,43 @@ TEST_CASE("DiffService::update produces one slot per partner in natural order",
     REQUIRE(svc.slots()[0].texture != nullptr);
     REQUIRE(svc.slots()[1].texture != nullptr);
     REQUIRE(up.upload_count() == 2);
+}
+
+TEST_CASE("DiffService uses proxy and byte-bounded visible tiles for large images",
+          "[diff_service][large_image]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("a.png", 128, 96, cv::Scalar(10, 20, 30)));
+    entries.push_back(make_entry("b.png", 128, 96, cv::Scalar(40, 50, 60)));
+    sel.insert(0);
+    sel.insert(1);
+
+    std::string err;
+    svc.update(entries, sel, {}, err);
+    REQUIRE(svc.size() == 1);
+    REQUIRE(svc.slots()[0].tex_w == 128);
+    REQUIRE(svc.slots()[0].tex_h == 96);
+    REQUIRE(svc.slots()[0].image->mat().cols <= 64);
+    REQUIRE(up.upload_count() == 1);
+
+    idiff::VisibleImageRegion region;
+    region.slot = 0;
+    region.width = 128;
+    region.height = 96;
+    region.difference = true;
+    svc.update_visible_tiles(entries, sel, {}, {region}, 64u * 64u * 4u);
+
+    std::size_t tile_bytes = 0;
+    for (const auto& tile : svc.slots()[0].texture_tiles) {
+        tile_bytes += static_cast<std::size_t>(tile.width) *
+                      static_cast<std::size_t>(tile.height) * 4u;
+    }
+    REQUIRE_FALSE(svc.slots()[0].texture_tiles.empty());
+    REQUIRE(tile_bytes <= 64u * 64u * 4u);
+    REQUIRE(up.live_count() ==
+            1 + svc.slots()[0].texture_tiles.size());
 }
 
 TEST_CASE("DiffService::update destroys old textures before recomputing",

@@ -52,14 +52,11 @@ std::optional<double> MetricsEngine::compute_psnr(const Image& a, const Image& b
         return std::nullopt;
     }
 
-    try {
-        auto quality = cv::quality::QualityPSNR::create(a.mat());
-        cv::Scalar result = quality->compute(b.mat());
-        return result[0];
-    } catch (const cv::Exception& e) {
-        last_error_ = e.what();
-        return std::nullopt;
-    }
+    auto mse = compute_mse(a, b);
+    if (!mse) return std::nullopt;
+    if (*mse == 0.0) return std::numeric_limits<double>::infinity();
+    constexpr double kPeakValue = 255.0;
+    return 10.0 * std::log10(kPeakValue * kPeakValue / *mse);
 }
 
 std::optional<double> MetricsEngine::compute_ssim(const Image& a, const Image& b) {
@@ -71,9 +68,59 @@ std::optional<double> MetricsEngine::compute_ssim(const Image& a, const Image& b
     }
 
     try {
-        auto quality = cv::quality::QualitySSIM::create(a.mat());
-        cv::Scalar result = quality->compute(b.mat());
-        return result[0];
+        constexpr int kStripRows = 256;
+        constexpr int kHalo = 5;
+        constexpr double kC1 = 6.5025;
+        constexpr double kC2 = 58.5225;
+        double sum = 0.0;
+        std::size_t count = 0;
+
+        for (int y = 0; y < a.mat().rows; y += kStripRows) {
+            const int rows = std::min(kStripRows, a.mat().rows - y);
+            const int source_y = std::max(0, y - kHalo);
+            const int source_end =
+                std::min(a.mat().rows, y + rows + kHalo);
+            const cv::Rect roi(0, source_y, a.mat().cols,
+                               source_end - source_y);
+            cv::Mat aa;
+            cv::Mat bb;
+            cv::extractChannel(a.mat()(roi), aa, 0);
+            cv::extractChannel(b.mat()(roi), bb, 0);
+            aa.convertTo(aa, CV_32F);
+            bb.convertTo(bb, CV_32F);
+
+            cv::Mat mu_a;
+            cv::Mat mu_b;
+            cv::GaussianBlur(aa, mu_a, cv::Size(11, 11), 1.5);
+            cv::GaussianBlur(bb, mu_b, cv::Size(11, 11), 1.5);
+            cv::Mat mu_a_sq = mu_a.mul(mu_a);
+            cv::Mat mu_b_sq = mu_b.mul(mu_b);
+            cv::Mat mu_ab = mu_a.mul(mu_b);
+            cv::Mat sigma_a_sq;
+            cv::Mat sigma_b_sq;
+            cv::Mat sigma_ab;
+            cv::GaussianBlur(aa.mul(aa), sigma_a_sq,
+                             cv::Size(11, 11), 1.5);
+            sigma_a_sq -= mu_a_sq;
+            cv::GaussianBlur(bb.mul(bb), sigma_b_sq,
+                             cv::Size(11, 11), 1.5);
+            sigma_b_sq -= mu_b_sq;
+            cv::GaussianBlur(aa.mul(bb), sigma_ab,
+                             cv::Size(11, 11), 1.5);
+            sigma_ab -= mu_ab;
+
+            cv::Mat numerator = (2.0 * mu_ab + kC1)
+                .mul(2.0 * sigma_ab + kC2);
+            cv::Mat denominator = (mu_a_sq + mu_b_sq + kC1)
+                .mul(sigma_a_sq + sigma_b_sq + kC2);
+            cv::Mat ssim_map;
+            cv::divide(numerator, denominator, ssim_map);
+            const int local_y = y - source_y;
+            sum += cv::sum(ssim_map.rowRange(local_y, local_y + rows))[0];
+            count += static_cast<std::size_t>(rows) *
+                     static_cast<std::size_t>(a.mat().cols);
+        }
+        return count ? sum / static_cast<double>(count) : 0.0;
     } catch (const cv::Exception& e) {
         last_error_ = e.what();
         return std::nullopt;
@@ -89,9 +136,26 @@ std::optional<double> MetricsEngine::compute_mse(const Image& a, const Image& b)
     }
 
     try {
-        auto quality = cv::quality::QualityMSE::create(a.mat());
-        cv::Scalar result = quality->compute(b.mat());
-        return result[0];
+        long double squared_sum = 0.0;
+        std::size_t count = 0;
+        constexpr int kStripRows = 256;
+        for (int y = 0; y < a.mat().rows; y += kStripRows) {
+            const int rows = std::min(kStripRows, a.mat().rows - y);
+            const cv::Rect roi(0, y, a.mat().cols, rows);
+            cv::Mat aa;
+            cv::Mat bb;
+            cv::extractChannel(a.mat()(roi), aa, 0);
+            cv::extractChannel(b.mat()(roi), bb, 0);
+            cv::Mat diff;
+            cv::absdiff(aa, bb, diff);
+            diff.convertTo(diff, CV_64F);
+            squared_sum += cv::sum(diff.mul(diff))[0];
+            count += static_cast<std::size_t>(rows) *
+                     static_cast<std::size_t>(a.mat().cols);
+        }
+        return count
+            ? static_cast<double>(squared_sum / count)
+            : 0.0;
     } catch (const cv::Exception& e) {
         last_error_ = e.what();
         return std::nullopt;

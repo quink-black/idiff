@@ -167,6 +167,8 @@ public:
     // excess entries immediately.
     std::size_t lru_capacity() const noexcept;
     void set_lru_capacity(std::size_t capacity);
+    std::size_t cpu_cache_budget() const noexcept;
+    void set_cpu_cache_budget(std::size_t bytes);
 
     // ---- Per-comparison reference ---------------------------------
     //

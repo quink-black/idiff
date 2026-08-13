@@ -721,6 +721,58 @@ void Viewport::draw_grid(ImVec2 img_pos, ImVec2 img_size,
 
 // --- Render ---
 
+void Viewport::draw_tiled_image(SDL_Texture* proxy,
+                                const std::vector<TextureTileView>& tiles,
+                                int source_w, int source_h,
+                                ImVec2 image_pos, ImVec2 image_size,
+                                ImVec2 clip_min, ImVec2 clip_max,
+                                int slot, bool difference) {
+    if (source_w <= 0 || source_h <= 0 ||
+        image_size.x <= 0.0f || image_size.y <= 0.0f) return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (proxy) {
+        dl->AddImage(to_tex_id(proxy), image_pos,
+                     ImVec2(image_pos.x + image_size.x,
+                            image_pos.y + image_size.y));
+    }
+
+    const float sx = image_size.x / static_cast<float>(source_w);
+    const float sy = image_size.y / static_cast<float>(source_h);
+    for (const auto& tile : tiles) {
+        if (!tile.texture) continue;
+        const auto projected = project_tile_rect(
+            source_w, source_h,
+            tile.x, tile.y, tile.width, tile.height,
+            image_pos.x, image_pos.y, image_size.x, image_size.y);
+        ImVec2 tile_min(projected.x0, projected.y0);
+        ImVec2 tile_max(projected.x1, projected.y1);
+        dl->AddImage(to_tex_id(tile.texture), tile_min, tile_max);
+    }
+
+    if (std::min(sx, sy) < 0.5f) return;
+    const float left = std::max(image_pos.x, clip_min.x);
+    const float top = std::max(image_pos.y, clip_min.y);
+    const float right = std::min(image_pos.x + image_size.x, clip_max.x);
+    const float bottom = std::min(image_pos.y + image_size.y, clip_max.y);
+    if (right <= left || bottom <= top) return;
+
+    VisibleImageRegion region;
+    region.slot = slot;
+    region.x = std::clamp(static_cast<int>((left - image_pos.x) / sx),
+                          0, source_w - 1);
+    region.y = std::clamp(static_cast<int>((top - image_pos.y) / sy),
+                          0, source_h - 1);
+    const int x2 = std::clamp(
+        static_cast<int>(std::ceil((right - image_pos.x) / sx)), 1, source_w);
+    const int y2 = std::clamp(
+        static_cast<int>(std::ceil((bottom - image_pos.y) / sy)), 1, source_h);
+    region.width = x2 - region.x;
+    region.height = y2 - region.y;
+    region.difference = difference;
+    visible_regions_.push_back(region);
+}
+
 void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                       const std::vector<int>& tex_ws,
                       const std::vector<int>& tex_hs,
@@ -728,7 +780,9 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                       const std::vector<SDL_Texture*>& diff_tex_ptrs,
                       const std::vector<int>& diff_tex_ws,
                       const std::vector<int>& diff_tex_hs,
-                      const std::vector<const char*>& diff_labels) {
+                      const std::vector<const char*>& diff_labels,
+                      const std::vector<std::vector<TextureTileView>>& tiles,
+                      const std::vector<std::vector<TextureTileView>>& diff_tiles) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     vp_origin_ = ImGui::GetCursorScreenPos();
     vp_size_ = avail;
@@ -737,6 +791,9 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     hover_cell_idx_ = -1;
     hover_px_x_ = 0;
     hover_px_y_ = 0;
+    visible_regions_.clear();
+    frame_tiles_ = &tiles;
+    frame_diff_tiles_ = &diff_tiles;
 
     if (avail.x < 10 || avail.y < 10) return;
 
@@ -1006,7 +1063,14 @@ void Viewport::render_split(const std::vector<SDL_Texture*>& tex_ptrs,
 
         dl->PushClipRect(ImVec2(cell_x, cell_y),
                          ImVec2(cell_x + cell_w, cell_y + cell_h), true);
-        dl->AddImage(to_tex_id(tex_ptrs[i]), img_min, img_max);
+        static const std::vector<TextureTileView> no_tiles;
+        const auto& image_tiles =
+            frame_tiles_ && i < static_cast<int>(frame_tiles_->size())
+                ? (*frame_tiles_)[static_cast<std::size_t>(i)] : no_tiles;
+        draw_tiled_image(tex_ptrs[i], image_tiles, tex_ws[i], tex_hs[i],
+                         img_min, ImVec2(disp_w, disp_h),
+                         ImVec2(cell_x, cell_y),
+                         ImVec2(cell_x + cell_w, cell_y + cell_h), i, false);
 
         if (show_grid_ && scale > 0.0f) {
             draw_grid(img_min, ImVec2(disp_w, disp_h), tex_ws[i], tex_hs[i], scale);
@@ -1054,8 +1118,14 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
         if (tex_ptrs[0]) {
             ImVec2 pos, size;
             compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
-            dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
-                         ImVec2(pos.x + size.x, pos.y + size.y));
+            static const std::vector<TextureTileView> no_tiles;
+            const auto& image_tiles =
+                frame_tiles_ && !frame_tiles_->empty()
+                    ? (*frame_tiles_)[0] : no_tiles;
+            draw_tiled_image(tex_ptrs[0], image_tiles, tex_ws[0], tex_hs[0],
+                             pos, size, vp_origin_,
+                             ImVec2(vp_origin_.x + vp_size_.x,
+                                    vp_origin_.y + vp_size_.y), 0, false);
             float scale = size.x / tex_ws[0];
             if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
             if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
@@ -1071,8 +1141,14 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     if (!tex_ptrs[1]) {
         ImVec2 pos, size;
         compute_image_rect(tex_ws[0], tex_hs[0], pos, size);
-        dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
-                     ImVec2(pos.x + size.x, pos.y + size.y));
+        static const std::vector<TextureTileView> no_tiles;
+        const auto& image_tiles =
+            frame_tiles_ && !frame_tiles_->empty()
+                ? (*frame_tiles_)[0] : no_tiles;
+        draw_tiled_image(tex_ptrs[0], image_tiles, tex_ws[0], tex_hs[0],
+                         pos, size, vp_origin_,
+                         ImVec2(vp_origin_.x + vp_size_.x,
+                                vp_origin_.y + vp_size_.y), 0, false);
         float scale = size.x / tex_ws[0];
         if (show_grid_) draw_grid(pos, size, tex_ws[0], tex_hs[0], scale);
         if (show_ruler_) draw_ruler(pos, size, tex_ws[0], tex_hs[0], scale, vp_origin_, vp_size_);
@@ -1101,16 +1177,27 @@ void Viewport::render_overlay(const std::vector<SDL_Texture*>& tex_ptrs,
     {
         dl->PushClipRect(ImVec2(line_x, vp_origin_.y),
                          ImVec2(vp_origin_.x + vp_size_.x, vp_origin_.y + vp_size_.y), true);
-        dl->AddImage(to_tex_id(tex_ptrs[1]), pos,
-                     ImVec2(pos.x + size.x, pos.y + size.y));
+        static const std::vector<TextureTileView> no_tiles;
+        const auto& image_tiles =
+            frame_tiles_ && frame_tiles_->size() > 1
+                ? (*frame_tiles_)[1] : no_tiles;
+        draw_tiled_image(tex_ptrs[1], image_tiles, tex_ws[1], tex_hs[1],
+                         pos, size, ImVec2(line_x, vp_origin_.y),
+                         ImVec2(vp_origin_.x + vp_size_.x,
+                                vp_origin_.y + vp_size_.y), 1, false);
         dl->PopClipRect();
     }
 
     // Draw image A (left side)
     {
         dl->PushClipRect(vp_origin_, ImVec2(line_x, vp_origin_.y + vp_size_.y), true);
-        dl->AddImage(to_tex_id(tex_ptrs[0]), pos,
-                     ImVec2(pos.x + size.x, pos.y + size.y));
+        static const std::vector<TextureTileView> no_tiles;
+        const auto& image_tiles =
+            frame_tiles_ && !frame_tiles_->empty()
+                ? (*frame_tiles_)[0] : no_tiles;
+        draw_tiled_image(tex_ptrs[0], image_tiles, tex_ws[0], tex_hs[0],
+                         pos, size, vp_origin_,
+                         ImVec2(line_x, vp_origin_.y + vp_size_.y), 0, false);
         dl->PopClipRect();
     }
 
@@ -1252,7 +1339,15 @@ void Viewport::render_difference(const std::vector<SDL_Texture*>& diff_tex_ptrs,
 
         dl->PushClipRect(ImVec2(cell_x, cell_y),
                          ImVec2(cell_x + cell_w, cell_y + cell_h), true);
-        dl->AddImage(to_tex_id(diff_tex_ptrs[i]), img_min, img_max);
+        static const std::vector<TextureTileView> no_tiles;
+        const auto& image_tiles =
+            frame_diff_tiles_ && i < static_cast<int>(frame_diff_tiles_->size())
+                ? (*frame_diff_tiles_)[static_cast<std::size_t>(i)] : no_tiles;
+        draw_tiled_image(diff_tex_ptrs[i], image_tiles,
+                         diff_tex_ws[i], diff_tex_hs[i],
+                         img_min, ImVec2(disp_w, disp_h),
+                         ImVec2(cell_x, cell_y),
+                         ImVec2(cell_x + cell_w, cell_y + cell_h), i, true);
 
         if (show_grid_ && scale > 0.0f) {
             draw_grid(img_min, ImVec2(disp_w, disp_h),
