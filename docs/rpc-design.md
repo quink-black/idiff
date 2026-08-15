@@ -2,7 +2,10 @@
 
 > **Audience:** future contributors and AI agents resuming this work,
 > potentially on a different machine (notably Windows).
-> **Last updated:** 2026-06-10, branch `feature/rpc-phase1`, Phase 2 complete.
+> **Last updated:** 2026-08-15, synced with release 0.4.0 at the RPC
+> layer (GroupMode, `view.set_group_mode`, local-first URL resolution;
+> Phase 1 + 2 complete, Phase 4 partially done). The MCP shim does not
+> yet expose `view.set_group_mode`; see section 5.
 
 This document is the load-bearing reference for the RPC subsystem.
 When you (human or agent) sit down to continue this work — especially
@@ -133,7 +136,7 @@ Two motivating user scenarios (the original "why"):
 | `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. |
 | `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). |
 | `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
-| `src/app/app_rpc_methods.cpp` | All 9 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
+| `src/app/app_rpc_methods.cpp` | All 23 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
 | `tests/test_rpc_server.cpp` | 4 integration tests (platform-abstracted transport client). |
@@ -165,7 +168,7 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int\|null, explicit_reference:bool, group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 
@@ -182,7 +185,8 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 | `selection.select_group` | `{index:int}` | `{changed:bool, indices:[int]}` |
 | `selection.select_range` | `{from:int, to:int}` | `{changed:bool, indices:[int]}` |
 | `view.set_mode` | `{mode:"split"\|"overlay"\|"difference", slider?:float}` | `{}` |
-| `view.set_group_by_name` | `{enabled:bool}` | `{}` |
+| `view.set_group_mode` | `{mode:"none"\|"by_name"\|"by_folder"}` | `{}` |
+| `view.set_group_by_name` | `{enabled:bool}` | `{}` — **deprecated alias** for `view.set_group_mode` (mapped to `none`/`by_name`); kept so old clients keep working |
 | `view.set_zoom_pan` | `{zoom?:float, pan_x?:float, pan_y?:float}` | `{}` — all fields optional |
 | `view.set_channel` | `{channel:"r"\|"g"\|"b"\|"a"\|"y"\|"u"\|"v"\|"none"\|"rgb"}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
@@ -205,7 +209,9 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 ## 5. MCP Tool Reference
 
 Defined in `tools/idiff-mcp/idiff_mcp_server.py`. Each tool is a thin
-shim over one RPC method.
+shim over one RPC method. The table is the shim's tool surface, not
+the full RPC method list: `app.identity` is consumed by the discovery
+probe and has no direct tool.
 
 | Tool | Underlying RPC |
 |---|---|
@@ -218,7 +224,7 @@ shim over one RPC method.
 | `remove_image` | `library.remove` |
 | `set_selection` | `selection.set` |
 | `set_view_mode` | `view.set_mode` |
-| `set_group_by_name` | `view.set_group_by_name` |
+| `set_group_by_name` | `view.set_group_by_name` (deprecated alias; `view.set_group_mode` has no MCP tool, so `by_folder` requires raw RPC) |
 | `screenshot` | `view.screenshot` |
 | `set_zoom_pan` | `view.set_zoom_pan` |
 | `set_channel_view` | `view.set_channel` |
@@ -304,12 +310,15 @@ passing.
   change notifications. Probably a separate channel (a second pipe
   or a server-streamed JSON-RPC dialect).
 
-### Phase 4 — Coverage extension (deferred, no design yet)
+### Phase 4 — Coverage extension (partially done)
 
 - [ ] `metrics.compute` / `metrics.get` (PSNR, SSIM, MSE).
 - [ ] `pixel.sample` / `pixel.histogram` for batch numerical analysis.
-- [ ] `comparison_config.load`.
-- [ ] `timeline.set_frame` / `timeline.set_offset` for video.
+- [ ] MCP tool for `view.set_group_mode` (the shim only exposes the
+      deprecated `set_group_by_name` alias, so `by_folder` is
+      raw-RPC-only today).
+- [x] `comparison_config.load` / `comparison_config.switch_group` (shipped in 0.3.1).
+- [x] `timeline.set_frame` / `timeline.set_frame_offset` for video (shipped in 0.3.1).
 
 ---
 
@@ -333,8 +342,8 @@ branch — `git fetch && git checkout feature/rpc-phase1`.
 cmake -B build && cmake --build build -j && ctest --test-dir build
 ```
 
-Expect 303/303 passing on POSIX. On Windows the RPC tests should
-also pass now.
+Expect the full suite green (329 tests as of 0.4.0) on POSIX. On
+Windows the RPC tests should also pass now.
 
 ### 2. Read the code in this order
 
