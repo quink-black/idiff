@@ -7,6 +7,7 @@
 #include "app/texture_types.h"
 #include "core/channel_view.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -75,8 +76,9 @@ public:
     // slider (RPC view.screenshot) gets a split rebased onto the same
     // window instead of the GUI's value.
     //
-    // Returns false when the slot has no recorded layout, which happens
-    // before the first render() after a selection change.
+    // Returns false when no usable layout has been recorded, which is
+    // the case before the first render() and again after any setter
+    // that changed what the layout describes.
     struct VisibleWindow {
         float x0 = 0.0f;
         float y0 = 0.0f;
@@ -88,7 +90,16 @@ public:
                         float overlay_slider_pos) const;
 
     ComparisonMode mode() const noexcept { return mode_; }
-    void set_mode(ComparisonMode mode) { mode_ = mode; }
+    // The recorded cell layout describes whatever the last render()
+    // drew, so a mode change leaves it describing the previous mode
+    // until the next render().  Readers that run between frames --
+    // measurement, and view.screenshot when one RPC batch also changed
+    // the mode -- must not use it.
+    void set_mode(ComparisonMode mode) {
+        if (mode_ == mode) return;
+        mode_ = mode;
+        layout_valid_ = false;
+    }
 
     float zoom() const noexcept { return zoom_; }
     void set_zoom(float z);
@@ -158,11 +169,22 @@ public:
     bool show_grid() const noexcept { return show_grid_; }
     void set_show_grid(bool v) { show_grid_ = v; }
 
-    // Grid layout for multi-image Split/Difference modes
+    // Grid layout for multi-image Split/Difference modes.  The cell
+    // count is only recomputed inside render(), so these setters leave
+    // the recorded layout stale for the same reason set_mode() does.
     GridLayout grid_layout() const noexcept { return grid_layout_; }
-    void set_grid_layout(GridLayout v) { grid_layout_ = v; }
+    void set_grid_layout(GridLayout v) {
+        if (grid_layout_ == v) return;
+        grid_layout_ = v;
+        layout_valid_ = false;
+    }
     int grid_cols() const noexcept { return grid_cols_; }
-    void set_grid_cols(int v) { grid_cols_ = std::max(1, v); }
+    void set_grid_cols(int v) {
+        const int cols = std::max(1, v);
+        if (grid_cols_ == cols) return;
+        grid_cols_ = cols;
+        layout_valid_ = false;
+    }
 
     // Single-channel view mode
     ChannelViewMode channel_view_mode() const noexcept { return channel_view_mode_; }
@@ -338,6 +360,12 @@ private:
     // For non-split modes, cell == viewport.
     int split_cols_ = 1;
     int split_rows_ = 1;
+
+    // Whether cell_layouts_ / split_cols_ / split_rows_ / vp_* describe
+    // a frame that was actually drawn.  Cleared by every setter the
+    // layout derives from and by the early-out paths of render(), set
+    // once render() has drawn the grid.
+    bool layout_valid_ = false;
 
     // Return the cell origin and size for a given screen-space point.
     // In split mode, identifies which cell the point falls in.
