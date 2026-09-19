@@ -123,7 +123,8 @@ void Viewport::draw_selection_rect() {
     dl->AddRectFilled(sel_min_, sel_max_, IM_COL32(255, 200, 50, 30));
 }
 
-bool Viewport::visible_window(int slot, VisibleWindow& out) const {
+bool Viewport::visible_window(int slot, VisibleWindow& out,
+                              float overlay_slider_pos) const {
     if (slot < 0 || slot >= static_cast<int>(cell_layouts_.size())) return false;
     const CellLayout& cl = cell_layouts_[slot];
     if (cl.composite_w <= 0 || cl.composite_h <= 0) return false;
@@ -157,7 +158,7 @@ bool Viewport::visible_window(int slot, VisibleWindow& out) const {
     out.y1 = fraction(cell_y + cell_h, img_y, disp_h);
 
     if (mode_ == ComparisonMode::Overlay) {
-        const float slider_x = vp_origin_.x + vp_size_.x * slider_pos_;
+        const float slider_x = vp_origin_.x + vp_size_.x * overlay_slider_pos;
         const float at = (slider_x - img_x) / disp_w;
         const float span = out.x1 - out.x0;
         out.split = span > 0.0f

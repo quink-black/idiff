@@ -105,7 +105,9 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
     auto slot_window = [&](int slot) -> std::optional<Viewport::VisibleWindow> {
         if (!in.viewport || in.viewport->mode() != in.mode) return std::nullopt;
         Viewport::VisibleWindow w;
-        if (!in.viewport->visible_window(slot, w)) return std::nullopt;
+        if (!in.viewport->visible_window(slot, w, in.overlay_slider_pos)) {
+            return std::nullopt;
+        }
         return w;
     };
     auto cropped = [&](const cv::Mat& m, int slot) -> cv::Mat {

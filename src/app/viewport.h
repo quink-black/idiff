@@ -65,10 +65,15 @@ public:
 
     // The part of one slot's image that zoom/pan currently leaves on
     // screen, in normalized image coordinates (0..1 per axis).  A fully
-    // visible slot yields (0,0)-(1,1).  `split` is the A/B overlay
-    // divider rebased onto that window, so a window that sits entirely
-    // on one side of the divider reports 0.0 or 1.0.  Callers that only
-    // care about Split / Difference modes can ignore `split`.
+    // visible slot yields (0,0)-(1,1).  `split` is `overlay_slider_pos`
+    // rebased onto that window, so a window that sits entirely on one
+    // side of the divider reports 0.0 or 1.0.  Callers that only care
+    // about Split / Difference modes can ignore `split`.
+    //
+    // `overlay_slider_pos` comes from the caller rather than from the
+    // viewport's own slider so a caller that momentarily overrides the
+    // slider (RPC view.screenshot) gets a split rebased onto the same
+    // window instead of the GUI's value.
     //
     // Returns false when the slot has no recorded layout, which happens
     // before the first render() after a selection change.
@@ -79,7 +84,8 @@ public:
         float y1 = 1.0f;
         float split = 0.5f;
     };
-    bool visible_window(int slot, VisibleWindow& out) const;
+    bool visible_window(int slot, VisibleWindow& out,
+                        float overlay_slider_pos) const;
 
     ComparisonMode mode() const noexcept { return mode_; }
     void set_mode(ComparisonMode mode) { mode_ = mode; }
