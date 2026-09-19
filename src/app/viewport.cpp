@@ -125,6 +125,7 @@ void Viewport::draw_selection_rect() {
 
 bool Viewport::visible_window(int slot, VisibleWindow& out,
                               float overlay_slider_pos) const {
+    if (!layout_valid_) return false;
     if (slot < 0 || slot >= static_cast<int>(cell_layouts_.size())) return false;
     const CellLayout& cl = cell_layouts_[slot];
     if (cl.composite_w <= 0 || cl.composite_h <= 0) return false;
@@ -839,6 +840,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
     visible_regions_.clear();
     frame_tiles_ = &tiles;
     frame_diff_tiles_ = &diff_tiles;
+    layout_valid_ = false;
 
     if (avail.x < 10 || avail.y < 10) return;
 
@@ -951,6 +953,10 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
             render_difference(diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
             break;
     }
+    // render_split() / render_difference() are what recompute
+    // split_cols_ / split_rows_, so the grid geometry is only complete
+    // once one of them has run.
+    layout_valid_ = true;
 
     // --- Compute hover pixel info ---
     {
