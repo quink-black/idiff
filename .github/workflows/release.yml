@@ -176,7 +176,7 @@ jobs:
     runs-on: windows-latest
     env:
       VCPKG_DEFAULT_TRIPLET: x64-windows
-      DEPS_TAG: deps-windows-v1
+      DEPS_TAG: deps-windows-v2
     steps:
       - uses: actions/checkout@v4
 

@@ -94,7 +94,7 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       # Tag of the GitHub Release that holds the prebuilt deps archive.
       # Bump this when you re-run build-deps.yml with a new tag.
-      DEPS_TAG: deps-windows-v1
+      DEPS_TAG: deps-windows-v2
     steps:
       - uses: actions/checkout@v4
 

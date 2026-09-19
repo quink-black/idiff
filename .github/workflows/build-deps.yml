@@ -8,7 +8,7 @@ on:
       deps_tag:
         description: 'Tag name for the deps release (e.g. deps-windows-v1)'
         required: true
-        default: 'deps-windows-v1'
+        default: 'deps-windows-v2'
 
 permissions:
   contents: write   # needed to create/update a release
@@ -52,8 +52,9 @@ jobs:
             `CMAKE_TOOLCHAIN_FILE` + `VCPKG_INSTALLED_DIR`.
 
             **Contents:** opencv4 (core, imgproc, imgcodecs, quality, jpeg,
-            png, tiff, webp), ffmpeg (avformat, avcodec, swscale, avfilter),
-            libraw, sdl2, catch2, nativefiledialog-extended.
+            png, tiff, webp), ffmpeg (avformat, avcodec, swscale, avfilter,
+            dav1d for AV1/AVIF decoding), libraw, sdl2, catch2,
+            nativefiledialog-extended.
           files: vcpkg-deps-x64-windows.zip
           fail_on_unmatched_files: true
           prerelease: true

@@ -8,7 +8,7 @@
         },
         {
             "name": "ffmpeg",
-            "features": ["avformat", "avcodec", "swscale", "avfilter"]
+            "features": ["avformat", "avcodec", "swscale", "avfilter", "dav1d"]
         },
         "libraw",
         "sdl2",
