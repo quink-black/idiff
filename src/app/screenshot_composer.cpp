@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace idiff {
 
@@ -44,6 +45,22 @@ cv::Mat to_bgra8(const cv::Mat& src) {
 
 void set_error(std::string* sink, const char* msg) {
     if (sink) *sink = msg;
+}
+
+// Restrict `src` to the window the viewport shows, expressed in
+// normalized image coordinates.  Cropping keeps the export at the
+// source resolution instead of resampling the on-screen pixels.
+cv::Mat crop_to_window(const cv::Mat& src, const Viewport::VisibleWindow& w) {
+    if (src.empty()) return src;
+    const int x0 = std::clamp(
+        static_cast<int>(std::floor(w.x0 * src.cols)), 0, src.cols - 1);
+    const int y0 = std::clamp(
+        static_cast<int>(std::floor(w.y0 * src.rows)), 0, src.rows - 1);
+    const int x1 = std::clamp(
+        static_cast<int>(std::ceil(w.x1 * src.cols)), x0 + 1, src.cols);
+    const int y1 = std::clamp(
+        static_cast<int>(std::ceil(w.y1 * src.rows)), y0 + 1, src.rows);
+    return src(cv::Rect(x0, y0, x1 - x0, y1 - y0));
 }
 
 } // namespace
@@ -81,6 +98,24 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
         push_slot(s);
     }
 
+    // A viewport whose mode matches the composed one tells us which part
+    // of each slot the user is looking at.  Its layout is only valid for
+    // the mode it last rendered, hence the mode equality check: the RPC
+    // screenshot method can override `mode` without touching the GUI.
+    auto slot_window = [&](int slot) -> std::optional<Viewport::VisibleWindow> {
+        if (!in.viewport || in.viewport->mode() != in.mode) return std::nullopt;
+        Viewport::VisibleWindow w;
+        if (!in.viewport->visible_window(slot, w)) return std::nullopt;
+        return w;
+    };
+    auto cropped = [&](const cv::Mat& m, int slot) -> cv::Mat {
+        auto w = slot_window(slot);
+        return w ? crop_to_window(m, *w) : m;
+    };
+    for (int i = 0; i < static_cast<int>(slot_mats.size()); i++) {
+        slot_mats[i] = cropped(slot_mats[i], i);
+    }
+
     if (slot_mats.empty() &&
         !(in.mode == ComparisonMode::Difference
           && in.diff && !in.diff->empty())) {
@@ -102,10 +137,11 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
         Viewport::compute_grid(n, in.grid_layout, in.grid_cols, cols, rows);
 
         int cell_w = 0, cell_h = 0;
-        for (const auto& slot : in.diff->slots()) {
-            if (!slot.image) continue;
-            cell_w = std::max(cell_w, slot.image->mat().cols);
-            cell_h = std::max(cell_h, slot.image->mat().rows);
+        for (int i = 0; i < n; i++) {
+            if (!in.diff->slots()[i].image) continue;
+            cv::Mat m = cropped(in.diff->slots()[i].image->mat(), i);
+            cell_w = std::max(cell_w, m.cols);
+            cell_h = std::max(cell_h, m.rows);
         }
         if (cell_w <= 0 || cell_h <= 0) {
             set_error(error_message, "diff image has zero dimensions");
@@ -118,7 +154,7 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
 
         for (int i = 0; i < n; i++) {
             if (!in.diff->slots()[i].image) continue;
-            cv::Mat m = to_bgra8(in.diff->slots()[i].image->mat());
+            cv::Mat m = to_bgra8(cropped(in.diff->slots()[i].image->mat(), i));
             if (m.empty()) continue;
             int col = i % cols;
             int row = i / cols;
@@ -139,8 +175,11 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
         composed = canvas;
     } else if (in.mode == ComparisonMode::Overlay) {
         // Reproduce the viewport's A/B slider.  The slider is anchored
-        // to the viewport, so in image-pixel space the split column is
-        // just slider_pos * composite_width.
+        // to the viewport, so without a zoom it sits at slider_pos of
+        // the composite width; once a window is exported it has to be
+        // rebased onto that window, where it can fall outside entirely.
+        float slider_pos = in.overlay_slider_pos;
+        if (auto w = slot_window(0)) slider_pos = w->split;
         cv::Mat a = slot_mats.size() >= 1 ? to_bgra8(slot_mats[0])
                                           : cv::Mat();
         cv::Mat b = slot_mats.size() >= 2 ? to_bgra8(slot_mats[1])
@@ -157,8 +196,7 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
             cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC4);
 
             int split = std::clamp(
-                static_cast<int>(std::round(in.overlay_slider_pos * w)),
-                0, w);
+                static_cast<int>(std::round(slider_pos * w)), 0, w);
 
             // Left half from A, right half from B.  display_image is
             // already upscaled to the common size, but guard just in

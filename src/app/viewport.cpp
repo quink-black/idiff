@@ -123,6 +123,50 @@ void Viewport::draw_selection_rect() {
     dl->AddRectFilled(sel_min_, sel_max_, IM_COL32(255, 200, 50, 30));
 }
 
+bool Viewport::visible_window(int slot, VisibleWindow& out) const {
+    if (slot < 0 || slot >= static_cast<int>(cell_layouts_.size())) return false;
+    const CellLayout& cl = cell_layouts_[slot];
+    if (cl.composite_w <= 0 || cl.composite_h <= 0) return false;
+
+    const int cols = std::max(1, split_cols_);
+    const int rows = std::max(1, split_rows_);
+    const int grid_idx = std::clamp(cl.grid_cell, 0, cols * rows - 1);
+    const float cell_w = vp_size_.x / cols;
+    const float cell_h = vp_size_.y / rows;
+    const float cell_x = vp_origin_.x + (grid_idx % cols) * cell_w;
+    const float cell_y = vp_origin_.y + (grid_idx / cols) * cell_h;
+
+    // The image rect that zoom/pan places inside the cell, in the
+    // composite coordinate system both slots of an overlay share.
+    const float fit_scale = std::min(cell_w / cl.composite_w,
+                                     cell_h / cl.composite_h);
+    const float scale = fit_scale * zoom_;
+    if (scale <= 0.0f) return false;
+
+    const float disp_w = cl.composite_w * scale;
+    const float disp_h = cl.composite_h * scale;
+    const float img_x = cell_x + (cell_w - disp_w) * 0.5f + pan_x_;
+    const float img_y = cell_y + (cell_h - disp_h) * 0.5f + pan_y_;
+
+    auto fraction = [](float screen, float img_origin, float disp) {
+        return std::clamp((screen - img_origin) / disp, 0.0f, 1.0f);
+    };
+    out.x0 = fraction(cell_x, img_x, disp_w);
+    out.x1 = fraction(cell_x + cell_w, img_x, disp_w);
+    out.y0 = fraction(cell_y, img_y, disp_h);
+    out.y1 = fraction(cell_y + cell_h, img_y, disp_h);
+
+    if (mode_ == ComparisonMode::Overlay) {
+        const float slider_x = vp_origin_.x + vp_size_.x * slider_pos_;
+        const float at = (slider_x - img_x) / disp_w;
+        const float span = out.x1 - out.x0;
+        out.split = span > 0.0f
+                        ? std::clamp((at - out.x0) / span, 0.0f, 1.0f)
+                        : (at >= out.x1 ? 1.0f : 0.0f);
+    }
+    return true;
+}
+
 // --- Measurement ---
 
 bool Viewport::resolve_cell_at(ImVec2 screen_pt,

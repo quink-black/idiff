@@ -55,6 +55,13 @@ struct ComposeViewportInput {
     // Grid layout for Split / Difference modes.
     GridLayout grid_layout = GridLayout::Auto;
     int grid_cols = 1;
+
+    // Viewport whose zoom/pan defines the region to export.  Each slot
+    // is cropped to what that viewport shows, so a selection zoom is
+    // saved as the zoomed region rather than the whole image.  Null, or
+    // a viewport whose mode differs from `mode`, composes every image
+    // in full.
+    const Viewport* viewport = nullptr;
 };
 
 // Returns the composed BGRA-8 image, or an empty Mat on failure.
