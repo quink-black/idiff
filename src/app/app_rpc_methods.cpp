@@ -617,6 +617,7 @@ void App::register_rpc_methods() {
             in.overlay_slider_pos = slider;
             in.grid_layout = vp.grid_layout();
             in.grid_cols = vp.grid_cols();
+            in.viewport = &vp;
 
             std::string err;
             cv::Mat composed = compose_viewport(in, &err);

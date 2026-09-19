@@ -1275,6 +1275,7 @@ void App::save_viewport_dialog() {
     in.overlay_slider_pos = vport.overlay_slider_pos();
     in.grid_layout = vport.grid_layout();
     in.grid_cols = vport.grid_cols();
+    in.viewport = &vport;
 
     std::string err;
     cv::Mat composed = compose_viewport(in, &err);
