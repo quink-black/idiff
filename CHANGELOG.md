@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-09-20
+
+### Added
+
+- **Tiled rendering for high-resolution images**: SDL renderers cap
+  individual texture dimensions, and full-frame upload and difference
+  buffers make large images consume excessive CPU and GPU memory. The
+  viewport now uses bounded proxies, visible-region tiles, byte-based
+  caches, and striped metrics, so original-resolution inspection stays
+  available within memory budgets.
+- **Viewport-region export**: Save Viewport exports the part of each
+  selected image the current zoom or pan leaves on screen, cropped at
+  source resolution instead of resampling screen pixels. A fully
+  visible image exports unchanged; the overlay A/B divider is rebased
+  onto the exported window, so a crop entirely on one side comes out
+  as all A or all B, matching the viewport.
+- **HEIF and AVIF in the open file dialog**: The dialog filter now
+  lists `.heic` / `.heif` / `.hif` / `.avif`. Previously only
+  drag-and-drop and the RPC path could open them, because extension
+  routing happens after the file is picked and only the filter blocked
+  them.
+
+### Fixed
+
+- **AVIF decoding in Windows release builds**: FFmpeg 8 removed its
+  native AV1 decoder and the vcpkg ffmpeg port does not enable dav1d
+  by default, so CI-built Windows packages shipped without any AV1
+  decoder. The vcpkg manifest now enables the dav1d feature and the
+  prebuilt dependency archive tag was bumped to `deps-windows-v2`.
+- **`view.screenshot` honors the `slider` override**: The exported
+  A/B divider always followed the viewport's on-screen slider and
+  discarded the documented `slider` parameter whenever the composed
+  mode matched the viewport's. The divider now rebases from the
+  caller's value.
+- **`view.screenshot` after a layout change in the same batch**: A
+  `view.set_mode` / `set_grid_cols` / `set_grid_layout` dispatched in
+  the same RPC batch left the recorded cell layout stale until the
+  next render, so the screenshot cropped with rects from the previous
+  mode. Setters now mark the layout unusable and the export falls
+  back to full frames.
+
 ## [0.4.0] - 2026-08-06
 
 ### Added
