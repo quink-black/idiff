@@ -136,17 +136,27 @@ void render_image_list(const ImageListInputs& in) {
         std::vector<std::string> group_keys;
         if (group_mode) {
             group_keys.reserve(entries.size());
-            for (const auto& e : entries) {
-                switch (*in.group_mode_ptr) {
-                    case GroupMode::ByFolder:
-                        group_keys.push_back(
-                            group_key_from_directory(e.path));
-                        break;
-                    case GroupMode::ByName:
-                    default:
-                        group_keys.push_back(
-                            group_key_from_filename(e.filename));
-                        break;
+            if (in.comparison_config && in.comparison_config->has_config()) {
+                // Config mode: every resident entry belongs to the
+                // loaded comparison group (matching
+                // AppController::group_indices), so one shared key --
+                // no separators inside the group.
+                for (std::size_t k = 0; k < entries.size(); ++k) {
+                    group_keys.emplace_back("config");
+                }
+            } else {
+                for (const auto& e : entries) {
+                    switch (*in.group_mode_ptr) {
+                        case GroupMode::ByFolder:
+                            group_keys.push_back(
+                                group_key_from_directory(e.path));
+                            break;
+                        case GroupMode::ByName:
+                        default:
+                            group_keys.push_back(
+                                group_key_from_filename(e.filename));
+                            break;
+                    }
                 }
             }
         }

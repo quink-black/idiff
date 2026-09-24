@@ -223,6 +223,18 @@ std::set<int> AppController::group_indices(int index) const {
 
     if (group_mode_ == GroupMode::None) return {index};
 
+    // An active comparison config redefines grouping.  The library
+    // holds exactly the currently loaded comparison group, so both
+    // ByName and ByFolder resolve to "the whole config group".
+    // Per-file keys would fragment the group here: config titles
+    // replace the filenames (so stems no longer match) and every
+    // entry sits in its own cache subfolder (so directories differ).
+    if (comparison_config_->has_config()) {
+        std::set<int> result;
+        for (int i = 0; i < n; ++i) result.insert(i);
+        return result;
+    }
+
     const auto& entries = library_->all();
     std::string key = group_key_for_entry(entries[index], group_mode_);
 
@@ -813,7 +825,8 @@ int AppController::reload_entries_by_path(
 }
 
 AppController::LoadImagesResult
-AppController::load_images(const std::vector<std::string>& paths) {
+AppController::load_images(const std::vector<std::string>& paths,
+                           bool first_load_auto_select) {
     LoadImagesResult result;
 
     // Detect "first load" before any append so a later auto-select
@@ -922,8 +935,10 @@ AppController::load_images(const std::vector<std::string>& paths) {
     // First-load convenience: pick the first up-to-two entries as A
     // and B and flag them for texture refresh.  The viewport mode
     // change (Overlay) is left to the caller because it lives in
-    // the UI layer.
-    if (was_empty && !library_->all().empty()) {
+    // the UI layer.  Callers that manage the selection themselves
+    // (comparison-group switching) pass first_load_auto_select =
+    // false and own this step.
+    if (first_load_auto_select && was_empty && !library_->all().empty()) {
         selection_->clear();
         const int n = static_cast<int>(library_->all().size());
         const int pick = std::min(2, n);
@@ -975,6 +990,13 @@ AppController::load_comparison_config(const std::string& path) {
 
     if (comparison_config_->has_config()) {
         result = switch_to_comparison_group(0);
+        // A fresh config is a genuine first load: report it so the
+        // caller puts the viewport in Overlay mode.  Subsequent group
+        // switches go through switch_to_comparison_group() directly
+        // and never report this, keeping the user's viewport mode.
+        if (!library_->all().empty()) {
+            result.did_first_load_select = true;
+        }
     }
     return result;
 }
@@ -983,6 +1005,12 @@ AppController::SwitchGroupResult
 AppController::switch_to_comparison_group(int group_idx) {
     SwitchGroupResult result;
     if (group_idx == comparison_config_->current_index()) return result;
+
+    // Carry the previous group's selection size over to the new one.
+    // Recorded before the clear below: a 2-up Overlay comparison
+    // stays 2-up and a full Split grid stays full after the switch,
+    // instead of every group snapping back to the first-load default.
+    const std::size_t prev_sel_count = selection_->indices().size();
 
     // Release the previous group's images first so we never hold two
     // groups' pixels in memory simultaneously.  This is the main
@@ -1006,8 +1034,11 @@ AppController::switch_to_comparison_group(int group_idx) {
         for (const auto& e : switch_result.entries) {
             local_paths.push_back(e.local_path);
         }
-        auto load_result = load_images(local_paths);
-        result.did_first_load_select = load_result.did_first_load_select;
+        // Auto-select is handled below (selection carry-over), not by
+        // load_images()'s first-load convenience: this call always
+        // sees an empty library because of the clear() above, so the
+        // convenience branch would fire on every group switch.
+        load_images(local_paths, /*first_load_auto_select=*/false);
     }
 
     // Apply the human-friendly labels supplied by the service so the
@@ -1033,6 +1064,30 @@ AppController::switch_to_comparison_group(int group_idx) {
             }
             // compute_display_labels() will uniquify duplicates.
             compute_display_labels();
+        }
+    }
+
+    // Selection carry-over: mirror the previous group's selection
+    // size onto the new group (defaulting to the first two entries
+    // when nothing was selected) so the viewport keeps showing the
+    // kind of comparison the user had before the switch.
+    {
+        auto& entries = library_->all();
+        const int n = static_cast<int>(entries.size());
+        if (n > 0) {
+            const std::size_t want =
+                (prev_sel_count == 0) ? 2 : prev_sel_count;
+            const int pick = static_cast<int>(
+                std::min<std::size_t>(want, static_cast<std::size_t>(n)));
+            selection_->clear();
+            for (int i = 0; i < pick; ++i) selection_->insert(i);
+            for (int s : selection_->indices()) {
+                if (s >= 0 && s < n) {
+                    entries[static_cast<std::size_t>(s)].texture_dirty = true;
+                }
+            }
+            diff_->mark_dirty();
+            on_selection_changed();
         }
     }
 

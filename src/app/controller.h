@@ -301,8 +301,13 @@ public:
     // status is reported through the status reporter.  Returns
     // true in did_first_load_select when the library was empty
     // before the call and at least one entry was added (the caller
-    // should then put the viewport in Overlay mode).
-    LoadImagesResult load_images(const std::vector<std::string>& paths);
+    // should then put the viewport in Overlay mode).  Pass
+    // first_load_auto_select = false to skip the first-load
+    // auto-select entirely -- callers that manage the selection
+    // themselves (comparison-group switching) use this so the
+    // user's viewport mode and selection survive the swap.
+    LoadImagesResult load_images(const std::vector<std::string>& paths,
+                                 bool first_load_auto_select = true);
 
     // Outcome propagated to the caller for comparison-config
     // navigation.  Mirrors LoadImagesResult: the controller does
@@ -326,11 +331,18 @@ public:
     // Switch the active comparison group to `group_idx`, releasing
     // the previous group's pixels first.  No-op when group_idx
     // already matches the current index.  Calls load_images() for
-    // the resolved local paths, then overrides display labels with
-    // the human-friendly titles from the config.  Status messages
+    // the resolved local paths (auto-select disabled), then
+    // overrides display labels with the human-friendly titles from
+    // the config.  The selection is carried over from the previous
+    // group: the new group selects as many entries as the previous
+    // selection held (defaulting to the first two when the previous
+    // selection was empty), so the user's "how many images am I
+    // comparing" choice and the viewport mode it supports (2-up
+    // Overlay, full Split grid) survive the switch.  Status messages
     // from the service are forwarded through the status reporter.
-    // The returned did_first_load_select mirrors load_images() so
-    // the caller knows whether to switch the viewport to Overlay.
+    // did_first_load_select stays false here; only
+    // load_comparison_config() (a genuinely fresh config) reports it
+    // so the caller switches the viewport to Overlay.
     SwitchGroupResult switch_to_comparison_group(int group_idx);
 
 private:
