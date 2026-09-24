@@ -120,9 +120,10 @@ std::string write_tmp_png(const std::string& tag,
 }
 
 // Stage a comparison config with one JSON group per `groups` entry and
-// one source PNG per URL ("file:///<basename>" form).  The caller then
-// loads the config through ComparisonConfigService and calls
-// stage_cache_files() so UrlCache::fetch() takes its disk fast path.
+// one source PNG per URL ("file:///<basename>" form); each item carries
+// its own (filename, title) pair.  The caller then loads the config
+// through ComparisonConfigService and calls stage_cache_files() so
+// UrlCache::fetch() takes its disk fast path.
 struct StagedConfig {
     std::filesystem::path dir;
     std::filesystem::path json;
@@ -132,7 +133,8 @@ struct StagedConfig {
 
 StagedConfig stage_comparison_config(
         const std::string& tag,
-        const std::vector<std::vector<std::string>>& groups) {
+        const std::vector<
+            std::vector<std::pair<std::string, std::string>>>& groups) {
     StagedConfig sc;
     sc.dir = std::filesystem::temp_directory_path()
            / ("idiff_ctrl_stage_" + tag);
@@ -145,13 +147,14 @@ StagedConfig stage_comparison_config(
         json += "{\"name\": \"g" + std::to_string(g + 1) + "\", \"items\": [";
         for (std::size_t k = 0; k < groups[g].size(); ++k) {
             if (k) json += ",";
-            const std::string url = "file:///" + groups[g][k];
+            const auto& [fname, title] = groups[g][k];
+            const std::string url = "file:///" + fname;
             sc.urls.push_back(url);
             sc.source_pngs.push_back(write_tmp_png(
-                tag, groups[g][k],
+                tag, fname,
                 static_cast<unsigned char>(100 + g * 10 + k)));
-            json += "{\"url\": \"" + url + "\", \"title\": \"t" +
-                    std::to_string(g + 1) + std::to_string(k + 1) + "\"}";
+            json += "{\"url\": \"" + url + "\", \"title\": \"" + title +
+                    "\"}";
         }
         json += "]}";
     }
@@ -966,8 +969,9 @@ TEST_CASE("AppController::switch_to_comparison_group carries the "
 
     // Two groups of two images each so the selection carry-over has
     // room to differ from the two-entry default.
-    auto sc = stage_comparison_config("carry", {{"a1.png", "a2.png"},
-                                                {"b1.png", "b2.png"}});
+    auto sc = stage_comparison_config("carry",
+        {{{"a1.png", "t11"}, {"a2.png", "t12"}},
+         {{"b1.png", "t21"}, {"b2.png", "t22"}}});
     auto& svc = controller.comparison_config();
     svc.set_cache_root_override(sc.dir);
     REQUIRE(svc.load(sc.json.string()).ok);
@@ -1009,7 +1013,8 @@ TEST_CASE("AppController::load_comparison_config reports first-load for "
     idiff::AppController controller(uploader, reporter);
     controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
 
-    auto sc = stage_comparison_config("firstload", {{"f1.png", "f2.png"}});
+    auto sc = stage_comparison_config("firstload",
+        {{{"f1.png", "t11"}, {"f2.png", "t12"}}});
     auto& svc = controller.comparison_config();
     svc.set_cache_root_override(sc.dir);
     // Stage the cache files up front: the config load auto-switches to
@@ -1026,6 +1031,65 @@ TEST_CASE("AppController::load_comparison_config reports first-load for "
     REQUIRE(controller.selection().indices().size() == 2);
 }
 
+TEST_CASE("AppController::switch_to_comparison_group auto-selects the "
+          "config item titled 原图 as the reference",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    // g1 and g3 carry an item titled 原图; g2 has none, so switching
+    // there must fall back to the implicit (lowest-index) reference.
+    auto sc = stage_comparison_config("refauto",
+        {{{"a1.png", "原图"}, {"a2.png", "ultra"}},
+         {{"b1.png", "fidelity"}},
+         {{"c1.png", "原图"}, {"c2.png", "crop"}}});
+    auto& svc = controller.comparison_config();
+    svc.set_cache_root_override(sc.dir);
+    REQUIRE(svc.load(sc.json.string()).ok);
+    stage_cache_files(svc, sc);
+
+    auto ref_label_of = [&controller]() {
+        int ref = -1;
+        controller.get_ref_index(ref);
+        if (ref < 0 ||
+            ref >= static_cast<int>(controller.library().all().size())) {
+            return std::string();
+        }
+        return controller.library().all()[ref].display_label;
+    };
+
+    REQUIRE(controller.switch_to_comparison_group(0).did_first_load_select ==
+            false);
+    // The reference is the 原图 item, and it entered the selection so
+    // overlay / diff actually use it.
+    REQUIRE(ref_label_of() == "原图");
+    REQUIRE(controller.selection().indices().size() >= 1);
+    bool ref_selected = false;
+    for (int s : controller.selection().indices()) {
+        if (controller.library().all()[s].display_label == "原图") {
+            ref_selected = true;
+        }
+    }
+    REQUIRE(ref_selected);
+
+    // No 原图 in this group -> implicit reference (lowest index).
+    REQUIRE(controller.switch_to_comparison_group(1).did_first_load_select ==
+            false);
+    REQUIRE(ref_label_of() == "fidelity");
+
+    // A group where 原图 is not the first item still resolves to it.
+    REQUIRE(controller.switch_to_comparison_group(2).did_first_load_select ==
+            false);
+    REQUIRE(ref_label_of() == "原图");
+
+    // Returning to g1 keeps the 原图 reference (per-comparison map).
+    REQUIRE(controller.switch_to_comparison_group(0).did_first_load_select ==
+            false);
+    REQUIRE(ref_label_of() == "原图");
+}
+
 TEST_CASE("AppController::group_indices maps ByName/ByFolder to the "
           "config group when a comparison config is active",
           "[controller]") {
@@ -1035,7 +1099,7 @@ TEST_CASE("AppController::group_indices maps ByName/ByFolder to the "
     controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
 
     auto sc = stage_comparison_config("grpmap",
-                                      {{"x1.png", "x2.png", "x3.png"}});
+        {{{"x1.png", "t11"}, {"x2.png", "t12"}, {"x3.png", "t13"}}});
     auto& svc = controller.comparison_config();
     svc.set_cache_root_override(sc.dir);
     REQUIRE(svc.load(sc.json.string()).ok);

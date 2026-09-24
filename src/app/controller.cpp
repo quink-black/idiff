@@ -1091,6 +1091,43 @@ AppController::switch_to_comparison_group(int group_idx) {
         }
     }
 
+    // Auto-select the reference: a config item titled "原图" (the
+    // original / ground-truth image) becomes the reference its group
+    // is compared against, so overlay / diff measure the results
+    // against it without a manual mark-as-reference step.  Runs after
+    // the selection carry-over so the reference survives in the
+    // selection even when the carried-over picks did not include it.
+    // The mapping is recorded per comparison so returning to the
+    // group keeps the same reference.
+    {
+        std::string ref_path;
+        for (const auto& e : switch_result.entries) {
+            if (e.display_label == "原图") {
+                ref_path = e.local_path;
+                break;
+            }
+        }
+        auto& entries = library_->all();
+        if (!ref_path.empty() && !entries.empty()) {
+            std::string key = comparison_key_of(0);
+            if (!key.empty()) {
+                comparison_reference_[key] = ref_path;
+                // The reference only matters while it is selected, so
+                // pull it into the carried-over selection if needed.
+                for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+                    if (entries[static_cast<std::size_t>(i)].path ==
+                            ref_path &&
+                        !selection_->contains(i)) {
+                        selection_->insert(i);
+                        entries[static_cast<std::size_t>(i)].texture_dirty =
+                            true;
+                    }
+                }
+                on_selection_changed();
+            }
+        }
+    }
+
     status_reporter_->set_status(switch_result.status_message);
     // After load_images() has populated library + selection, apply
     // the per-comparison reference recorded for this config group
