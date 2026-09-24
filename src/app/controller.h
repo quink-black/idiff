@@ -338,8 +338,11 @@ public:
     // selection held (defaulting to the first two when the previous
     // selection was empty), so the user's "how many images am I
     // comparing" choice and the viewport mode it supports (2-up
-    // Overlay, full Split grid) survive the switch.  Status messages
-    // from the service are forwarded through the status reporter.
+    // Overlay, full Split grid) survive the switch.  An item titled
+    // "原图" (the original image) is pulled into the selection and
+    // designated as the comparison reference, recorded per group so
+    // revisiting the group keeps it.  Status messages from the
+    // service are forwarded through the status reporter.
     // did_first_load_select stays false here; only
     // load_comparison_config() (a genuinely fresh config) reports it
     // so the caller switches the viewport to Overlay.
