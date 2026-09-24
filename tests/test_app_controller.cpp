@@ -119,6 +119,65 @@ std::string write_tmp_png(const std::string& tag,
     return path.string();
 }
 
+// Stage a comparison config with one JSON group per `groups` entry and
+// one source PNG per URL ("file:///<basename>" form).  The caller then
+// loads the config through ComparisonConfigService and calls
+// stage_cache_files() so UrlCache::fetch() takes its disk fast path.
+struct StagedConfig {
+    std::filesystem::path dir;
+    std::filesystem::path json;
+    std::vector<std::string> urls;
+    std::vector<std::string> source_pngs;
+};
+
+StagedConfig stage_comparison_config(
+        const std::string& tag,
+        const std::vector<std::vector<std::string>>& groups) {
+    StagedConfig sc;
+    sc.dir = std::filesystem::temp_directory_path()
+           / ("idiff_ctrl_stage_" + tag);
+    std::filesystem::remove_all(sc.dir);
+    std::filesystem::create_directories(sc.dir);
+
+    std::string json = "{\"groups\": [";
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        if (g) json += ",";
+        json += "{\"name\": \"g" + std::to_string(g + 1) + "\", \"items\": [";
+        for (std::size_t k = 0; k < groups[g].size(); ++k) {
+            if (k) json += ",";
+            const std::string url = "file:///" + groups[g][k];
+            sc.urls.push_back(url);
+            sc.source_pngs.push_back(write_tmp_png(
+                tag, groups[g][k],
+                static_cast<unsigned char>(100 + g * 10 + k)));
+            json += "{\"url\": \"" + url + "\", \"title\": \"t" +
+                    std::to_string(g + 1) + std::to_string(k + 1) + "\"}";
+        }
+        json += "]}";
+    }
+    json += "]}";
+
+    sc.json = sc.dir / (tag + ".json");
+    std::ofstream out(sc.json, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.is_open());
+    out << json;
+    return sc;
+}
+
+// Copy each staged PNG onto the cache path the service computed for
+// its URL so the fetch never touches the network.
+void stage_cache_files(idiff::ComparisonConfigService& svc,
+                       const StagedConfig& sc) {
+    auto* cache = svc.url_cache_for_test();
+    REQUIRE(cache != nullptr);
+    for (std::size_t i = 0; i < sc.urls.size(); ++i) {
+        auto target = cache->path_for(sc.urls[i]);
+        std::filesystem::create_directories(target.parent_path());
+        std::filesystem::copy_file(sc.source_pngs[i], target,
+            std::filesystem::copy_options::overwrite_existing);
+    }
+}
+
 } // namespace
 
 TEST_CASE("AppController::remove_entry coordinates library, selection, diff",
@@ -867,12 +926,14 @@ TEST_CASE("AppController::switch_to_comparison_group drives load_images and labe
 
     auto result = controller.switch_to_comparison_group(0);
 
-    // The fetched entry was loaded, auto-selected, and relabelled with
-    // the human-friendly title from the config.
+    // The fetched entry was loaded, auto-selected (two-entry default),
+    // and relabelled with the human-friendly title from the config.
+    // A direct group switch never reports first-load: the caller's
+    // viewport mode must survive group navigation.
     REQUIRE(controller.library().all().size() == 1);
     REQUIRE(controller.library().all()[0].display_label == "My Label");
     REQUIRE(controller.library().all()[0].filename == "My Label");
-    REQUIRE(result.did_first_load_select);
+    REQUIRE_FALSE(result.did_first_load_select);
 
     // Service status (e.g. "Loaded group ...") was forwarded last so
     // the status bar reflects the group switch, not the per-file load.
@@ -893,6 +954,106 @@ TEST_CASE("AppController::switch_to_comparison_group ignores no-op switch",
     REQUIRE_FALSE(result.did_first_load_select);
     REQUIRE(controller.library().all().empty());
     REQUIRE(reporter.status_calls.empty());
+}
+
+TEST_CASE("AppController::switch_to_comparison_group carries the "
+          "selection size over and never reports first-load",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    // Two groups of two images each so the selection carry-over has
+    // room to differ from the two-entry default.
+    auto sc = stage_comparison_config("carry", {{"a1.png", "a2.png"},
+                                                {"b1.png", "b2.png"}});
+    auto& svc = controller.comparison_config();
+    svc.set_cache_root_override(sc.dir);
+    REQUIRE(svc.load(sc.json.string()).ok);
+    stage_cache_files(svc, sc);
+
+    auto r0 = controller.switch_to_comparison_group(0);
+    // Empty previous selection -> two-entry default, but a manual
+    // group switch must not claim first-load (the viewport mode the
+    // user picked has to survive group navigation).
+    REQUIRE_FALSE(r0.did_first_load_select);
+    REQUIRE(controller.library().all().size() == 2);
+    REQUIRE(controller.selection().indices().size() == 2);
+
+    auto r1 = controller.switch_to_comparison_group(1);
+    REQUIRE_FALSE(r1.did_first_load_select);
+    // Previous selection held 2 -> the new group selects 2.
+    REQUIRE(controller.library().all().size() == 2);
+    REQUIRE(controller.selection().indices().size() == 2);
+
+    // A 1-entry selection carries over as 1.
+    controller.selection().clear();
+    controller.selection().insert(0);
+    REQUIRE_FALSE(controller.switch_to_comparison_group(0)
+                      .did_first_load_select);
+    REQUIRE(controller.selection().indices().size() == 1);
+
+    // An empty selection falls back to the two-entry default.
+    controller.selection().clear();
+    REQUIRE_FALSE(controller.switch_to_comparison_group(1)
+                      .did_first_load_select);
+    REQUIRE(controller.selection().indices().size() == 2);
+}
+
+TEST_CASE("AppController::load_comparison_config reports first-load for "
+          "the implicit initial switch",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    auto sc = stage_comparison_config("firstload", {{"f1.png", "f2.png"}});
+    auto& svc = controller.comparison_config();
+    svc.set_cache_root_override(sc.dir);
+    // Stage the cache files up front: the config load auto-switches to
+    // group 0 immediately, so the fetch happens during load().
+    REQUIRE(svc.load(sc.json.string()).ok);
+    stage_cache_files(svc, sc);
+
+    // reload the config now that the cache files exist; the implicit
+    // switch_to(0) this time finds both images.
+    auto result = controller.load_comparison_config(sc.json.string());
+
+    REQUIRE(result.did_first_load_select);
+    REQUIRE(controller.library().all().size() == 2);
+    REQUIRE(controller.selection().indices().size() == 2);
+}
+
+TEST_CASE("AppController::group_indices maps ByName/ByFolder to the "
+          "config group when a comparison config is active",
+          "[controller]") {
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
+
+    auto sc = stage_comparison_config("grpmap",
+                                      {{"x1.png", "x2.png", "x3.png"}});
+    auto& svc = controller.comparison_config();
+    svc.set_cache_root_override(sc.dir);
+    REQUIRE(svc.load(sc.json.string()).ok);
+    stage_cache_files(svc, sc);
+    REQUIRE(controller.switch_to_comparison_group(0).did_first_load_select ==
+            false);
+    REQUIRE(controller.library().all().size() == 3);
+
+    // ByName (the default): config titles replaced the filenames, so
+    // per-file stems would fragment the group; the active config
+    // redefines grouping to the whole resident comparison group.
+    REQUIRE(controller.group_indices(0) == std::set<int>{0, 1, 2});
+
+    controller.set_group_mode(idiff::GroupMode::ByFolder);
+    REQUIRE(controller.group_indices(2) == std::set<int>{0, 1, 2});
+
+    controller.set_group_mode(idiff::GroupMode::None);
+    REQUIRE(controller.group_indices(1) == std::set<int>{1});
 }
 
 TEST_CASE("AppController::reload_entry refreshes a single entry from disk",
