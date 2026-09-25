@@ -1067,20 +1067,65 @@ AppController::switch_to_comparison_group(int group_idx) {
         }
     }
 
-    // Selection carry-over: mirror the previous group's selection
-    // size onto the new group (defaulting to the first two entries
-    // when nothing was selected) so the viewport keeps showing the
-    // kind of comparison the user had before the switch.
+    // Selection carry-over with reference resolution.  The new group
+    // selects as many entries as the previous selection held
+    // (defaulting to the first two when nothing was selected) so the
+    // viewport keeps showing the kind of comparison the user had
+    // before the switch.  The group's recorded reference -- the
+    // config item titled "原图" (the original / ground-truth image),
+    // seeded on first visit, or an explicit mark-as-reference -- then
+    // claims one of those slots instead of being appended on top, so
+    // the selection size cannot ratchet upward across switches.
     {
         auto& entries = library_->all();
         const int n = static_cast<int>(entries.size());
         if (n > 0) {
+            // Seed the per-group reference from the config convention
+            // on first visit only: an explicit mark-as-reference for
+            // this group (GUI or RPC) must survive group navigation,
+            // so a revisit never overwrites it with 原图.
+            std::string auto_ref;
+            for (const auto& e : switch_result.entries) {
+                if (e.display_label == "原图") {
+                    auto_ref = e.local_path;
+                    break;
+                }
+            }
+            std::string key = comparison_key_of(0);
+            if (!key.empty() && !auto_ref.empty() &&
+                comparison_reference_.find(key) ==
+                    comparison_reference_.end()) {
+                comparison_reference_[key] = auto_ref;
+            }
+
+            // The recorded reference (automatic or explicit) claims a
+            // carry-over slot when its path is resident; the generic
+            // picks fill the remaining slots.
+            int ref_idx = -1;
+            if (!key.empty()) {
+                auto it = comparison_reference_.find(key);
+                if (it != comparison_reference_.end()) {
+                    for (int i = 0; i < n; ++i) {
+                        if (entries[static_cast<std::size_t>(i)].path ==
+                            it->second) {
+                            ref_idx = i;
+                            break;
+                        }
+                    }
+                }
+            }
+
             const std::size_t want =
                 (prev_sel_count == 0) ? 2 : prev_sel_count;
             const int pick = static_cast<int>(
                 std::min<std::size_t>(want, static_cast<std::size_t>(n)));
             selection_->clear();
-            for (int i = 0; i < pick; ++i) selection_->insert(i);
+            if (ref_idx >= 0) selection_->insert(ref_idx);
+            for (int i = 0; i < n && static_cast<int>(
+                                    selection_->indices().size()) < pick;
+                 ++i) {
+                selection_->insert(i);
+            }
             for (int s : selection_->indices()) {
                 if (s >= 0 && s < n) {
                     entries[static_cast<std::size_t>(s)].texture_dirty = true;
@@ -1088,43 +1133,6 @@ AppController::switch_to_comparison_group(int group_idx) {
             }
             diff_->mark_dirty();
             on_selection_changed();
-        }
-    }
-
-    // Auto-select the reference: a config item titled "原图" (the
-    // original / ground-truth image) becomes the reference its group
-    // is compared against, so overlay / diff measure the results
-    // against it without a manual mark-as-reference step.  Runs after
-    // the selection carry-over so the reference survives in the
-    // selection even when the carried-over picks did not include it.
-    // The mapping is recorded per comparison so returning to the
-    // group keeps the same reference.
-    {
-        std::string ref_path;
-        for (const auto& e : switch_result.entries) {
-            if (e.display_label == "原图") {
-                ref_path = e.local_path;
-                break;
-            }
-        }
-        auto& entries = library_->all();
-        if (!ref_path.empty() && !entries.empty()) {
-            std::string key = comparison_key_of(0);
-            if (!key.empty()) {
-                comparison_reference_[key] = ref_path;
-                // The reference only matters while it is selected, so
-                // pull it into the carried-over selection if needed.
-                for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
-                    if (entries[static_cast<std::size_t>(i)].path ==
-                            ref_path &&
-                        !selection_->contains(i)) {
-                        selection_->insert(i);
-                        entries[static_cast<std::size_t>(i)].texture_dirty =
-                            true;
-                    }
-                }
-                on_selection_changed();
-            }
         }
     }
 

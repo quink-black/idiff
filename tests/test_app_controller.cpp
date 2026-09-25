@@ -1017,8 +1017,10 @@ TEST_CASE("AppController::load_comparison_config reports first-load for "
         {{{"f1.png", "t11"}, {"f2.png", "t12"}}});
     auto& svc = controller.comparison_config();
     svc.set_cache_root_override(sc.dir);
-    // Stage the cache files up front: the config load auto-switches to
-    // group 0 immediately, so the fetch happens during load().
+    // Stage the cache files before any switch_to() runs: the service's
+    // load() only parses -- fetching happens when the controller's
+    // load_comparison_config() re-loads the config and immediately
+    // switches to group 0.
     REQUIRE(svc.load(sc.json.string()).ok);
     stage_cache_files(svc, sc);
 
@@ -1039,12 +1041,16 @@ TEST_CASE("AppController::switch_to_comparison_group auto-selects the "
     idiff::AppController controller(uploader, reporter);
     controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
 
-    // g1 and g3 carry an item titled 原图; g2 has none, so switching
-    // there must fall back to the implicit (lowest-index) reference.
+    // g1, g3 and g4 carry an item titled 原图; g2 has none, so
+    // switching there must fall back to the implicit (lowest-index)
+    // reference.  Entries sort by cache basename before relabelling,
+    // so the staged basenames pin each 原图 item to a known index:
+    // index 0 in g1, index 2 in g4 (outside a two-entry carry-over).
     auto sc = stage_comparison_config("refauto",
         {{{"a1.png", "原图"}, {"a2.png", "ultra"}},
          {{"b1.png", "fidelity"}},
-         {{"c1.png", "原图"}, {"c2.png", "crop"}}});
+         {{"c1.png", "crop"}, {"c2.png", "原图"}},
+         {{"d1.png", "x"}, {"d2.png", "y"}, {"d3.png", "原图"}}});
     auto& svc = controller.comparison_config();
     svc.set_cache_root_override(sc.dir);
     REQUIRE(svc.load(sc.json.string()).ok);
@@ -1065,7 +1071,7 @@ TEST_CASE("AppController::switch_to_comparison_group auto-selects the "
     // The reference is the 原图 item, and it entered the selection so
     // overlay / diff actually use it.
     REQUIRE(ref_label_of() == "原图");
-    REQUIRE(controller.selection().indices().size() >= 1);
+    REQUIRE(controller.selection().indices().size() == 2);
     bool ref_selected = false;
     for (int s : controller.selection().indices()) {
         if (controller.library().all()[s].display_label == "原图") {
@@ -1074,20 +1080,49 @@ TEST_CASE("AppController::switch_to_comparison_group auto-selects the "
     }
     REQUIRE(ref_selected);
 
+    // 原图 sorts outside the two-entry carry-over in g4 (d3.png, index
+    // 2): it claims a carry-over slot instead of being appended, so
+    // the selection stays at 2 and does not ratchet upward.
+    REQUIRE(controller.switch_to_comparison_group(3).did_first_load_select ==
+            false);
+    REQUIRE(controller.selection().indices().size() == 2);
+    REQUIRE(ref_label_of() == "原图");
+
     // No 原图 in this group -> implicit reference (lowest index).
     REQUIRE(controller.switch_to_comparison_group(1).did_first_load_select ==
             false);
     REQUIRE(ref_label_of() == "fidelity");
 
-    // A group where 原图 is not the first item still resolves to it.
+    // A group where 原图 is not the first entry still resolves to it
+    // by title: g1.png/crop holds index 0, which the implicit rule
+    // would pick, but the seeded reference wins.
     REQUIRE(controller.switch_to_comparison_group(2).did_first_load_select ==
             false);
+    REQUIRE(controller.library().all()[0].display_label == "crop");
     REQUIRE(ref_label_of() == "原图");
 
     // Returning to g1 keeps the 原图 reference (per-comparison map).
     REQUIRE(controller.switch_to_comparison_group(0).did_first_load_select ==
             false);
     REQUIRE(ref_label_of() == "原图");
+
+    // An explicit mark-as-reference outranks the seeded 原图 rule and
+    // survives group navigation.
+    int ultra_idx = -1;
+    for (int i = 0;
+         i < static_cast<int>(controller.library().all().size()); ++i) {
+        if (controller.library().all()[i].display_label == "ultra") {
+            ultra_idx = i;
+        }
+    }
+    REQUIRE(ultra_idx >= 0);
+    controller.mark_as_reference(ultra_idx);
+    REQUIRE(ref_label_of() == "ultra");
+    REQUIRE(controller.switch_to_comparison_group(1).did_first_load_select ==
+            false);
+    REQUIRE(controller.switch_to_comparison_group(0).did_first_load_select ==
+            false);
+    REQUIRE(ref_label_of() == "ultra");
 }
 
 TEST_CASE("AppController::group_indices maps ByName/ByFolder to the "
