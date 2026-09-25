@@ -1034,7 +1034,7 @@ TEST_CASE("AppController::load_comparison_config reports first-load for "
 }
 
 TEST_CASE("AppController::switch_to_comparison_group auto-selects the "
-          "config item titled 原图 as the reference",
+          "original-image config item as the reference",
           "[controller]") {
     CountingUploader uploader;
     RecordingStatusReporter reporter;
