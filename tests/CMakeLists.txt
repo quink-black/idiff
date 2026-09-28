@@ -56,6 +56,7 @@ if(IDIFF_HAVE_RPC)
         test_rpc_server.cpp
         test_rpc_group_by_name.cpp
         test_rpc_selection.cpp
+        test_socket_paths.cpp
     )
     target_link_libraries(idiff_tests PRIVATE idiff_rpc)
     target_compile_definitions(idiff_tests PRIVATE IDIFF_HAVE_RPC=1)
