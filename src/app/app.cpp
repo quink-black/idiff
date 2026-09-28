@@ -556,10 +556,10 @@ void App::shutdown() {
 
 #ifdef IDIFF_HAVE_RPC
     // Stop the RPC server FIRST, before any other state is torn down.
-    // The Asio I/O thread can be parked inside a session waiting for
-    // a future from drain(); stop() unblocks and joins it cleanly.
-    // Destroying rpc_server_ then rpc_dispatcher_ is safe because the
-    // I/O thread has joined.
+    // stop() joins the Asio I/O thread, so the Dispatcher it dispatches
+    // through and the App state its handlers reach are still alive while
+    // that thread runs.  Destroying rpc_server_ then rpc_dispatcher_ is
+    // safe because the I/O thread has joined.
     if (rpc_server_) {
         rpc_server_->stop();
     }

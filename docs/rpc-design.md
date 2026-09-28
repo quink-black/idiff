@@ -61,7 +61,7 @@ Two motivating user scenarios (the original "why"):
                   │      ┌───────┴───────┐                  │
                   │      │ rpc::RpcServer │  (Asio I/O      │
                   │      └───────▲───────┘   thread)        │
-                  │              │ promise/future per req   │
+                  │              │ queue in, post back      │
                   └──────────────┼──────────────────────────┘
                                  │
                     ┌────────────┴────────────┐
@@ -82,9 +82,11 @@ Two motivating user scenarios (the original "why"):
 
 - **Threading model.** One Asio I/O thread owns sockets and framing;
   the main GUI thread is the only place handlers run. Hand-off is a
-  per-request `std::promise<std::string>` queued behind a mutex.
+  mutex-guarded queue of requests, each carrying the callback that
+  completes it, so nothing on the I/O thread waits on the GUI thread.
   `RpcServer::drain()` is called once per `App::frame()` and runs
-  every queued handler synchronously on the main thread.
+  every queued handler synchronously on the main thread; each response
+  is posted back to the I/O thread, which owns the connection.
   See `src/app/rpc/rpc_server.{h,cpp}` for the full picture.
 
 - **Wire format.** Plain JSON-RPC 2.0 over a transport (UDS on POSIX,
@@ -148,7 +150,7 @@ Two motivating user scenarios (the original "why"):
 | `src/app/app_rpc_methods.cpp` | All 23 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
-| `tests/test_rpc_server.cpp` | 5 integration tests (platform-abstracted transport client). |
+| `tests/test_rpc_server.cpp` | 7 integration tests (platform-abstracted transport client). |
 | `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |

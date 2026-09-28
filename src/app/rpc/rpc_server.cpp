@@ -16,25 +16,16 @@
 //     callbacks (typical Asio idiom).  A session ends when the peer
 //     closes, the read fails, or stop() destroys the io_context.
 //   * Per request, the I/O thread builds a PendingRequest holding the
-//     parsed-but-not-dispatched JSON text and a std::promise<string>.
-//     It pushes the PendingRequest onto a mutex-guarded queue and
-//     blocks the session on the matching std::future inside an
-//     async-callback continuation -- specifically, after queuing it
-//     posts a follow-up handler that waits on the future, writes the
-//     framed reply, and chains another async_read.
-//
-//     Only the response wait blocks; reads on OTHER sessions continue
-//     to be processed on the same thread because we drive that wait
-//     through io_context::run() too (the blocking happens on a worker
-//     std::future::get(), but we keep the io_context responsive by
-//     using a strand only per session, not globally).  In practice the
-//     main thread drains the queue every GUI frame (~16 ms), so the
-//     blocking wait is bounded.
+//     parsed-but-not-dispatched JSON text and a completion callback, and
+//     pushes it onto a mutex-guarded queue.  Nothing on the I/O thread
+//     waits for the response, so a main thread that has not drained yet
+//     delays responses without stopping accepts, reads or writes.
 //
 //   * drain() runs on the main thread.  It pops every PendingRequest,
-//     calls Dispatcher::handle_request on the GUI thread, and sets the
-//     associated promise.  Because all App state mutation happens here,
-//     no locks are needed inside handlers.
+//     calls Dispatcher::handle_request on the GUI thread, and hands the
+//     response to the request's completion callback, which posts the
+//     framed write back to the I/O thread.  Because all App state
+//     mutation happens in drain(), no locks are needed inside handlers.
 
 #include "app/rpc/rpc_server.h"
 
@@ -50,7 +41,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <future>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -126,11 +117,11 @@ std::wstring pipe_path_to_wide(const std::string& path) {
 } // namespace
 
 // One pending request waiting for the main thread to dispatch it.  The
-// response is delivered back through `result`; the I/O thread then
-// writes the framed bytes on the originating socket.
+// response goes back through `deliver`, which hands it to the I/O thread
+// that owns the session socket; the queue is the only shared state.
 struct PendingRequest {
     std::string request_json;
-    std::promise<std::string> result;
+    std::function<void(std::string)> deliver;
 };
 
 struct RpcServer::Impl {
@@ -170,6 +161,10 @@ struct RpcServer::Impl {
         session_socket socket;
         std::array<unsigned char, 4> length_buf{};
         std::vector<unsigned char> payload_buf;
+        // Responses waiting for the socket to finish the write ahead of
+        // them.  Both members belong to the I/O thread.
+        std::deque<std::string> write_queue;
+        bool write_in_flight = false;
 
         void start() { read_length(); }
 
@@ -229,43 +224,67 @@ struct RpcServer::Impl {
             std::string request_json(
                 reinterpret_cast<const char*>(payload_buf.data()),
                 payload_buf.size());
+            payload_buf.clear();
 
             auto pending = std::make_shared<PendingRequest>();
             pending->request_json = std::move(request_json);
-            std::future<std::string> fut = pending->result.get_future();
+
+            auto self = shared_from_this();
+            // Called on the main thread by drain().  The socket belongs to
+            // the I/O thread, so the write is posted there.
+            pending->deliver = [self](std::string response) {
+                asio::post(self->owner.io_context,
+                           [self, response = std::move(response)]() mutable {
+                               self->deliver_response(std::move(response));
+                           });
+            };
 
             {
                 std::lock_guard<std::mutex> lk(owner.queue_mu);
                 owner.queue.push_back(pending);
             }
             owner.queue_cv.notify_one();
+        }
 
-            // Wait for the main thread to dispatch.
-            std::string response = fut.get();
+        // An empty response is a notification: nothing to write, and the
+        // connection stays open for the next request.
+        void deliver_response(std::string response) {
+            if (!response.empty()) {
+                if (response.size() > kMaxFrameBytes) {
+                    LOG_ERROR("rpc: response too large (%zu bytes); dropping",
+                              response.size());
+                    return;
+                }
+                write_queue.push_back(std::move(response));
+                flush_writes();
+            }
+            read_length();
+        }
 
-            if (response.empty()) {
-                read_length();
+        void flush_writes() {
+            if (write_in_flight || write_queue.empty()) {
                 return;
             }
+            write_in_flight = true;
 
-            if (response.size() > kMaxFrameBytes) {
-                LOG_ERROR("rpc: response too large (%zu bytes); dropping",
-                          response.size());
-                return;
-            }
             auto header = std::make_shared<std::array<unsigned char, 4>>();
-            write_be32(*header, static_cast<std::uint32_t>(response.size()));
-            auto body = std::make_shared<std::string>(std::move(response));
+            write_be32(*header,
+                       static_cast<std::uint32_t>(write_queue.front().size()));
+            auto body = std::make_shared<std::string>(
+                std::move(write_queue.front()));
+            write_queue.pop_front();
 
-            auto self = shared_from_this();
             std::array<asio::const_buffer, 2> out = {
                 asio::buffer(*header),
                 asio::buffer(*body),
             };
+
+            auto self = shared_from_this();
             asio::async_write(
                 socket, out,
                 [self, header, body](const std::error_code& ec,
                                      std::size_t /*n*/) {
+                    self->write_in_flight = false;
                     if (ec) {
                         if (ec != asio::error::operation_aborted) {
                             LOG_WARN("rpc: write failed: %s",
@@ -273,7 +292,7 @@ struct RpcServer::Impl {
                         }
                         return;
                     }
-                    self->read_length();
+                    self->flush_writes();
                 });
         }
     };
@@ -722,17 +741,10 @@ void RpcServer::stop() {
     }
 #endif
 
-    // Drain any still-queued requests by completing their promises with
-    // an empty response so blocked I/O-thread callbacks don't deadlock.
+    // Requests that were queued but never dispatched are dropped.  Nothing
+    // waits on them: the sessions they belonged to hold no thread.
     {
         std::lock_guard<std::mutex> lk(impl_->queue_mu);
-        for (auto& p : impl_->queue) {
-            try {
-                p->result.set_value(std::string{});
-            } catch (...) {
-                // Promise might already be satisfied.
-            }
-        }
         impl_->queue.clear();
     }
 
@@ -749,11 +761,7 @@ std::size_t RpcServer::drain() {
     for (auto& pending : batch) {
         std::string response =
             impl_->dispatcher.handle_request(pending->request_json);
-        try {
-            pending->result.set_value(std::move(response));
-        } catch (const std::future_error& ex) {
-            LOG_WARN("rpc: promise.set_value failed: %s", ex.what());
-        }
+        pending->deliver(std::move(response));
     }
     return batch.size();
 }
