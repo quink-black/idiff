@@ -17,6 +17,9 @@
 //   * stop() unblocks cleanly even when drain() has not been called
 //     (we send a request without draining; stop() must not deadlock
 //     waiting for the in-flight promise).
+//   * Listener recovery: removing the socket path out from under a running
+//     server is repaired, and a request the main thread has not drained yet
+//     does not keep a second client from being served.
 
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/rpc_server.h"
@@ -39,6 +42,7 @@
 #include <windows.h>
 #else
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #endif
@@ -418,3 +422,40 @@ TEST_CASE("RpcServer: stop() is idempotent and survives second start()",
     REQUIRE(json::parse(resp)["result"] == 42);
     close_transport(h);
 }
+
+#ifndef _WIN32
+// The stale-socket sweep unlinks any idiff socket whose connect() fails,
+// which covers the socket of a live instance whose accept queue is full.  A
+// listener that lost its path has to put it back: clients get "file not
+// found" and no other process has a reason to re-create it.
+TEST_CASE("RpcServer: socket path is re-created after it is removed",
+          "[rpc][server]") {
+    Dispatcher d = make_echo_dispatcher();
+    std::string path = make_socket_path();
+    RpcServer server(path, d);
+    server.start();
+    DrainPump pump(server);
+
+    REQUIRE(::unlink(path.c_str()) == 0);
+
+    // The owner checks the path on a fixed interval, so allow a generous
+    // window rather than coupling the test to that interval.
+    bool restored = false;
+    for (int i = 0; i < 150 && !restored; ++i) {
+        struct stat st{};
+        restored = ::stat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+        if (!restored) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    REQUIRE(restored);
+
+    transport_handle h = connect_transport(path);
+    REQUIRE(h != invalid_transport);
+    REQUIRE(send_frame(h, R"({"jsonrpc":"2.0","method":"answer","id":7})"));
+    std::string resp = recv_frame(h);
+    REQUIRE_FALSE(resp.empty());
+    REQUIRE(json::parse(resp)["result"] == 42);
+    close_transport(h);
+}
+#endif

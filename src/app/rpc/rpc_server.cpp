@@ -66,6 +66,8 @@
 #else
 #include <cerrno>
 #include <cstring>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -78,6 +80,11 @@ namespace {
 // recurring would drive the I/O thread at full speed.
 constexpr int kAcceptRetryBaseMs = 50;
 constexpr int kAcceptRetryMaxMs  = 1000;
+
+// How often the I/O thread checks that the socket path still names the socket
+// it bound.  One lstat per interval; the interval trades restore latency
+// against doing nothing most of the time.
+constexpr int kPathCheckMs = 2000;
 
 std::chrono::milliseconds accept_retry_delay(int consecutive_failures) {
     const int shift = std::min(consecutive_failures, 4);
@@ -144,6 +151,7 @@ struct RpcServer::Impl {
 #else
         , acceptor(io_context)
         , accept_retry_timer(io_context)
+        , path_watch_timer(io_context)
 #endif
     {}
 
@@ -405,7 +413,50 @@ struct RpcServer::Impl {
             return ec;
         }
         acceptor.listen(asio::socket_base::max_listen_connections, ec);
+        if (ec) {
+            return ec;
+        }
+        record_bound_inode();
         return ec;
+    }
+
+    // Anything that cleans /tmp can unlink this instance's socket path while
+    // the listener behind it is healthy.  Clients then get "file not found",
+    // and only the owner has a reason to re-create the path, so remember which
+    // inode the path is supposed to name.
+    void record_bound_inode() {
+        struct stat st{};
+        if (::stat(socket_path.c_str(), &st) == 0) {
+            bound_ino = st.st_ino;
+            bound_dev = st.st_dev;
+        } else {
+            bound_ino = 0;
+            bound_dev = 0;
+        }
+    }
+
+    void watch_listener_path() {
+        path_watch_timer.expires_after(std::chrono::milliseconds(kPathCheckMs));
+        path_watch_timer.async_wait(
+            [this](const std::error_code& ec) {
+                if (ec || !running.load()) {
+                    return;
+                }
+                struct stat st{};
+                const bool healthy =
+                    bound_ino != 0
+                    && ::lstat(socket_path.c_str(), &st) == 0
+                    && S_ISSOCK(st.st_mode)
+                    && st.st_ino == bound_ino
+                    && st.st_dev == bound_dev;
+                if (!healthy) {
+                    LOG_WARN("rpc: %s no longer names this listener; rebuilding",
+                             socket_path.c_str());
+                    ++accept_failures;
+                    schedule_rebind();
+                }
+                watch_listener_path();
+            });
     }
 
     // Arm one async_accept.  Every path that leaves the acceptor without a
@@ -501,8 +552,12 @@ struct RpcServer::Impl {
     stream_protocol::acceptor acceptor;
     // One-shot timer behind every listener rebuild.
     asio::steady_timer accept_retry_timer;
+    // Repeating timer that keeps the socket path pointed at this listener.
+    asio::steady_timer path_watch_timer;
     bool rebind_pending = false;
     int accept_failures = 0;
+    ino_t bound_ino = 0;
+    dev_t bound_dev = 0;
 #endif
 
     std::thread io_thread;
@@ -599,6 +654,7 @@ void RpcServer::start() {
     }
 
     impl_->do_accept();
+    impl_->watch_listener_path();
     impl_->running.store(true);
 
     impl_->io_context.restart();
@@ -652,6 +708,7 @@ void RpcServer::stop() {
     // Cancel pending accepts / reads, then join.
     std::error_code ignore;
     impl_->accept_retry_timer.cancel();
+    impl_->path_watch_timer.cancel();
     impl_->acceptor.close(ignore);
     impl_->io_context.stop();
 
