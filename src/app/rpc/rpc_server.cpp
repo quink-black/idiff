@@ -43,8 +43,10 @@
 
 #include <asio.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -70,6 +72,18 @@
 namespace idiff::rpc {
 
 namespace {
+
+// A failed accept costs one backoff cycle before the listener is rebuilt:
+// 50 ms, doubling up to 1 s.  Without the wait, an accept error that keeps
+// recurring would drive the I/O thread at full speed.
+constexpr int kAcceptRetryBaseMs = 50;
+constexpr int kAcceptRetryMaxMs  = 1000;
+
+std::chrono::milliseconds accept_retry_delay(int consecutive_failures) {
+    const int shift = std::min(consecutive_failures, 4);
+    return std::chrono::milliseconds(
+        std::min(kAcceptRetryBaseMs << shift, kAcceptRetryMaxMs));
+}
 
 // Encode a 4-byte big-endian length prefix.
 void write_be32(std::array<unsigned char, 4>& out, std::uint32_t value) {
@@ -129,6 +143,7 @@ struct RpcServer::Impl {
         , shutdown_event(nullptr)
 #else
         , acceptor(io_context)
+        , accept_retry_timer(io_context)
 #endif
     {}
 
@@ -365,24 +380,104 @@ struct RpcServer::Impl {
         }
     }
 #else
-    // ---- POSIX accept loop -------------------------------------------------
+    // ---- POSIX accept supervision -------------------------------------------
 
+    // Open, bind and listen on socket_path, replacing whatever the acceptor
+    // held before.  Returns an empty error_code on success.  start() and the
+    // accept-error recovery share this path, so a listener that went deaf can
+    // be brought back by the same code that brought it up the first time.
+    std::error_code bind_listener() {
+        std::error_code ec;
+        acceptor.close(ec);
+
+        if (::unlink(socket_path.c_str()) != 0 && errno != ENOENT) {
+            LOG_WARN("rpc: unlink('%s') failed: %s",
+                     socket_path.c_str(), std::strerror(errno));
+        }
+
+        stream_protocol::endpoint ep(socket_path);
+        acceptor.open(ep.protocol(), ec);
+        if (ec) {
+            return ec;
+        }
+        acceptor.bind(ep, ec);
+        if (ec) {
+            return ec;
+        }
+        acceptor.listen(asio::socket_base::max_listen_connections, ec);
+        return ec;
+    }
+
+    // Arm one async_accept.  Every path that leaves the acceptor without a
+    // pending accept goes through schedule_rebind(), so a transport error
+    // cannot permanently stop new clients from connecting.
     void do_accept() {
         acceptor.async_accept(
             [this](const std::error_code& ec,
                    stream_protocol::socket sock) {
-                if (ec) {
-                    if (ec != asio::error::operation_aborted) {
-                        LOG_WARN("rpc: accept failed: %s",
-                                 ec.message().c_str());
-                    }
+                if (!running.load()) {
                     return;
                 }
-                auto session =
-                    std::make_shared<Session>(*this, std::move(sock));
-                session->start();
-                do_accept();
+                if (!ec) {
+                    accept_failures = 0;
+                    auto session =
+                        std::make_shared<Session>(*this, std::move(sock));
+                    session->start();
+                    do_accept();
+                    return;
+                }
+                if (ec == asio::error::operation_aborted) {
+                    // Our own acceptor.cancel(), or stop().  A rebuild that was
+                    // requested by the cancel runs from the retry timer.
+                    return;
+                }
+                ++accept_failures;
+                LOG_WARN("rpc: accept failed: %s (%d in a row); rebuilding",
+                         ec.message().c_str(), accept_failures);
+                schedule_rebind();
             });
+    }
+
+    // Request a fresh listener.  acceptor.cancel() clears any accept that is
+    // still outstanding; the rebuild itself runs from the timer so that a
+    // recurring error is rate-limited instead of spun on.
+    void schedule_rebind() {
+        rebind_pending = true;
+        std::error_code ignore;
+        acceptor.cancel(ignore);
+        accept_retry_timer.expires_after(accept_retry_delay(accept_failures));
+        accept_retry_timer.async_wait(
+            [this](const std::error_code& ec) {
+                if (ec || !running.load()) {
+                    return;
+                }
+                rebind_and_accept();
+            });
+    }
+
+    // A kernel-level accept error can mean the bound socket stopped being a
+    // listening socket, so rebind rather than only re-arm.  Already accepted
+    // sessions own separate descriptors and are unaffected.
+    void rebind_and_accept() {
+        if (!running.load() || !rebind_pending) {
+            return;
+        }
+        rebind_pending = false;
+
+        std::error_code ec = bind_listener();
+        if (ec) {
+            ++accept_failures;
+            LOG_ERROR("rpc: rebind(%s) failed: %s; retrying",
+                      socket_path.c_str(), ec.message().c_str());
+            schedule_rebind();
+            return;
+        }
+        // A successful bind says nothing about whether the next accept
+        // works, so the count is reset only by an accept that completes
+        // (do_accept()) -- otherwise a fail/rebuild/fail loop stays on the
+        // first backoff step and rebuilds at full rate.
+        LOG_INFO("rpc: listening again on %s", socket_path.c_str());
+        do_accept();
     }
 #endif
 
@@ -404,6 +499,10 @@ struct RpcServer::Impl {
     std::thread accept_thread;
 #else
     stream_protocol::acceptor acceptor;
+    // One-shot timer behind every listener rebuild.
+    asio::steady_timer accept_retry_timer;
+    bool rebind_pending = false;
+    int accept_failures = 0;
 #endif
 
     std::thread io_thread;
@@ -491,28 +590,12 @@ void RpcServer::start() {
         }
     });
 #else
-    // Unlink any stale socket file from a previous run.
-    if (::unlink(impl_->socket_path.c_str()) != 0 && errno != ENOENT) {
-        LOG_WARN("rpc: unlink('%s') failed: %s",
-                 impl_->socket_path.c_str(), std::strerror(errno));
-    }
+    impl_->rebind_pending = false;
+    impl_->accept_failures = 0;
 
-    using stream_protocol = asio::local::stream_protocol;
-    stream_protocol::endpoint ep(impl_->socket_path);
-
-    std::error_code ec;
-    impl_->acceptor.open(ep.protocol(), ec);
+    std::error_code ec = impl_->bind_listener();
     if (ec) {
-        throw std::system_error(ec, "rpc: acceptor.open");
-    }
-    impl_->acceptor.bind(ep, ec);
-    if (ec) {
-        throw std::system_error(ec,
-            "rpc: bind(" + impl_->socket_path + ")");
-    }
-    impl_->acceptor.listen(asio::socket_base::max_listen_connections, ec);
-    if (ec) {
-        throw std::system_error(ec, "rpc: listen");
+        throw std::system_error(ec, "rpc: bind(" + impl_->socket_path + ")");
     }
 
     impl_->do_accept();
@@ -568,6 +651,7 @@ void RpcServer::stop() {
 #else
     // Cancel pending accepts / reads, then join.
     std::error_code ignore;
+    impl_->accept_retry_timer.cancel();
     impl_->acceptor.close(ignore);
     impl_->io_context.stop();
 
