@@ -42,10 +42,12 @@ struct SocketProbe {
 };
 
 // Find every idiff transport path, classify each (alive vs stale), and
-// remove the stale ones on POSIX.  "Stale" means the path exists but no
-// process is listening; this happens after a hard kill / crash where
-// the socket file outlived the idiff process.  On Windows, named pipes
-// are kernel objects that vanish when the server exits, so enumeration
+// remove the stale ones on POSIX.  "Stale" means the path exists, nothing
+// answers connect(2) on it, and the pid in its filename is gone; that is what
+// a socket file looks like after a hard kill or a crash.  A path whose pid is
+// still running is left in place -- a full accept queue also answers with
+// ECONNREFUSED, and that file belongs to a live instance.  On Windows, named
+// pipes are kernel objects that vanish when the server exits, so enumeration
 // alone is sufficient and `removed` is always false.
 //
 // Returns one SocketProbe per discovered path.  The function is

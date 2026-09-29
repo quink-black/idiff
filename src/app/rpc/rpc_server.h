@@ -8,9 +8,9 @@
 //      |                                       |
 //      | RpcServer::drain()                    | accept / read frames
 //      v                                       v
-//   pop pending request -----promise<-----  push (req_json, promise)
-//   Dispatcher::handle_request                 |  await future
-//   set promise value -----future----------->  | write framed response
+//   pop pending request ---------queue<----  push (req_json, callback)
+//   Dispatcher::handle_request                 |
+//   deliver(response) --post to io_context-->  write framed response
 //
 // On Windows, a separate accept thread issues ConnectNamedPipe and
 // posts connected HANDLEs to the I/O thread.
@@ -80,8 +80,9 @@ public:
 
     // Process all currently queued requests on the calling thread.
     // Intended to be called once per GUI frame.  Each pending request
-    // is dispatched synchronously; the response is delivered back to
-    // the originating Asio session via its waiting promise.
+    // is dispatched synchronously; the response is handed to that
+    // request's completion callback, which posts the write to the I/O
+    // thread that owns the connection.
     //
     // Returns the number of requests dispatched in this call.  The
     // method does not block: if the queue is empty it returns 0.

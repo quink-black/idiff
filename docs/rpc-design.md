@@ -61,7 +61,7 @@ Two motivating user scenarios (the original "why"):
                   │      ┌───────┴───────┐                  │
                   │      │ rpc::RpcServer │  (Asio I/O      │
                   │      └───────▲───────┘   thread)        │
-                  │              │ promise/future per req   │
+                  │              │ queue in, post back      │
                   └──────────────┼──────────────────────────┘
                                  │
                     ┌────────────┴────────────┐
@@ -82,9 +82,11 @@ Two motivating user scenarios (the original "why"):
 
 - **Threading model.** One Asio I/O thread owns sockets and framing;
   the main GUI thread is the only place handlers run. Hand-off is a
-  per-request `std::promise<std::string>` queued behind a mutex.
+  mutex-guarded queue of requests, each carrying the callback that
+  completes it, so nothing on the I/O thread waits on the GUI thread.
   `RpcServer::drain()` is called once per `App::frame()` and runs
-  every queued handler synchronously on the main thread.
+  every queued handler synchronously on the main thread; each response
+  is posted back to the I/O thread, which owns the connection.
   See `src/app/rpc/rpc_server.{h,cpp}` for the full picture.
 
 - **Wire format.** Plain JSON-RPC 2.0 over a transport (UDS on POSIX,
@@ -107,12 +109,23 @@ Two motivating user scenarios (the original "why"):
 - **Stale-socket sweep.** On `App::init()`, we enumerate existing
   transport paths. On POSIX, we walk `/tmp/idiff-*.sock` and probe
   each via `connect(2)`. Anything that returns `ECONNREFUSED` is
-  unlinked (a leftover from a hard kill). Anything alive is left
-  alone. On Windows, named pipes are kernel objects that vanish when
+  unlinked, but only after the pid in its filename turns out to be
+  gone: a full accept queue answers `ECONNREFUSED` too, and that file
+  belongs to a running instance that repairs its own path. Anything
+  alive is left alone. On Windows, named pipes are kernel objects that vanish when
   the server process exits, so `FindFirstFileW` enumeration alone is
   sufficient — no probe or unlink is needed. This keeps discovery an
   honest list of running idiff windows — which the MCP server's
   auto-discovery depends on.
+
+- **Listener recovery.** Two failures make a running instance unreachable
+  while it keeps running: an accept that completes with a transport error,
+  and a socket path that no longer names this instance's socket (anything
+  that cleans `/tmp` can unlink it). Both are repaired on the I/O thread by reopening,
+  rebinding and re-arming accept, with 50 ms to 1 s of backoff between
+  attempts. Neither failure heals itself and neither is visible to a client:
+  the socket file still answers `connect(2)`, so the client hangs instead of
+  getting `ECONNREFUSED`, and the sweep classifies the path as alive.
 
 - **Why standalone-asio + nlohmann/json.** The user explicitly
   rejected hand-rolled sockets. Both libraries are header-only and
@@ -133,13 +146,14 @@ Two motivating user scenarios (the original "why"):
 | Path | Role |
 |---|---|
 | `src/app/rpc/rpc_dispatcher.{h,cpp}` | Pure JSON-RPC 2.0 protocol layer (parse, route, error envelopes). Zero socket / threading dependencies. |
-| `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. |
-| `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). |
+| `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. Rebuilds its own listener after an accept error, or once its socket path stops naming its socket. |
+| `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). A path is stale only when nothing answers it *and* its pid no longer exists. |
 | `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
 | `src/app/app_rpc_methods.cpp` | All 23 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
-| `tests/test_rpc_server.cpp` | 4 integration tests (platform-abstracted transport client). |
+| `tests/test_rpc_server.cpp` | 7 integration tests (platform-abstracted transport client). |
+| `tests/test_socket_paths.cpp` | Sweep tests: which `/tmp/idiff-*.sock` files get removed and which are left alone (POSIX). |
 | `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |

@@ -14,9 +14,10 @@
 //     request and getting a response without timing out).
 //   * Oversized frame rejection: announce a length above kMaxFrameBytes
 //     -> server closes the connection without consuming the body.
-//   * stop() unblocks cleanly even when drain() has not been called
-//     (we send a request without draining; stop() must not deadlock
-//     waiting for the in-flight promise).
+//   * stop() returns even when a queued request was never drained.
+//   * Listener recovery: removing the socket path out from under a running
+//     server is repaired, and a request the main thread has not drained yet
+//     does not keep a second client from being served.
 
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/rpc_server.h"
@@ -39,6 +40,7 @@
 #include <windows.h>
 #else
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #endif
@@ -416,5 +418,101 @@ TEST_CASE("RpcServer: stop() is idempotent and survives second start()",
     std::string resp = recv_frame(h);
     REQUIRE_FALSE(resp.empty());
     REQUIRE(json::parse(resp)["result"] == 42);
+    close_transport(h);
+}
+
+#ifndef _WIN32
+// Both cases below are specific to the socket transport: a named pipe has no
+// filesystem path to lose, and its accept thread hands out one pipe instance
+// at a time.
+//
+// Anything that tidies /tmp can unlink this instance's socket without
+// touching the process, and the instance keeps running with a listener no
+// client can find: a bound listener whose path is gone answers nothing.  Only
+// the owner has a reason to re-create the path.
+TEST_CASE("RpcServer: socket path is re-created after it is removed",
+          "[rpc][server]") {
+    Dispatcher d = make_echo_dispatcher();
+    std::string path = make_socket_path();
+    RpcServer server(path, d);
+    server.start();
+    DrainPump pump(server);
+
+    REQUIRE(::unlink(path.c_str()) == 0);
+
+    // The owner checks the path on a fixed interval, so allow a generous
+    // window rather than coupling the test to that interval.
+    bool restored = false;
+    for (int i = 0; i < 150 && !restored; ++i) {
+        struct stat st{};
+        restored = ::stat(path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode);
+        if (!restored) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    REQUIRE(restored);
+
+    transport_handle h = connect_transport(path);
+    REQUIRE(h != invalid_transport);
+    REQUIRE(send_frame(h, R"({"jsonrpc":"2.0","method":"answer","id":7})"));
+    std::string resp = recv_frame(h);
+    REQUIRE_FALSE(resp.empty());
+    REQUIRE(json::parse(resp)["result"] == 42);
+    close_transport(h);
+}
+
+// Until drain() runs, the main thread has produced no response for the
+// request sitting in the queue.  That must not cost the transport anything:
+// the I/O thread still has to accept a second client, read its request, and
+// hold both responses.
+TEST_CASE("RpcServer: an undrained request does not block other sessions",
+          "[rpc][server]") {
+    Dispatcher d = make_echo_dispatcher();
+    RpcServer server(make_socket_path(), d);
+    server.start();
+
+    transport_handle a = connect_transport(server.socket_path());
+    transport_handle b = connect_transport(server.socket_path());
+    REQUIRE(a != invalid_transport);
+    REQUIRE(b != invalid_transport);
+
+    REQUIRE(send_frame(a, R"({"jsonrpc":"2.0","method":"answer","id":1})"));
+    REQUIRE(send_frame(b,
+                       R"({"jsonrpc":"2.0","method":"echo",)"
+                       R"("params":{"n":2},"id":2})"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // One pass serves both, which is only possible if b's request was read
+    // while a's was still queued.
+    REQUIRE(server.drain() == 2);
+
+    std::string ra = recv_frame(a);
+    std::string rb = recv_frame(b);
+    REQUIRE_FALSE(ra.empty());
+    REQUIRE_FALSE(rb.empty());
+    REQUIRE(json::parse(ra)["result"] == 42);
+    REQUIRE(json::parse(rb)["result"]["n"] == 2);
+
+    close_transport(a);
+    close_transport(b);
+}
+#endif
+
+// A queued request whose response nobody ever asks for must not hold stop()
+// hostage on its way to joining the I/O thread.
+TEST_CASE("RpcServer: stop() returns with a request left undrained",
+          "[rpc][server]") {
+    Dispatcher d = make_echo_dispatcher();
+    RpcServer server(make_socket_path(), d);
+    server.start();
+
+    transport_handle h = connect_transport(server.socket_path());
+    REQUIRE(h != invalid_transport);
+    REQUIRE(send_frame(h, R"({"jsonrpc":"2.0","method":"answer","id":1})"));
+    // No drain() at all before shutdown.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    server.stop();
+    REQUIRE_FALSE(server.is_running());
     close_transport(h);
 }

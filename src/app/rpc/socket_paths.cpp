@@ -6,11 +6,13 @@
 #include "util/logger.h"
 
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <dirent.h>
 #include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <vector>
@@ -69,6 +71,18 @@ int probe_connect(const std::string& path) {
     return err;
 }
 
+// A pid that cannot be signalled is gone.  EPERM means the process exists but
+// belongs to another user, so it counts as alive.
+bool pid_is_alive(int pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    if (::kill(static_cast<pid_t>(pid), 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+}
+
 } // namespace
 
 std::string compose_socket_path(int pid) {
@@ -113,9 +127,15 @@ std::vector<SocketProbe> sweep_stale_sockets() {
         if (err == 0) {
             pr.alive = true;
         } else if (err == ECONNREFUSED) {
-            // Listener is gone but the inode is still here -- classic
-            // stale-socket-after-crash.  Safe to unlink.
-            if (::unlink(pr.path.c_str()) == 0) {
+            if (pid_is_alive(pr.pid)) {
+                // A listener whose accept queue is full also answers with
+                // ECONNREFUSED, and that socket belongs to a running instance
+                // that repairs its own path.
+                LOG_WARN("rpc-sweep: leaving %s alone; pid %d still runs",
+                         pr.path.c_str(), pr.pid);
+            } else if (::unlink(pr.path.c_str()) == 0) {
+                // Nobody listens and nobody owns the file: the leftover from
+                // a hard kill.
                 pr.removed = true;
                 LOG_INFO("rpc-sweep: removed stale socket %s",
                          pr.path.c_str());

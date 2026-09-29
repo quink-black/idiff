@@ -16,25 +16,16 @@
 //     callbacks (typical Asio idiom).  A session ends when the peer
 //     closes, the read fails, or stop() destroys the io_context.
 //   * Per request, the I/O thread builds a PendingRequest holding the
-//     parsed-but-not-dispatched JSON text and a std::promise<string>.
-//     It pushes the PendingRequest onto a mutex-guarded queue and
-//     blocks the session on the matching std::future inside an
-//     async-callback continuation -- specifically, after queuing it
-//     posts a follow-up handler that waits on the future, writes the
-//     framed reply, and chains another async_read.
-//
-//     Only the response wait blocks; reads on OTHER sessions continue
-//     to be processed on the same thread because we drive that wait
-//     through io_context::run() too (the blocking happens on a worker
-//     std::future::get(), but we keep the io_context responsive by
-//     using a strand only per session, not globally).  In practice the
-//     main thread drains the queue every GUI frame (~16 ms), so the
-//     blocking wait is bounded.
+//     parsed-but-not-dispatched JSON text and a completion callback, and
+//     pushes it onto a mutex-guarded queue.  Nothing on the I/O thread
+//     waits for the response, so a main thread that has not drained yet
+//     delays responses without stopping accepts, reads or writes.
 //
 //   * drain() runs on the main thread.  It pops every PendingRequest,
-//     calls Dispatcher::handle_request on the GUI thread, and sets the
-//     associated promise.  Because all App state mutation happens here,
-//     no locks are needed inside handlers.
+//     calls Dispatcher::handle_request on the GUI thread, and hands the
+//     response to the request's completion callback, which posts the
+//     framed write back to the I/O thread.  Because all App state
+//     mutation happens in drain(), no locks are needed inside handlers.
 
 #include "app/rpc/rpc_server.h"
 
@@ -43,12 +34,14 @@
 
 #include <asio.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
-#include <future>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -64,12 +57,31 @@
 #else
 #include <cerrno>
 #include <cstring>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
 namespace idiff::rpc {
 
 namespace {
+
+// A failed accept costs one backoff cycle before the listener is rebuilt:
+// 50 ms, doubling up to 1 s.  Without the wait, an accept error that keeps
+// recurring would drive the I/O thread at full speed.
+constexpr int kAcceptRetryBaseMs = 50;
+constexpr int kAcceptRetryMaxMs  = 1000;
+
+// How often the I/O thread checks that the socket path still names the socket
+// it bound.  One lstat per interval; the interval trades restore latency
+// against doing nothing most of the time.
+constexpr int kPathCheckMs = 2000;
+
+std::chrono::milliseconds accept_retry_delay(int consecutive_failures) {
+    const int shift = std::min(consecutive_failures, 4);
+    return std::chrono::milliseconds(
+        std::min(kAcceptRetryBaseMs << shift, kAcceptRetryMaxMs));
+}
 
 // Encode a 4-byte big-endian length prefix.
 void write_be32(std::array<unsigned char, 4>& out, std::uint32_t value) {
@@ -105,11 +117,11 @@ std::wstring pipe_path_to_wide(const std::string& path) {
 } // namespace
 
 // One pending request waiting for the main thread to dispatch it.  The
-// response is delivered back through `result`; the I/O thread then
-// writes the framed bytes on the originating socket.
+// response goes back through `deliver`, which hands it to the I/O thread
+// that owns the session socket; the queue is the only shared state.
 struct PendingRequest {
     std::string request_json;
-    std::promise<std::string> result;
+    std::function<void(std::string)> deliver;
 };
 
 struct RpcServer::Impl {
@@ -129,6 +141,8 @@ struct RpcServer::Impl {
         , shutdown_event(nullptr)
 #else
         , acceptor(io_context)
+        , accept_retry_timer(io_context)
+        , path_watch_timer(io_context)
 #endif
     {}
 
@@ -147,6 +161,10 @@ struct RpcServer::Impl {
         session_socket socket;
         std::array<unsigned char, 4> length_buf{};
         std::vector<unsigned char> payload_buf;
+        // Responses waiting for the socket to finish the write ahead of
+        // them.  Both members belong to the I/O thread.
+        std::deque<std::string> write_queue;
+        bool write_in_flight = false;
 
         void start() { read_length(); }
 
@@ -206,43 +224,67 @@ struct RpcServer::Impl {
             std::string request_json(
                 reinterpret_cast<const char*>(payload_buf.data()),
                 payload_buf.size());
+            payload_buf.clear();
 
             auto pending = std::make_shared<PendingRequest>();
             pending->request_json = std::move(request_json);
-            std::future<std::string> fut = pending->result.get_future();
+
+            auto self = shared_from_this();
+            // Called on the main thread by drain().  The socket belongs to
+            // the I/O thread, so the write is posted there.
+            pending->deliver = [self](std::string response) {
+                asio::post(self->owner.io_context,
+                           [self, response = std::move(response)]() mutable {
+                               self->deliver_response(std::move(response));
+                           });
+            };
 
             {
                 std::lock_guard<std::mutex> lk(owner.queue_mu);
                 owner.queue.push_back(pending);
             }
             owner.queue_cv.notify_one();
+        }
 
-            // Wait for the main thread to dispatch.
-            std::string response = fut.get();
+        // An empty response is a notification: nothing to write, and the
+        // connection stays open for the next request.
+        void deliver_response(std::string response) {
+            if (!response.empty()) {
+                if (response.size() > kMaxFrameBytes) {
+                    LOG_ERROR("rpc: response too large (%zu bytes); dropping",
+                              response.size());
+                    return;
+                }
+                write_queue.push_back(std::move(response));
+                flush_writes();
+            }
+            read_length();
+        }
 
-            if (response.empty()) {
-                read_length();
+        void flush_writes() {
+            if (write_in_flight || write_queue.empty()) {
                 return;
             }
+            write_in_flight = true;
 
-            if (response.size() > kMaxFrameBytes) {
-                LOG_ERROR("rpc: response too large (%zu bytes); dropping",
-                          response.size());
-                return;
-            }
             auto header = std::make_shared<std::array<unsigned char, 4>>();
-            write_be32(*header, static_cast<std::uint32_t>(response.size()));
-            auto body = std::make_shared<std::string>(std::move(response));
+            write_be32(*header,
+                       static_cast<std::uint32_t>(write_queue.front().size()));
+            auto body = std::make_shared<std::string>(
+                std::move(write_queue.front()));
+            write_queue.pop_front();
 
-            auto self = shared_from_this();
             std::array<asio::const_buffer, 2> out = {
                 asio::buffer(*header),
                 asio::buffer(*body),
             };
+
+            auto self = shared_from_this();
             asio::async_write(
                 socket, out,
                 [self, header, body](const std::error_code& ec,
                                      std::size_t /*n*/) {
+                    self->write_in_flight = false;
                     if (ec) {
                         if (ec != asio::error::operation_aborted) {
                             LOG_WARN("rpc: write failed: %s",
@@ -250,7 +292,7 @@ struct RpcServer::Impl {
                         }
                         return;
                     }
-                    self->read_length();
+                    self->flush_writes();
                 });
         }
     };
@@ -365,24 +407,147 @@ struct RpcServer::Impl {
         }
     }
 #else
-    // ---- POSIX accept loop -------------------------------------------------
+    // ---- POSIX accept supervision -------------------------------------------
 
+    // Open, bind and listen on socket_path, replacing whatever the acceptor
+    // held before.  Returns an empty error_code on success.  start() and the
+    // accept-error recovery share this path, so a listener that went deaf can
+    // be brought back by the same code that brought it up the first time.
+    std::error_code bind_listener() {
+        std::error_code ec;
+        acceptor.close(ec);
+
+        if (::unlink(socket_path.c_str()) != 0 && errno != ENOENT) {
+            LOG_WARN("rpc: unlink('%s') failed: %s",
+                     socket_path.c_str(), std::strerror(errno));
+        }
+
+        stream_protocol::endpoint ep(socket_path);
+        acceptor.open(ep.protocol(), ec);
+        if (ec) {
+            return ec;
+        }
+        acceptor.bind(ep, ec);
+        if (ec) {
+            return ec;
+        }
+        acceptor.listen(asio::socket_base::max_listen_connections, ec);
+        if (ec) {
+            return ec;
+        }
+        record_bound_inode();
+        return ec;
+    }
+
+    // Anything that cleans /tmp can unlink this instance's socket path while
+    // the listener behind it is healthy.  Clients then get "file not found",
+    // and only the owner has a reason to re-create the path, so remember which
+    // inode the path is supposed to name.
+    void record_bound_inode() {
+        struct stat st{};
+        if (::stat(socket_path.c_str(), &st) == 0) {
+            bound_ino = st.st_ino;
+            bound_dev = st.st_dev;
+        } else {
+            bound_ino = 0;
+            bound_dev = 0;
+        }
+    }
+
+    void watch_listener_path() {
+        path_watch_timer.expires_after(std::chrono::milliseconds(kPathCheckMs));
+        path_watch_timer.async_wait(
+            [this](const std::error_code& ec) {
+                if (ec || !running.load()) {
+                    return;
+                }
+                struct stat st{};
+                const bool healthy =
+                    bound_ino != 0
+                    && ::lstat(socket_path.c_str(), &st) == 0
+                    && S_ISSOCK(st.st_mode)
+                    && st.st_ino == bound_ino
+                    && st.st_dev == bound_dev;
+                if (!healthy) {
+                    LOG_WARN("rpc: %s no longer names this listener; rebuilding",
+                             socket_path.c_str());
+                    ++accept_failures;
+                    schedule_rebind();
+                }
+                watch_listener_path();
+            });
+    }
+
+    // Arm one async_accept.  Every path that leaves the acceptor without a
+    // pending accept goes through schedule_rebind(), so a transport error
+    // cannot permanently stop new clients from connecting.
     void do_accept() {
         acceptor.async_accept(
             [this](const std::error_code& ec,
                    stream_protocol::socket sock) {
-                if (ec) {
-                    if (ec != asio::error::operation_aborted) {
-                        LOG_WARN("rpc: accept failed: %s",
-                                 ec.message().c_str());
-                    }
+                if (!running.load()) {
                     return;
                 }
-                auto session =
-                    std::make_shared<Session>(*this, std::move(sock));
-                session->start();
-                do_accept();
+                if (!ec) {
+                    accept_failures = 0;
+                    auto session =
+                        std::make_shared<Session>(*this, std::move(sock));
+                    session->start();
+                    do_accept();
+                    return;
+                }
+                if (ec == asio::error::operation_aborted) {
+                    // Our own acceptor.cancel(), or stop().  A rebuild that was
+                    // requested by the cancel runs from the retry timer.
+                    return;
+                }
+                ++accept_failures;
+                LOG_WARN("rpc: accept failed: %s (%d in a row); rebuilding",
+                         ec.message().c_str(), accept_failures);
+                schedule_rebind();
             });
+    }
+
+    // Request a fresh listener.  acceptor.cancel() clears any accept that is
+    // still outstanding; the rebuild itself runs from the timer so that a
+    // recurring error is rate-limited instead of spun on.
+    void schedule_rebind() {
+        rebind_pending = true;
+        std::error_code ignore;
+        acceptor.cancel(ignore);
+        accept_retry_timer.expires_after(accept_retry_delay(accept_failures));
+        accept_retry_timer.async_wait(
+            [this](const std::error_code& ec) {
+                if (ec || !running.load()) {
+                    return;
+                }
+                rebind_and_accept();
+            });
+    }
+
+    // A kernel-level accept error can mean the bound socket stopped being a
+    // listening socket, so rebind rather than only re-arm.  Already accepted
+    // sessions own separate descriptors and are unaffected.
+    void rebind_and_accept() {
+        if (!running.load() || !rebind_pending) {
+            return;
+        }
+        rebind_pending = false;
+
+        std::error_code ec = bind_listener();
+        if (ec) {
+            ++accept_failures;
+            LOG_ERROR("rpc: rebind(%s) failed: %s; retrying",
+                      socket_path.c_str(), ec.message().c_str());
+            schedule_rebind();
+            return;
+        }
+        // A successful bind says nothing about whether the next accept
+        // works, so the count is reset only by an accept that completes
+        // (do_accept()) -- otherwise a fail/rebuild/fail loop stays on the
+        // first backoff step and rebuilds at full rate.
+        LOG_INFO("rpc: listening again on %s", socket_path.c_str());
+        do_accept();
     }
 #endif
 
@@ -404,6 +569,14 @@ struct RpcServer::Impl {
     std::thread accept_thread;
 #else
     stream_protocol::acceptor acceptor;
+    // One-shot timer behind every listener rebuild.
+    asio::steady_timer accept_retry_timer;
+    // Repeating timer that keeps the socket path pointed at this listener.
+    asio::steady_timer path_watch_timer;
+    bool rebind_pending = false;
+    int accept_failures = 0;
+    ino_t bound_ino = 0;
+    dev_t bound_dev = 0;
 #endif
 
     std::thread io_thread;
@@ -491,31 +664,16 @@ void RpcServer::start() {
         }
     });
 #else
-    // Unlink any stale socket file from a previous run.
-    if (::unlink(impl_->socket_path.c_str()) != 0 && errno != ENOENT) {
-        LOG_WARN("rpc: unlink('%s') failed: %s",
-                 impl_->socket_path.c_str(), std::strerror(errno));
-    }
+    impl_->rebind_pending = false;
+    impl_->accept_failures = 0;
 
-    using stream_protocol = asio::local::stream_protocol;
-    stream_protocol::endpoint ep(impl_->socket_path);
-
-    std::error_code ec;
-    impl_->acceptor.open(ep.protocol(), ec);
+    std::error_code ec = impl_->bind_listener();
     if (ec) {
-        throw std::system_error(ec, "rpc: acceptor.open");
-    }
-    impl_->acceptor.bind(ep, ec);
-    if (ec) {
-        throw std::system_error(ec,
-            "rpc: bind(" + impl_->socket_path + ")");
-    }
-    impl_->acceptor.listen(asio::socket_base::max_listen_connections, ec);
-    if (ec) {
-        throw std::system_error(ec, "rpc: listen");
+        throw std::system_error(ec, "rpc: bind(" + impl_->socket_path + ")");
     }
 
     impl_->do_accept();
+    impl_->watch_listener_path();
     impl_->running.store(true);
 
     impl_->io_context.restart();
@@ -568,6 +726,8 @@ void RpcServer::stop() {
 #else
     // Cancel pending accepts / reads, then join.
     std::error_code ignore;
+    impl_->accept_retry_timer.cancel();
+    impl_->path_watch_timer.cancel();
     impl_->acceptor.close(ignore);
     impl_->io_context.stop();
 
@@ -581,17 +741,10 @@ void RpcServer::stop() {
     }
 #endif
 
-    // Drain any still-queued requests by completing their promises with
-    // an empty response so blocked I/O-thread callbacks don't deadlock.
+    // Requests that were queued but never dispatched are dropped.  Nothing
+    // waits on them: the sessions they belonged to hold no thread.
     {
         std::lock_guard<std::mutex> lk(impl_->queue_mu);
-        for (auto& p : impl_->queue) {
-            try {
-                p->result.set_value(std::string{});
-            } catch (...) {
-                // Promise might already be satisfied.
-            }
-        }
         impl_->queue.clear();
     }
 
@@ -608,11 +761,7 @@ std::size_t RpcServer::drain() {
     for (auto& pending : batch) {
         std::string response =
             impl_->dispatcher.handle_request(pending->request_json);
-        try {
-            pending->result.set_value(std::move(response));
-        } catch (const std::future_error& ex) {
-            LOG_WARN("rpc: promise.set_value failed: %s", ex.what());
-        }
+        pending->deliver(std::move(response));
     }
     return batch.size();
 }
