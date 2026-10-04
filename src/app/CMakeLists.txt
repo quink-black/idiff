@@ -24,7 +24,11 @@ add_executable(idiff
 # JSON-RPC server.  IDIFF_HAVE_RPC is set in the top-level CMakeLists.txt.
 if(IDIFF_HAVE_RPC)
     add_subdirectory(rpc)
-    target_sources(idiff PRIVATE app_rpc_methods.cpp rpc_params.cpp)
+    target_sources(idiff PRIVATE
+        app_rpc_methods.cpp
+        rpc_params.cpp
+        rpc_queries.cpp
+    )
 endif()
 
 if(APPLE)
