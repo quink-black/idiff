@@ -7,11 +7,13 @@ The idiff GUI ships a JSON-RPC 2.0 server bound to:
 This module provides:
 
   * `discover_instances()` -- list every live transport path
+  * `probe_socket()`       -- identify the idiff behind one path
+  * `socket_path_for_pid()`-- the transport path a given idiff binds
   * `IdiffClient`          -- a synchronous request/response client
                               (4-byte BE length prefix + UTF-8 JSON)
 
-The MCP server uses these primitives.  They have no MCP dependency
-themselves so they can also be used from ad-hoc scripts.
+idiffctl and the MCP server use these primitives.  The module depends
+on the standard library only, so ad-hoc scripts can use it too.
 """
 from __future__ import annotations
 
@@ -317,7 +319,14 @@ class IdiffClient:
 # ---------------------------------------------------------------------
 # Discovery
 
-def _probe_socket(path: str, timeout: float = 0.5) -> Optional[Instance]:
+def socket_path_for_pid(pid: int) -> str:
+    """The transport path the idiff process `pid` binds."""
+    if sys.platform == "win32":
+        return f"{WIN_PIPE_PREFIX}{pid}"
+    return SOCKET_GLOB.replace("*", str(pid))
+
+
+def probe_socket(path: str, timeout: float = 0.5) -> Optional[Instance]:
     """Attempt one app.identity round-trip.
 
     Returns an Instance on success.  Returns None for any kind of
@@ -414,7 +423,7 @@ def discover_instances() -> list[Instance]:
         paths = sorted(glob.glob(SOCKET_GLOB))
 
     for path in sorted(paths):
-        inst = _probe_socket(path)
+        inst = probe_socket(path)
         if inst is not None:
             out.append(inst)
     out.sort(key=lambda i: i.pid)

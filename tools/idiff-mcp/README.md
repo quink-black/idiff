@@ -56,8 +56,9 @@ multi-instance prompt and refuses to fall back to any other window.
 
 ## Implementation notes
 
-- `idiff_client.py` holds the raw RPC client and discovery logic.
-  Stand-alone -- no MCP dependency. Reusable from ad-hoc scripts.
+- `../idiffctl/idiff_client.py` holds the raw RPC client and discovery
+  logic, shared with the `idiffctl` command-line client. Stand-alone --
+  no MCP dependency. Reusable from ad-hoc scripts.
 - `idiff_mcp_server.py` is the MCP shim. Each MCP tool maps 1-to-1 to
   one idiff RPC method, with friendlier names and inline schemas so
   the agent picks the right one.

@@ -103,6 +103,21 @@ catch_discover_tests(idiff_tests
     PROPERTIES ${_test_properties}
 )
 
+# tools/idiffctl is the Python command-line client of the RPC server; its
+# tests run it against fake servers on Unix sockets.
+if(IDIFF_HAVE_RPC AND NOT WIN32)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME idiffctl
+            COMMAND ${Python3_EXECUTABLE} -m unittest test_idiffctl
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/idiffctl
+        )
+        set_tests_properties(idiffctl PROPERTIES
+            ENVIRONMENT PYTHONDONTWRITEBYTECODE=1
+        )
+    endif()
+endif()
+
 # Xcode leaves arm64 binaries unsigned (no ad-hoc signature) when no
 # developer identity is set, so they are killed by the kernel at launch.
 # Sign the test executable right after link so it can run under ctest.
