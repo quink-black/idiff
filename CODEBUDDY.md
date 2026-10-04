@@ -65,12 +65,18 @@ idiff_tests  -> Catch2 test suite
 
 idiff exposes a JSON-RPC 2.0 server (`/tmp/idiff-<pid>.sock` on POSIX,
 `\\.\pipe\idiff-<pid>` on Windows) so
-external clients (CLI, AI agents, the bundled MCP shim in
-`tools/idiff-mcp/`) can drive the same `App` state the GUI does.
+external clients can drive the same `App` state the GUI does. The
+bundled clients for AI agents:
+
+- `tools/idiffctl/` -- standard-library Python CLI, the primary channel;
+  its `SKILL.md` is the agent skill that teaches its use.
+- `tools/idiff-mcp/` -- MCP shim for hosts that only speak MCP; kept in
+  step with the RPC methods and not extended beyond that.
+
 **Read `docs/rpc-design.md` before touching anything under `src/app/rpc/`,
-`src/app/app_rpc_methods.cpp`, or `tools/idiff-mcp/`.** That document
-covers the paradigm, threading model, current status, and the
-Phase 2 (Windows) handoff.
+`src/app/app_rpc_methods.cpp`, `src/app/rpc_params.*`,
+`src/app/rpc_queries.*`, `tools/idiffctl/`, or `tools/idiff-mcp/`.** That document covers the paradigm, threading
+model, method reference, agent channels, and current status.
 
 ### Domain/UI Separation
 
@@ -115,6 +121,8 @@ File path / URL
 Catch2 v3 with `catch_discover_tests()`. Tests live in `tests/` and mirror the source structure. Integration tests exercise `AppController` with mock `ITextureUploader` and `IStatusReporter`.
 
 Some app-layer source files (controller, IO adapters) are compiled directly into the test executable rather than linked as a library — see `tests/CMakeLists.txt`.
+
+The `idiffctl` ctest entry runs `tools/idiffctl/test_idiffctl.py` (Python 3 unittest against fake RPC servers; POSIX only, registered when a Python 3 interpreter is found).
 
 ## Platform Notes
 

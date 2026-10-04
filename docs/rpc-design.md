@@ -2,9 +2,10 @@
 
 > **Audience:** future contributors and AI agents resuming this work,
 > potentially on a different machine (notably Windows).
-> **Last updated:** 2026-08-15, synced with release 0.4.0 at the RPC
-> layer (GroupMode, `view.set_group_mode`, local-first URL resolution;
-> Phase 1 + 2 complete, Phase 4 partially done).
+> **Last updated:** 2026-10-04: entry references by path,
+> `metrics.compare` / `pixel.sample`, the `idiffctl` CLI and agent skill
+> as the primary agent channel, MCP shim in maintenance mode (Phase 1 + 2
+> complete, Phase 4 partially done).
 
 This document is the load-bearing reference for the RPC subsystem.
 When you (human or agent) sit down to continue this work — especially

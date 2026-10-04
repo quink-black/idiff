@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **idiffctl command-line client**: `tools/idiffctl/idiffctl.py` drives
+  a running idiff window from a shell. Each command prints one JSON
+  document and each class of failure has its own exit status, so
+  scripts and AI agents can act on the result without parsing text.
+  `open` loads files into the running window or starts idiff when none
+  is running, and `call` reaches any RPC method. It needs only Python 3
+  and its standard library.
+- **Agent skill**: `tools/idiffctl/SKILL.md` teaches coding agents that
+  load `SKILL.md` skills, such as CodeBuddy and pi, when and how to use
+  idiffctl. Install it by symlinking `tools/idiffctl/` into the agent's
+  skill directory.
+- **Image metrics and pixel values over RPC**: `metrics.compare`
+  returns PSNR / SSIM / MSE of entries against the reference, matching
+  the Metrics panel, and `pixel.sample` returns pixel values at a
+  native coordinate, matching the Pixel panel. Clients no longer need
+  a screenshot to judge a difference.
+- **Entries addressed by path**: RPC methods that act on one entry
+  accept its path as well as its index, and `selection.set` accepts
+  paths. Indices shift on every load and remove; paths do not.
+- **MCP tools** `set_group_mode`, `metrics_compare` and `pixel_sample`,
+  and path arguments for the per-entry tools.
+
+### Changed
+
+- **MCP shim in maintenance mode**: idiffctl and its skill are the
+  recommended channel for agents that can run shell commands. The MCP
+  shim stays for MCP-only hosts and follows the RPC methods.
+- **idiff_client.py moved** from `tools/idiff-mcp/` to
+  `tools/idiffctl/`; the MCP shim imports it from there, so existing
+  MCP configurations keep working.
+
+### Fixed
+
+- **MCP tool failures are reported as errors**: a failed call (no
+  instance, ambiguous instance, rejected parameter, lost connection)
+  used to come back as an ordinary result. It now carries `isError`.
+
 ## [0.4.1] - 2026-09-20
 
 ### Added
