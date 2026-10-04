@@ -28,10 +28,18 @@ Tool surface (mirrors idiff RPC, with friendlier names)
   remove_image               -- delete an entry from the library
   set_selection              -- replace the selection
   set_view_mode              -- split | overlay | difference, optional slider
-  set_group_by_name          -- toggle the image-list Group-by-Name mode
+  set_group_mode             -- none | by_name | by_folder image-list grouping
+  set_group_by_name          -- older boolean form of set_group_mode
   screenshot                 -- compose what the viewport currently shows to a file
   list_comparisons           -- enumerate file/config comparisons in the library
   set_comparison_reference   -- record a per-comparison reference path
+  metrics_compare            -- PSNR / SSIM / MSE against the reference
+  pixel_sample               -- pixel values at a native coordinate
+  ... and the view, selection, timeline and loader tools listed below.
+
+Entries are addressed by index or path.  tools/idiffctl offers the same
+operations as a command-line client and is the lighter choice for agents
+that can run shell commands.
 """
 from __future__ import annotations
 
@@ -158,6 +166,27 @@ def _ok(value: Any) -> list[TextContent]:
 # ---------------------------------------------------------------------
 # Tool listing
 
+# An entry is named by `index` or by `path`; idiff rejects a call that
+# gives both or neither.
+_ENTRY_PROPS = {
+    "index": {"type": "integer", "minimum": 0,
+              "description": "Entry index from get_state"},
+    "path": {"type": "string",
+             "description": "Entry path; preferred, indices shift on "
+                            "load / remove"},
+}
+_ENTRY_REF = {"type": ["integer", "string"],
+              "description": "Entry index or path"}
+
+
+def _entry_params(arguments: dict[str, Any]) -> dict:
+    out = {}
+    if "index" in arguments:
+        out["index"] = int(arguments["index"])
+    if "path" in arguments:
+        out["path"] = str(arguments["path"])
+    return out
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
@@ -210,21 +239,14 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="set_reference",
             description=(
-                "Mark the entry at the given index as the comparison "
+                "Mark an entry (by index or path) as the comparison "
                 "reference ('A' side). Adds it to the selection if not "
-                "already there. Indices come from get_state.entries[].index. "
-                "Also records the choice in the per-comparison "
+                "already there. Also records the choice in the per-comparison "
                 "reference map (keyed by the entry's comparison) so "
                 "switching away and back to that comparison keeps "
                 "this reference."
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "minimum": 0},
-                },
-                "required": ["index"],
-            },
+            inputSchema={"type": "object", "properties": _ENTRY_PROPS},
         ),
         Tool(
             name="list_comparisons",
@@ -285,37 +307,32 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="remove_image",
             description=(
-                "Remove the entry at the given index from the library. "
-                "Patches the selection automatically. Indices come from "
-                "get_state.entries[].index. After removal, indices of "
-                "later entries shift down by one -- always re-call "
-                "get_state before issuing more index-based calls."
+                "Remove an entry (by index or path) from the library. "
+                "Patches the selection automatically. After removal, "
+                "indices of later entries shift down by one -- address "
+                "entries by path, or re-call get_state before issuing "
+                "more index-based calls."
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "minimum": 0},
-                },
-                "required": ["index"],
-            },
+            inputSchema={"type": "object", "properties": _ENTRY_PROPS},
         ),
         Tool(
             name="set_selection",
             description=(
-                "Replace the current selection with the given indices. "
-                "Empty list clears the selection. Indices must all be "
-                "in range -- the call is rejected up front rather than "
-                "applied partially."
+                "Replace the current selection with the given entries "
+                "(indices or paths). Empty list clears the selection. "
+                "Every entry must resolve -- the call is rejected up "
+                "front rather than applied partially."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "entries": {"type": "array", "items": _ENTRY_REF},
                     "indices": {
                         "type": "array",
                         "items": {"type": "integer", "minimum": 0},
+                        "description": "Older form of entries",
                     },
                 },
-                "required": ["indices"],
             },
         ),
         Tool(
@@ -345,9 +362,30 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="set_group_mode",
+            description=(
+                "Set the image-list grouping mode. 'by_name' groups "
+                "images that share a filename stem, 'by_folder' groups "
+                "by parent directory, 'none' disables grouping. While "
+                "grouping is on, set_selection rejects a selection that "
+                "spans more than one group -- the invariant the GUI "
+                "enforces. get_state reports it as 'group_mode'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string",
+                             "enum": ["none", "by_name", "by_folder"]},
+                },
+                "required": ["mode"],
+            },
+        ),
+        Tool(
             name="set_group_by_name",
             description=(
-                "Toggle the image-list 'Group by Name' mode. When on "
+                "Older form of set_group_mode limited to 'by_name' "
+                "and 'none'. Toggle the image-list 'Group by Name' "
+                "mode. When on "
                 "(the default), images sharing a filename stem form a "
                 "single comparison, and set_selection rejects any "
                 "selection that spans more than one comparison -- the "
@@ -444,19 +482,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="select_group",
             description=(
-                "Select all entries that share the same filename-stem "
-                "group as the entry at `index`. Use this instead of "
+                "Select all entries that share the same group as the "
+                "given entry (by index or path). Use this instead of "
                 "set_selection when the user wants 'compare all images "
                 "with this name'. Returns whether the selection changed "
                 "and the new set of indices."
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "minimum": 0},
-                },
-                "required": ["index"],
-            },
+            inputSchema={"type": "object", "properties": _ENTRY_PROPS},
         ),
         Tool(
             name="select_range",
@@ -543,7 +575,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="set_frame_offset",
             description=(
-                "Set a per-entry frame offset for one entry. The "
+                "Set a per-entry frame offset for one entry (by index "
+                "or path). The "
                 "effective frame for entry N becomes timeline_frame "
                 "+ frame_offset[N], clamped to the entry's own range. "
                 "Use this to align multi-frame streams that start at "
@@ -552,17 +585,13 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "index": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Entry index from get_state",
-                    },
+                    **_ENTRY_PROPS,
                     "offset": {
                         "type": "integer",
                         "description": "Frame offset (can be negative)",
                     },
                 },
-                "required": ["index", "offset"],
+                "required": ["offset"],
             },
         ),
         Tool(
@@ -595,6 +624,44 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["backend"],
+            },
+        ),
+        Tool(
+            name="metrics_compare",
+            description=(
+                "PSNR, SSIM and MSE of each target against a reference, "
+                "computed on the images the GUI Metrics panel measures. "
+                "Defaults: the current reference, and the rest of the "
+                "selection. Prefer this to a screenshot for judging how "
+                "different images are. Images of another size or pixel "
+                "format get an 'error' in their result; psnr is null "
+                "and identical is true for identical images."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ref": _ENTRY_REF,
+                    "targets": {"type": "array", "items": _ENTRY_REF},
+                },
+            },
+        ),
+        Tool(
+            name="pixel_sample",
+            description=(
+                "Pixel values at native coordinate (x, y) of each entry, "
+                "as the GUI Pixel panel reads them (source bit depth for "
+                "video). Default entries: the reference, then the rest "
+                "of the selection. A coordinate outside an image gets an "
+                "'error' in that image's result."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "entries": {"type": "array", "items": _ENTRY_REF},
+                },
+                "required": ["x", "y"],
             },
         ),
     ]
@@ -640,7 +707,7 @@ async def call_tool(
 
     if name == "set_reference":
         return _ok(_call(instance, "library.set_reference",
-                         {"index": int(arguments["index"])}))
+                         _entry_params(arguments)))
 
     if name == "list_comparisons":
         return _ok(_call(instance, "library.list_comparisons"))
@@ -652,11 +719,13 @@ async def call_tool(
 
     if name == "remove_image":
         return _ok(_call(instance, "library.remove",
-                         {"index": int(arguments["index"])}))
+                         _entry_params(arguments)))
 
     if name == "set_selection":
-        indices = arguments.get("indices") or []
-        indices = [int(i) for i in indices]
+        if "entries" in arguments:
+            return _ok(_call(instance, "selection.set",
+                             {"entries": list(arguments["entries"])}))
+        indices = [int(i) for i in arguments.get("indices") or []]
         return _ok(_call(instance, "selection.set",
                          {"indices": indices}))
 
@@ -665,6 +734,10 @@ async def call_tool(
         if "slider" in arguments:
             params["slider"] = float(arguments["slider"])
         return _ok(_call(instance, "view.set_mode", params))
+
+    if name == "set_group_mode":
+        return _ok(_call(instance, "view.set_group_mode",
+                         {"mode": str(arguments["mode"])}))
 
     if name == "set_group_by_name":
         return _ok(_call(instance, "view.set_group_by_name",
@@ -694,7 +767,7 @@ async def call_tool(
 
     if name == "select_group":
         return _ok(_call(instance, "selection.select_group",
-                         {"index": int(arguments["index"])}))
+                         _entry_params(arguments)))
 
     if name == "select_range":
         return _ok(_call(instance, "selection.select_range",
@@ -715,7 +788,7 @@ async def call_tool(
 
     if name == "set_frame_offset":
         return _ok(_call(instance, "timeline.set_frame_offset",
-                         {"index": int(arguments["index"]),
+                         {**_entry_params(arguments),
                           "offset": int(arguments["offset"])}))
 
     if name == "reload_all":
@@ -724,6 +797,17 @@ async def call_tool(
     if name == "set_loader_backend":
         return _ok(_call(instance, "library.set_loader_backend",
                          {"backend": str(arguments["backend"])}))
+
+    if name == "metrics_compare":
+        params = {k: arguments[k] for k in ("ref", "targets")
+                  if k in arguments}
+        return _ok(_call(instance, "metrics.compare", params))
+
+    if name == "pixel_sample":
+        params = {"x": int(arguments["x"]), "y": int(arguments["y"])}
+        if "entries" in arguments:
+            params["entries"] = list(arguments["entries"])
+        return _ok(_call(instance, "pixel.sample", params))
 
     raise ToolError(f"unknown tool: {name}")
 
