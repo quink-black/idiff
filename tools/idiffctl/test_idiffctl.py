@@ -201,6 +201,17 @@ class IdiffctlTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(second.calls), 3)
 
+    def test_slow_instance_still_counts(self):
+        # An idle idiff answers only after its event-loop wait.
+        slow = self.server(900001)
+        identity = slow.handlers["app.identity"]
+        slow.handlers["app.identity"] = (
+            lambda p: time.sleep(0.7) or identity(p))
+        self.server(900002)
+        code, _, err = self.run_cli("state")
+        self.assertEqual(code, idiffctl.EXIT_AMBIGUOUS)
+        self.assertIn("900001", err)
+
     def test_unknown_pid_exits_4(self):
         self.server(900001)
         code, _, err = self.run_cli("--pid", "123", "state")

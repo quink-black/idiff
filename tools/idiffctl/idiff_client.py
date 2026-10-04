@@ -23,6 +23,7 @@ import socket
 import struct
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -37,6 +38,11 @@ MAX_FRAME_BYTES = 64 * 1024 * 1024
 # moment for HEIF / large RAW.  10 s gives generous headroom without
 # letting a stuck call hang the agent indefinitely.
 DEFAULT_TIMEOUT_S = 10.0
+
+# An idle idiff window serves requests only between event-loop waits of
+# up to 500 ms, so a discovery probe needs well over that to tell a live
+# window from a dead one.
+PROBE_TIMEOUT_S = 2.0
 
 SOCKET_GLOB = "/tmp/idiff-*.sock"
 WIN_PIPE_PREFIX = r"\\.\pipe\idiff-"
@@ -326,7 +332,8 @@ def socket_path_for_pid(pid: int) -> str:
     return SOCKET_GLOB.replace("*", str(pid))
 
 
-def probe_socket(path: str, timeout: float = 0.5) -> Optional[Instance]:
+def probe_socket(path: str,
+                 timeout: float = PROBE_TIMEOUT_S) -> Optional[Instance]:
     """Attempt one app.identity round-trip.
 
     Returns an Instance on success.  Returns None for any kind of
@@ -412,20 +419,20 @@ def discover_instances() -> list[Instance]:
     Windows: enumerates ``\\\\.\\pipe\\idiff-*``
     Probes each with app.identity, drops the ones that don't answer or
     that don't identify as 'idiff'.  Sorted by pid for stable output.
-    Empty list when nothing is running.
+    Empty list when nothing is running.  Probes run concurrently, so the
+    call takes as long as the slowest probe rather than their sum.
     """
-    out: list[Instance] = []
-
     if sys.platform == "win32":
         paths = _enumerate_pipes_win32()
     else:
         import glob
-        paths = sorted(glob.glob(SOCKET_GLOB))
+        paths = glob.glob(SOCKET_GLOB)
+    if not paths:
+        return []
 
-    for path in sorted(paths):
-        inst = probe_socket(path)
-        if inst is not None:
-            out.append(inst)
+    with ThreadPoolExecutor(max_workers=min(16, len(paths))) as pool:
+        found = pool.map(probe_socket, sorted(paths))
+    out = [i for i in found if i is not None]
     out.sort(key=lambda i: i.pid)
     return out
 
