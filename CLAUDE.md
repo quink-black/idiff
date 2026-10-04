@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/claude) when working with 
 
 ## Project Overview
 
-**idiff** is a cross-platform C++17 media comparison tool. It provides split view, A/B overlay, and pixel-level difference heatmap modes with quality metrics (PSNR, SSIM, MSE), plus multi-frame video/timeline support (FFmpeg), channel inspection, pixel inspection, measurement tools, and comparison-group management. It is driven by both the GUI and an external JSON-RPC 2.0 / MCP channel ("single-state, multi-channel"). Built with SDL2 + Dear ImGui; OpenCV for image processing, FFmpeg for video/HEIF/AVIF, ImageMagick and LibRaw as optional backends.
+**idiff** is a cross-platform C++17 media comparison tool. It provides split view, A/B overlay, and pixel-level difference heatmap modes with quality metrics (PSNR, SSIM, MSE), plus multi-frame video/timeline support (FFmpeg), channel inspection, pixel inspection, measurement tools, and comparison-group management. It is driven by both the GUI and an external JSON-RPC 2.0 channel ("single-state, multi-channel"), reached by AI agents through the `idiffctl` CLI or the MCP shim. Built with SDL2 + Dear ImGui; OpenCV for image processing, FFmpeg for video/HEIF/AVIF, ImageMagick and LibRaw as optional backends.
 
 ## Build Commands
 
@@ -48,7 +48,7 @@ cd build && ctest --output-on-failure
 ./build/tests/idiff_tests --list-tests
 ```
 
-Test framework is Catch2 v3. Tests live in `tests/` and mirror the source structure. Some app-layer files are compiled directly into the test executable rather than linked as a library (see `tests/CMakeLists.txt`). Video decoder tests are only compiled when FFmpeg is available; the `ffmpeg` CLI generates the video fixtures at build time, and the tests skip at runtime if it is absent. `idiff_smoke_launch` runs the real binary headless with `--smoke`.
+Test framework is Catch2 v3. Tests live in `tests/` and mirror the source structure. Some app-layer files are compiled directly into the test executable rather than linked as a library (see `tests/CMakeLists.txt`). Video decoder tests are only compiled when FFmpeg is available; the `ffmpeg` CLI generates the video fixtures at build time, and the tests skip at runtime if it is absent. `idiff_smoke_launch` runs the real binary headless with `--smoke`. The `idiffctl` ctest entry runs `tools/idiffctl/test_idiffctl.py` against fake RPC servers (POSIX, needs Python 3).
 
 ## Architecture
 
@@ -78,7 +78,7 @@ idiff (exe)   App, AppController, Viewport, ImGui panels, RPC method
 - **MediaSource abstraction**: `ImageFileSource` (stills), `YuvRawSource` (raw YUV), and `VideoFileSource` (video containers, FFmpeg-gated) share a common multi-frame interface.
 - **Lazy diff cache**: `DiffService::mark_dirty()` invalidates; recomputes on `update()`. `LazyLoadCache` (LRU) keeps deselected pixels resident instead of decoding everything at load time.
 - **URL cache**: Downloads via system `curl`, caches to disk, background-prefetches adjacent groups; resolves already-unpacked local files before downloading.
-- **Single-state, multi-channel**: GUI and the JSON-RPC server mutate the same `AppController` state; RPC handlers run on the main thread via `RpcServer::drain()` each frame. Read `docs/rpc-design.md` before touching `src/app/rpc/` or `tools/idiff-mcp/`; its section 5 documents the MCP tool surface.
+- **Single-state, multi-channel**: GUI and the JSON-RPC server mutate the same `AppController` state; RPC handlers run on the main thread via `RpcServer::drain()` each frame. Agents use `tools/idiffctl/` (standard-library Python CLI; its `SKILL.md` is the agent skill) as the primary channel; `tools/idiff-mcp/` is an MCP shim kept in step with the RPC methods for MCP-only hosts. Read `docs/rpc-design.md` before touching `src/app/rpc/`, `src/app/app_rpc_methods.cpp`, `src/app/rpc_params.*`, `src/app/rpc_queries.*`, `tools/idiffctl/` or `tools/idiff-mcp/`; section 4 is the method reference, section 5 the MCP tool surface, and section 6 the agent channels.
 
 ## Code Conventions
 
@@ -99,7 +99,8 @@ idiff (exe)   App, AppController, Viewport, ImGui panels, RPC method
 ## Related Documentation
 
 - `CODEBUDDY.md` — detailed architecture reference, data flow, and build guide
-- `docs/rpc-design.md` — RPC/MCP paradigm, threading model, method reference, roadmap (read before touching `src/app/rpc/`)
+- `docs/rpc-design.md` — RPC paradigm, threading model, method reference, agent channels (idiffctl, MCP), roadmap (read before touching `src/app/rpc/`)
+- `tools/idiffctl/README.md` — idiffctl usage, exit statuses, and agent skill installation
 - `CHANGELOG.md` — release history
 
 ## Known Technical Debt
