@@ -116,18 +116,19 @@ def _ambiguous_error(instances: list[Instance], pinned: Optional[int]) -> str:
     )
 
 
-def _resolve() -> tuple[Optional[Instance], Optional[str], list[Instance]]:
-    """Pick the target instance, or return an error message.
+class ToolError(Exception):
+    """A tool call that failed.  The MCP SDK turns any exception raised
+    by the call_tool handler into a result with isError=True, so the
+    agent can tell a failed call from a successful one."""
 
-    Returns `(instance, error, all_live)`.  Exactly one of `instance`
-    and `error` is non-None.  `all_live` is always populated (possibly
-    empty) so callers can include it in their response if they want.
-    """
+
+def _resolve() -> Instance:
+    """Pick the target instance; raise ToolError when it is ambiguous."""
     pinned = _pin_pid()
     instance, all_live = select_instance(pinned)
     if instance is None:
-        return None, _ambiguous_error(all_live, pinned), all_live
-    return instance, None, all_live
+        raise ToolError(_ambiguous_error(all_live, pinned))
+    return instance
 
 
 def _call(instance: Instance, method: str, params: Optional[dict] = None):
@@ -136,23 +137,17 @@ def _call(instance: Instance, method: str, params: Optional[dict] = None):
         with IdiffClient(instance.socket_path) as c:
             return c.call(method, params)
     except IdiffConnectionError as ex:
-        raise RuntimeError(
+        raise ToolError(
             f"could not reach {instance}: {ex}") from ex
     except IdiffRpcError as ex:
         # Pass the structured error through so the agent sees the
         # specific code (-32602 InvalidParams etc.) and the message
         # the server attached.
-        raise RuntimeError(f"{ex} (instance: {instance})") from ex
+        raise ToolError(f"{ex} (instance: {instance})") from ex
 
 
 def _ok(value: Any) -> list[TextContent]:
-    """MCP tools return TextContent payloads.  Encode JSON for
-    machine-readability and pretty-print for human-readability."""
-    text = json.dumps(value, indent=2, ensure_ascii=False)
-    return [TextContent(type="text", text=text)]
-
-
-def _error(text: str) -> list[TextContent]:
+    text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return [TextContent(type="text", text=text)]
 
 
@@ -627,113 +622,106 @@ async def call_tool(
             "count": len(instances),
         })
 
-    instance, err, _all = _resolve()
-    if err is not None:
-        return _error(err)
-    assert instance is not None
+    instance = _resolve()
 
-    try:
-        if name == "get_state":
-            return _ok(_call(instance, "state.get"))
+    if name == "get_state":
+        return _ok(_call(instance, "state.get"))
 
-        if name == "load_images":
-            paths = arguments.get("paths") or []
-            if not isinstance(paths, list) or not all(
-                    isinstance(p, str) for p in paths):
-                return _error("'paths' must be a list of strings")
-            return _ok(_call(instance, "library.load", {"paths": paths}))
+    if name == "load_images":
+        paths = arguments.get("paths") or []
+        if not isinstance(paths, list) or not all(
+                isinstance(p, str) for p in paths):
+            raise ToolError("'paths' must be a list of strings")
+        return _ok(_call(instance, "library.load", {"paths": paths}))
 
-        if name == "set_reference":
-            return _ok(_call(instance, "library.set_reference",
-                             {"index": int(arguments["index"])}))
+    if name == "set_reference":
+        return _ok(_call(instance, "library.set_reference",
+                         {"index": int(arguments["index"])}))
 
-        if name == "list_comparisons":
-            return _ok(_call(instance, "library.list_comparisons"))
+    if name == "list_comparisons":
+        return _ok(_call(instance, "library.list_comparisons"))
 
-        if name == "set_comparison_reference":
-            return _ok(_call(instance, "library.set_comparison_reference",
-                             {"key":  str(arguments["key"]),
-                              "path": str(arguments.get("path", ""))}))
+    if name == "set_comparison_reference":
+        return _ok(_call(instance, "library.set_comparison_reference",
+                         {"key":  str(arguments["key"]),
+                          "path": str(arguments.get("path", ""))}))
 
-        if name == "remove_image":
-            return _ok(_call(instance, "library.remove",
-                             {"index": int(arguments["index"])}))
+    if name == "remove_image":
+        return _ok(_call(instance, "library.remove",
+                         {"index": int(arguments["index"])}))
 
-        if name == "set_selection":
-            indices = arguments.get("indices") or []
-            indices = [int(i) for i in indices]
-            return _ok(_call(instance, "selection.set",
-                             {"indices": indices}))
+    if name == "set_selection":
+        indices = arguments.get("indices") or []
+        indices = [int(i) for i in indices]
+        return _ok(_call(instance, "selection.set",
+                         {"indices": indices}))
 
-        if name == "set_view_mode":
-            params = {"mode": arguments["mode"]}
-            if "slider" in arguments:
-                params["slider"] = float(arguments["slider"])
-            return _ok(_call(instance, "view.set_mode", params))
+    if name == "set_view_mode":
+        params = {"mode": arguments["mode"]}
+        if "slider" in arguments:
+            params["slider"] = float(arguments["slider"])
+        return _ok(_call(instance, "view.set_mode", params))
 
-        if name == "set_group_by_name":
-            return _ok(_call(instance, "view.set_group_by_name",
-                             {"enabled": bool(arguments["enabled"])}))
+    if name == "set_group_by_name":
+        return _ok(_call(instance, "view.set_group_by_name",
+                         {"enabled": bool(arguments["enabled"])}))
 
-        if name == "screenshot":
-            params = {"path": arguments["path"]}
-            if "mode" in arguments:
-                params["mode"] = arguments["mode"]
-            if "slider" in arguments:
-                params["slider"] = float(arguments["slider"])
-            return _ok(_call(instance, "view.screenshot", params))
+    if name == "screenshot":
+        params = {"path": arguments["path"]}
+        if "mode" in arguments:
+            params["mode"] = arguments["mode"]
+        if "slider" in arguments:
+            params["slider"] = float(arguments["slider"])
+        return _ok(_call(instance, "view.screenshot", params))
 
-        if name == "set_zoom_pan":
-            params = {}
-            if "zoom" in arguments:
-                params["zoom"] = float(arguments["zoom"])
-            if "pan_x" in arguments:
-                params["pan_x"] = float(arguments["pan_x"])
-            if "pan_y" in arguments:
-                params["pan_y"] = float(arguments["pan_y"])
-            return _ok(_call(instance, "view.set_zoom_pan", params))
+    if name == "set_zoom_pan":
+        params = {}
+        if "zoom" in arguments:
+            params["zoom"] = float(arguments["zoom"])
+        if "pan_x" in arguments:
+            params["pan_x"] = float(arguments["pan_x"])
+        if "pan_y" in arguments:
+            params["pan_y"] = float(arguments["pan_y"])
+        return _ok(_call(instance, "view.set_zoom_pan", params))
 
-        if name == "set_channel_view":
-            return _ok(_call(instance, "view.set_channel",
-                             {"channel": str(arguments["channel"])}))
+    if name == "set_channel_view":
+        return _ok(_call(instance, "view.set_channel",
+                         {"channel": str(arguments["channel"])}))
 
-        if name == "select_group":
-            return _ok(_call(instance, "selection.select_group",
-                             {"index": int(arguments["index"])}))
+    if name == "select_group":
+        return _ok(_call(instance, "selection.select_group",
+                         {"index": int(arguments["index"])}))
 
-        if name == "select_range":
-            return _ok(_call(instance, "selection.select_range",
-                             {"from": int(arguments["from"]),
-                              "to": int(arguments["to"])}))
+    if name == "select_range":
+        return _ok(_call(instance, "selection.select_range",
+                         {"from": int(arguments["from"]),
+                          "to": int(arguments["to"])}))
 
-        if name == "load_comparison_config":
-            return _ok(_call(instance, "comparison_config.load",
-                             {"path": str(arguments["path"])}))
+    if name == "load_comparison_config":
+        return _ok(_call(instance, "comparison_config.load",
+                         {"path": str(arguments["path"])}))
 
-        if name == "switch_comparison_group":
-            return _ok(_call(instance, "comparison_config.switch_group",
-                             {"group_index": int(arguments["group_index"])}))
+    if name == "switch_comparison_group":
+        return _ok(_call(instance, "comparison_config.switch_group",
+                         {"group_index": int(arguments["group_index"])}))
 
-        if name == "set_timeline_frame":
-            return _ok(_call(instance, "timeline.set_frame",
-                             {"frame": int(arguments["frame"])}))
+    if name == "set_timeline_frame":
+        return _ok(_call(instance, "timeline.set_frame",
+                         {"frame": int(arguments["frame"])}))
 
-        if name == "set_frame_offset":
-            return _ok(_call(instance, "timeline.set_frame_offset",
-                             {"index": int(arguments["index"]),
-                              "offset": int(arguments["offset"])}))
+    if name == "set_frame_offset":
+        return _ok(_call(instance, "timeline.set_frame_offset",
+                         {"index": int(arguments["index"]),
+                          "offset": int(arguments["offset"])}))
 
-        if name == "reload_all":
-            return _ok(_call(instance, "library.reload_all"))
+    if name == "reload_all":
+        return _ok(_call(instance, "library.reload_all"))
 
-        if name == "set_loader_backend":
-            return _ok(_call(instance, "library.set_loader_backend",
-                             {"backend": str(arguments["backend"])}))
+    if name == "set_loader_backend":
+        return _ok(_call(instance, "library.set_loader_backend",
+                         {"backend": str(arguments["backend"])}))
 
-        return _error(f"unknown tool: {name}")
-
-    except RuntimeError as ex:
-        return _error(str(ex))
+    raise ToolError(f"unknown tool: {name}")
 
 
 # ---------------------------------------------------------------------
