@@ -158,7 +158,9 @@ Two motivating user scenarios (the original "why"):
 | `tests/test_rpc_params.cpp` | Entry references: index, verbatim and same-file paths, shared path, missing path, field exclusivity. |
 | `tests/test_rpc_queries.cpp` | Metric JSON (identical images, known MSE, size mismatch) and pixel samples (8-bit, 16-bit, out of bounds). |
 | `tests/test_socket_paths.cpp` | Sweep tests: which `/tmp/idiff-*.sock` files get removed and which are left alone (POSIX). |
-| `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
+| `tools/idiffctl/idiff_client.py` | Python client + discovery (standard library only). Shared by idiffctl and the MCP shim. |
+| `tools/idiffctl/idiffctl.py` | Command-line client: one JSON document per command, exit status per failure class. |
+| `tools/idiffctl/test_idiffctl.py` | idiffctl against fake servers on Unix sockets; registered with ctest as `idiffctl`. |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
 | `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
@@ -394,7 +396,7 @@ Windows the RPC tests should also pass now.
 4. `src/app/rpc/socket_paths.{h,cpp}` — POSIX path/label/sweep.
 5. `src/app/rpc/socket_paths_win32.cpp` — Windows named-pipe path/label/enumeration.
 6. `src/app/app_rpc_methods.cpp` — the public API surface.
-7. `tools/idiff-mcp/idiff_client.py` — Python client (UDS + named pipe).
+7. `tools/idiffctl/idiff_client.py` — Python client (UDS + named pipe).
 
 ### 3. Verify the live wire still works
 
