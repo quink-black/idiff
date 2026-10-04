@@ -53,8 +53,21 @@ dedicated command are still reachable.
 | 4 | several instances are running and none was chosen, or the chosen pid is not running |
 | 5 | connection failure or timeout (the request may still have taken effect) |
 
+## Agent skill
+
+[`SKILL.md`](SKILL.md) makes this directory a skill for coding agents
+that load `SKILL.md` skills, such as CodeBuddy and pi. It tells the agent
+when to use idiffctl and how. Install it by symlinking the directory
+into the agent's skill directory, from the repository root:
+
+```bash
+ln -s "$PWD/tools/idiffctl" ~/.codebuddy/skills/idiffctl
+ln -s "$PWD/tools/idiffctl" ~/.pi/agent/skills/idiffctl
+```
+
 ## Files
 
+- `SKILL.md`: the agent skill.
 - `idiff_client.py`: transport, framing and instance discovery. The MCP
   server in `tools/idiff-mcp/` imports it as well.
 - `idiffctl.py`: the command-line interface.
