@@ -237,7 +237,7 @@ def launch(binary: str, paths: list[str], wait: float) -> Instance:
             raise CliError(EXIT_CONNECTION,
                            f"idiff exited with status {proc.returncode} "
                            f"before it answered on {path}")
-        inst = idiff_client.probe_socket(path, timeout=1.0)
+        inst = idiff_client.probe_socket(path)
         if inst is not None:
             return inst
         time.sleep(0.1)
