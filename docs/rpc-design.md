@@ -4,8 +4,7 @@
 > potentially on a different machine (notably Windows).
 > **Last updated:** 2026-08-15, synced with release 0.4.0 at the RPC
 > layer (GroupMode, `view.set_group_mode`, local-first URL resolution;
-> Phase 1 + 2 complete, Phase 4 partially done). The MCP shim does not
-> yet expose `view.set_group_mode`; see section 5.
+> Phase 1 + 2 complete, Phase 4 partially done).
 
 This document is the load-bearing reference for the RPC subsystem.
 When you (human or agent) sit down to continue this work — especially
@@ -162,7 +161,7 @@ Two motivating user scenarios (the original "why"):
 | `tools/idiffctl/idiffctl.py` | Command-line client: one JSON document per command, exit status per failure class. |
 | `tools/idiffctl/test_idiffctl.py` | idiffctl against fake servers on Unix sockets; registered with ctest as `idiffctl`. |
 | `tools/idiffctl/SKILL.md` | Agent skill that teaches coding agents to use idiffctl; the directory is symlinked into the agent's skill directory. |
-| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
+| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim (maintenance mode). 24 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
 | `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
 | `tools/idiff-mcp/README.md` | User-facing setup / usage docs. |
@@ -252,7 +251,9 @@ call as a whole still succeeds.
 ## 5. MCP Tool Reference
 
 Defined in `tools/idiff-mcp/idiff_mcp_server.py`. Each tool is a thin
-shim over one RPC method. The table is the shim's tool surface, not
+shim over one RPC method. A failed call is returned with `isError` set.
+The shim is in maintenance mode: it gains a tool when an RPC method is
+added, and nothing beyond that (see section 6, "Agent channels"). The table is the shim's tool surface, not
 the full RPC method list: `app.identity` is consumed by the discovery
 probe and has no direct tool.
 
@@ -261,32 +262,35 @@ probe and has no direct tool.
 | `list_instances` | `app.list_instances` (and re-runs local discovery) |
 | `get_state` | `state.get` |
 | `load_images` | `library.load` |
-| `set_reference` | `library.set_reference` |
+| `set_reference` | `library.set_reference` (index or path) |
 | `list_comparisons` | `library.list_comparisons` |
 | `set_comparison_reference` | `library.set_comparison_reference` |
-| `remove_image` | `library.remove` |
-| `set_selection` | `selection.set` |
+| `remove_image` | `library.remove` (index or path) |
+| `set_selection` | `selection.set` (`entries` or `indices`) |
 | `set_view_mode` | `view.set_mode` |
-| `set_group_by_name` | `view.set_group_by_name` (deprecated alias; `view.set_group_mode` has no MCP tool, so `by_folder` requires raw RPC) |
+| `set_group_mode` | `view.set_group_mode` |
+| `set_group_by_name` | `view.set_group_by_name` (deprecated alias) |
 | `screenshot` | `view.screenshot` |
 | `set_zoom_pan` | `view.set_zoom_pan` |
 | `set_channel_view` | `view.set_channel` |
-| `select_group` | `selection.select_group` |
+| `select_group` | `selection.select_group` (index or path) |
 | `select_range` | `selection.select_range` |
 | `load_comparison_config` | `comparison_config.load` |
 | `switch_comparison_group` | `comparison_config.switch_group` |
 | `set_timeline_frame` | `timeline.set_frame` |
-| `set_frame_offset` | `timeline.set_frame_offset` |
+| `set_frame_offset` | `timeline.set_frame_offset` (index or path) |
 | `reload_all` | `library.reload_all` |
 | `set_loader_backend` | `library.set_loader_backend` |
+| `metrics_compare` | `metrics.compare` |
+| `pixel_sample` | `pixel.sample` |
 
 ### Discovery / multi-instance behaviour
 
 | State | MCP behaviour |
 |---|---|
 | 1 idiff alive | auto-targets it |
-| 0 alive | tools return "start idiff first" |
-| ≥2 alive (or `IDIFF_PID` points at a non-existent pid) | tools return a structured error listing every live instance with pid + label + socket; the agent should ask the user, then either restart with `IDIFF_PID=<pid>` or use `list_instances` |
+| 0 alive | tools fail with "start idiff first" |
+| ≥2 alive (or `IDIFF_PID` points at a non-existent pid) | tools fail with an error listing every live instance with pid + label + socket; the agent should ask the user, then either restart with `IDIFF_PID=<pid>` or use `list_instances` |
 
 The user pin is `IDIFF_PID=<pid>` in the MCP server's environment.
 The chip in idiff's status bar shows the matching `idiff:<pid>` so
@@ -295,6 +299,25 @@ the user always knows which window the agent is talking to.
 ---
 
 ## 6. Roadmap
+
+### Agent channels
+
+Two clients ship for AI agents. Both are channels onto the same `App`
+state, built on the same `idiff_client.py`:
+
+| Channel | Serves | Cost to the agent |
+|---|---|---|
+| `tools/idiffctl` (with its `SKILL.md`) | agents that run shell commands | a skill description; one shell call per command, one JSON document back |
+| `tools/idiff-mcp` | hosts that only speak MCP | a resident server process with its own venv; every tool schema held in context |
+
+idiffctl is the primary channel. A typical session loads a few images,
+picks a reference, reads metrics and perhaps takes a screenshot; for
+that, the MCP shim's fixed costs outweigh what it adds, and some coding
+agents have no MCP support at all. The shim is in maintenance mode: a
+new RPC method gets a 1:1 tool, and MCP-specific features (resources,
+composite tools, elicitation) are not pursued. A new RPC method is
+reachable from idiffctl at once through `call`; it gets a dedicated
+command when agents use it often.
 
 ### Phase 1 — POSIX RPC + MCP (✅ DONE on `feature/rpc-phase1`)
 
@@ -358,9 +381,7 @@ passing.
 - [x] `metrics.compare` (PSNR, SSIM, MSE against a reference).
 - [x] `pixel.sample`.
 - [ ] `pixel.histogram` and per-image statistics (`MetricsEngine::compute_single`).
-- [ ] MCP tool for `view.set_group_mode` (the shim only exposes the
-      deprecated `set_group_by_name` alias, so `by_folder` is
-      raw-RPC-only today).
+- [x] MCP tool for `view.set_group_mode`.
 - [x] `comparison_config.load` / `comparison_config.switch_group` (shipped in 0.3.1).
 - [x] `timeline.set_frame` / `timeline.set_frame_offset` for video (shipped in 0.3.1).
 
