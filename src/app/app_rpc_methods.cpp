@@ -18,6 +18,10 @@
 //                          slider?: float,
 //                          mode?: "split"|"overlay"|"difference")
 //                            -> { path: string, width: int, height: int }
+//   metrics.compare       (ref?: entry, targets?: [entry])
+//                            -> { ref: {...}, results: [...] }
+//   pixel.sample          (x: int, y: int, entries?: [entry])
+//                            -> { x, y, samples: [...] }
 //
 // All handlers run on the main (GUI) thread because that is where
 // rpc_server_->drain() is called from frame() -- so they may freely
@@ -41,6 +45,7 @@
 
 #include "app/controller.h"
 #include "app/rpc_params.h"
+#include "app/rpc_queries.h"
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/socket_paths.h"
 #include "app/screenshot_composer.h"
@@ -78,6 +83,7 @@ using rpc_params::require_int_field;
 using rpc_params::require_object;
 using rpc_params::require_string_field;
 using rpc_params::resolve_entries;
+using rpc_params::resolve_entry;
 
 namespace {
 
@@ -828,6 +834,129 @@ void App::register_rpc_methods() {
             // Reload images so the change takes effect immediately.
             reload_all_images();
             return json{{"backend", backend}};
+        });
+
+    // --- metrics.compare --------------------------------------------
+    //
+    // PSNR / SSIM / MSE of each target against a reference, measured
+    // on the images the Metrics panel measures (the display copy when
+    // one exists, else the decoded frame) so both channels report the
+    // same numbers.  `ref` defaults to the current reference and
+    // `targets` to the rest of the selection.
+    //
+    // Entries outside the selection are decoded for the call and then
+    // handed to the LRU, which bounds how many stay resident.  The LRU
+    // touch may evict, so it runs only after the last pair: `ref_img`
+    // must stay valid until then.
+    d.register_method("metrics.compare",
+        [this](const json& params) -> json {
+            const json p = params.is_null() ? json::object()
+                                            : require_object(params);
+            auto& entries = entries_view();
+
+            int ref_idx = -1;
+            if (auto it = p.find("ref"); it != p.end()) {
+                ref_idx = resolve_entry(*it, entries, "ref");
+            } else {
+                controller_->get_ref_index(ref_idx);
+                if (ref_idx < 0) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "no reference: select entries or pass ref");
+                }
+            }
+
+            std::vector<int> targets;
+            if (auto it = p.find("targets"); it != p.end()) {
+                targets = resolve_entries(*it, entries, "targets");
+            } else {
+                for (int s : selection_->indices()) {
+                    if (s != ref_idx) targets.push_back(s);
+                }
+            }
+            if (targets.empty()) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "no targets: select at least two entries or pass "
+                    "targets");
+            }
+
+            auto measured = [&entries](int idx) -> const Image* {
+                const auto& e = entries[idx];
+                if (!e.ensure_decoded()) return nullptr;
+                return e.display_image ? e.display_image.get()
+                                       : e.image.get();
+            };
+
+            const Image* ref_img = measured(ref_idx);
+            if (!ref_img) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "ref: entry " + std::to_string(ref_idx) +
+                    " could not be decoded");
+            }
+
+            json results = json::array();
+            for (int t : targets) {
+                json r = {{"index", t}, {"path", entries[t].path}};
+                if (const Image* img = measured(t)) {
+                    r.update(rpc_queries::compare_images(*ref_img, *img));
+                } else {
+                    r["error"] = "entry could not be decoded";
+                }
+                results.push_back(std::move(r));
+            }
+
+            for (int t : targets) controller_->touch_lazy(t);
+            controller_->touch_lazy(ref_idx);
+
+            return json{
+                {"ref", json{{"index", ref_idx},
+                             {"path",  entries[ref_idx].path}}},
+                {"results", std::move(results)},
+            };
+        });
+
+    // --- pixel.sample -----------------------------------------------
+    //
+    // The pixel at native coordinate (x, y) of each entry, read the
+    // way the Pixel panel reads it.  `entries` defaults to the
+    // reference followed by the rest of the selection.  Entries
+    // outside the selection are decoded and handed to the LRU, like
+    // metrics.compare does.
+    d.register_method("pixel.sample",
+        [this](const json& params) -> json {
+            require_object(params);
+            const int x = require_int_field(params, "x");
+            const int y = require_int_field(params, "y");
+            auto& entries = entries_view();
+
+            std::vector<int> targets;
+            if (auto it = params.find("entries"); it != params.end()) {
+                targets = resolve_entries(*it, entries, "entries");
+            } else {
+                int ref_idx = -1;
+                controller_->get_ref_index(ref_idx);
+                if (ref_idx >= 0) targets.push_back(ref_idx);
+                for (int s : selection_->indices()) {
+                    if (s != ref_idx) targets.push_back(s);
+                }
+            }
+            if (targets.empty()) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "no entries: select entries or pass entries");
+            }
+
+            json samples = json::array();
+            for (int t : targets) {
+                const auto& e = entries[t];
+                json sj = {{"index", t}, {"path", e.path}};
+                if (e.ensure_decoded()) {
+                    sj.update(rpc_queries::sample_pixel(*e.image, x, y));
+                } else {
+                    sj["error"] = "entry could not be decoded";
+                }
+                samples.push_back(std::move(sj));
+                controller_->touch_lazy(t);
+            }
+            return json{{"x", x}, {"y", y}, {"samples", std::move(samples)}};
         });
 }
 

@@ -57,8 +57,10 @@ if(IDIFF_HAVE_RPC)
         test_rpc_group_by_name.cpp
         test_rpc_selection.cpp
         test_rpc_params.cpp
+        test_rpc_queries.cpp
         test_socket_paths.cpp
         ${CMAKE_SOURCE_DIR}/src/app/rpc_params.cpp
+        ${CMAKE_SOURCE_DIR}/src/app/rpc_queries.cpp
     )
     target_link_libraries(idiff_tests PRIVATE idiff_rpc)
     target_compile_definitions(idiff_tests PRIVATE IDIFF_HAVE_RPC=1)

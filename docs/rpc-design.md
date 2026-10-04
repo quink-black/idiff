@@ -149,12 +149,14 @@ Two motivating user scenarios (the original "why"):
 | `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. Rebuilds its own listener after an accept error, or once its socket path stops naming its socket. |
 | `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). A path is stale only when nothing answers it *and* its pid no longer exists. |
 | `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
-| `src/app/app_rpc_methods.cpp` | All 23 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
+| `src/app/app_rpc_methods.cpp` | All 25 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/rpc_params.{h,cpp}` | Parameter validation and entry resolution (index or path) shared by the handlers; compiled into the tests directly. |
+| `src/app/rpc_queries.{h,cpp}` | Per-image JSON for `metrics.compare` and `pixel.sample` (MetricsEngine, pixel sampler). |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
 | `tests/test_rpc_server.cpp` | 7 integration tests (platform-abstracted transport client). |
 | `tests/test_rpc_params.cpp` | Entry references: index, verbatim and same-file paths, shared path, missing path, field exclusivity. |
+| `tests/test_rpc_queries.cpp` | Metric JSON (identical images, known MSE, size mismatch) and pixel samples (8-bit, 16-bit, out of bounds). |
 | `tests/test_socket_paths.cpp` | Sweep tests: which `/tmp/idiff-*.sock` files get removed and which are left alone (POSIX). |
 | `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
@@ -219,6 +221,19 @@ Below, *entry* stands for `index:int | path:string`.
 | `comparison_config.switch_group` | `{group_index:int}` | `{entries:int, current_group:int}` |
 | `timeline.set_frame` | `{frame:int}` | `{current_frame:int}` |
 | `timeline.set_frame_offset` | `{entry, offset:int}` | `{index:int, offset:int}` |
+
+### Queries
+
+Both methods decode any entry they read; entries outside the selection
+are then handed to the LRU like any other departed entry. A failure
+that concerns one image (size mismatch, coordinate outside the image,
+decode failure) is reported as `error` in that image's element, and the
+call as a whole still succeeds.
+
+| Method | Params | Result |
+|---|---|---|
+| `metrics.compare` | `{ref?:entry, targets?:[entry]}` — defaults: current reference, rest of the selection | `{ref:{index,path}, results:[{index,path,psnr,ssim,mse,identical} \| {index,path,error}]}` — measured on the image the Metrics panel uses; `psnr` is null when `identical` |
+| `pixel.sample` | `{x:int, y:int, entries?:[entry]}` — native pixel coordinates; default: reference then the rest of the selection | `{x,y,samples:[{index,path,kind,channels,depth,values,text} \| {index,path,error}]}` — `text` matches the Pixel panel |
 
 ### Error policy
 
@@ -337,8 +352,9 @@ passing.
 
 ### Phase 4 — Coverage extension (partially done)
 
-- [ ] `metrics.compute` / `metrics.get` (PSNR, SSIM, MSE).
-- [ ] `pixel.sample` / `pixel.histogram` for batch numerical analysis.
+- [x] `metrics.compare` (PSNR, SSIM, MSE against a reference).
+- [x] `pixel.sample`.
+- [ ] `pixel.histogram` and per-image statistics (`MetricsEngine::compute_single`).
 - [ ] MCP tool for `view.set_group_mode` (the shim only exposes the
       deprecated `set_group_by_name` alias, so `by_folder` is
       raw-RPC-only today).
