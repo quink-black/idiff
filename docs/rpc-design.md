@@ -150,9 +150,11 @@ Two motivating user scenarios (the original "why"):
 | `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). A path is stale only when nothing answers it *and* its pid no longer exists. |
 | `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
 | `src/app/app_rpc_methods.cpp` | All 23 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
+| `src/app/rpc_params.{h,cpp}` | Parameter validation and entry resolution (index or path) shared by the handlers; compiled into the tests directly. |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
 | `tests/test_rpc_dispatcher.cpp` | 17 unit tests covering protocol edge cases. |
 | `tests/test_rpc_server.cpp` | 7 integration tests (platform-abstracted transport client). |
+| `tests/test_rpc_params.cpp` | Entry references: index, verbatim and same-file paths, shared path, missing path, field exclusivity. |
 | `tests/test_socket_paths.cpp` | Sweep tests: which `/tmp/idiff-*.sock` files get removed and which are left alone (POSIX). |
 | `tools/idiff-mcp/idiff_client.py` | Python client + discovery (no MCP dep). |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
@@ -170,6 +172,15 @@ on `idiff_rpc`.
 ## 4. RPC Method Reference
 
 All methods live in `src/app/app_rpc_methods.cpp`.
+
+**Entry references.** A method that acts on one entry takes either
+`index` (integer) or `path` (string), never both. A path matches the
+entries whose `path` (as `state.get` reports it) equals it verbatim;
+when none does, the entries whose path names the same file once
+symlinks and `.` / `..` are resolved. Exactly one entry must match:
+the library does not deduplicate, so a path several entries share is
+rejected with InvalidParams and the message lists their indices.
+Below, *entry* stands for `index:int | path:string`.
 
 ### Identity
 
@@ -189,14 +200,14 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 | Method | Params | Result |
 |---|---|---|
 | `library.load` | `{paths:[string]}` | `{added:int, total:int}` |
-| `library.set_reference` | `{index:int}` | `{}` |
+| `library.set_reference` | `{entry}` | `{}` |
 | `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
 | `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
-| `library.remove` | `{index:int}` | `{}` |
+| `library.remove` | `{entry}` | `{}` |
 | `library.reload_all` | none | `{}` — re-decode every entry from disk |
 | `library.set_loader_backend` | `{backend:"imagemagick"\|"opencv"\|"ffmpeg"}` | `{backend}` — switch decoder + reload |
-| `selection.set` | `{indices:[int]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
-| `selection.select_group` | `{index:int}` | `{changed:bool, indices:[int]}` |
+| `selection.set` | `{indices:[int]}` or `{entries:[int\|string]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
+| `selection.select_group` | `{entry}` | `{changed:bool, indices:[int]}` |
 | `selection.select_range` | `{from:int, to:int}` | `{changed:bool, indices:[int]}` |
 | `view.set_mode` | `{mode:"split"\|"overlay"\|"difference", slider?:float}` | `{}` |
 | `view.set_group_mode` | `{mode:"none"\|"by_name"\|"by_folder"}` | `{}` |
@@ -207,7 +218,7 @@ All methods live in `src/app/app_rpc_methods.cpp`.
 | `comparison_config.load` | `{path:string}` | `{entries:int, groups:int, current_group:int}` |
 | `comparison_config.switch_group` | `{group_index:int}` | `{entries:int, current_group:int}` |
 | `timeline.set_frame` | `{frame:int}` | `{current_frame:int}` |
-| `timeline.set_frame_offset` | `{index:int, offset:int}` | `{index:int, offset:int}` |
+| `timeline.set_frame_offset` | `{entry, offset:int}` | `{index:int, offset:int}` |
 
 ### Error policy
 

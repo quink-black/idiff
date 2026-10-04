@@ -8,9 +8,9 @@
 //   state.get             () -> { entries: [...], selection: [...],
 //                                 reference: int|null, view: {...} }
 //   library.load          (paths: [string]) -> { added: int }
-//   library.set_reference (index: int) -> {}
-//   library.remove        (index: int) -> {}
-//   selection.set         (indices: [int]) -> {}
+//   library.set_reference (index: int | path: string) -> {}
+//   library.remove        (index: int | path: string) -> {}
+//   selection.set         (indices: [int] | entries: [int|string]) -> {}
 //   view.set_mode         (mode: "split"|"overlay"|"difference",
 //                          slider?: float) -> {}
 //   view.set_group_by_name(enabled: bool) -> {}
@@ -22,6 +22,10 @@
 // All handlers run on the main (GUI) thread because that is where
 // rpc_server_->drain() is called from frame() -- so they may freely
 // mutate App / Controller / SDL state without locks.
+//
+// Entry addressing: methods that act on one entry take either its
+// `index` or its `path`; a path shared by several entries is rejected
+// (see rpc_params.h).
 //
 // Validation: anything that would have been an UI-time error (bad
 // index, unknown mode string, missing required field) is reported as
@@ -36,6 +40,7 @@
 #ifdef IDIFF_HAVE_RPC
 
 #include "app/controller.h"
+#include "app/rpc_params.h"
 #include "app/rpc/rpc_dispatcher.h"
 #include "app/rpc/socket_paths.h"
 #include "app/screenshot_composer.h"
@@ -57,7 +62,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -68,40 +72,14 @@ namespace idiff {
 using nlohmann::json;
 using rpc::ErrorCode;
 using rpc::RpcException;
+using rpc_params::check_index;
+using rpc_params::require_entry_field;
+using rpc_params::require_int_field;
+using rpc_params::require_object;
+using rpc_params::require_string_field;
+using rpc_params::resolve_entries;
 
 namespace {
-
-// --- Param helpers ---------------------------------------------------
-//
-// Each Phase-1 handler validates by hand because the schemas are tiny
-// and we want error messages that name the specific field.  These
-// helpers keep the boilerplate out of the handler bodies.
-
-const json& require_object(const json& params) {
-    if (!params.is_object()) {
-        throw RpcException(ErrorCode::InvalidParams,
-                           "params must be a JSON object");
-    }
-    return params;
-}
-
-int require_int_field(const json& params, const char* key) {
-    auto it = params.find(key);
-    if (it == params.end() || !it->is_number_integer()) {
-        throw RpcException(ErrorCode::InvalidParams,
-            std::string("missing or non-integer field: ") + key);
-    }
-    return it->get<int>();
-}
-
-const std::string& require_string_field(const json& params, const char* key) {
-    auto it = params.find(key);
-    if (it == params.end() || !it->is_string()) {
-        throw RpcException(ErrorCode::InvalidParams,
-            std::string("missing or non-string field: ") + key);
-    }
-    return it->get_ref<const std::string&>();
-}
 
 ComparisonMode parse_mode(const std::string& s) {
     if (s == "split")      return ComparisonMode::Split;
@@ -137,16 +115,6 @@ GroupMode parse_group_mode(const std::string& s) {
     throw RpcException(ErrorCode::InvalidParams,
         "group_mode must be one of: none, by_name, by_folder (got \""
         + s + "\")");
-}
-
-void check_index(int idx, std::size_t size, const char* what) {
-    if (idx < 0 || static_cast<std::size_t>(idx) >= size) {
-        char buf[128];
-        std::snprintf(buf, sizeof(buf),
-                      "%s out of range: %d (have %zu entries)",
-                      what, idx, size);
-        throw RpcException(ErrorCode::InvalidParams, buf);
-    }
 }
 
 } // namespace
@@ -341,8 +309,7 @@ void App::register_rpc_methods() {
     d.register_method("library.set_reference",
         [this](const json& params) -> json {
             require_object(params);
-            int idx = require_int_field(params, "index");
-            check_index(idx, entries_view().size(), "index");
+            int idx = require_entry_field(params, entries_view());
             controller_->mark_as_reference(idx);
             return json::object();
         });
@@ -443,35 +410,45 @@ void App::register_rpc_methods() {
     d.register_method("library.remove",
         [this](const json& params) -> json {
             require_object(params);
-            int idx = require_int_field(params, "index");
-            check_index(idx, entries_view().size(), "index");
+            int idx = require_entry_field(params, entries_view());
             remove_entry(idx);
             return json::object();
         });
 
     // --- selection.set ---------------------------------------------
     //
-    // Wholesale replace the selection.  Empty array clears it.  Out-
-    // of-range indices are rejected up front so the caller gets one
-    // clean error rather than a partially-applied selection.
+    // Wholesale replace the selection.  Empty array clears it.  Takes
+    // exactly one of `indices` (integers) or `entries` (index or path
+    // per element).  Every element is resolved up front so the caller
+    // gets one clean error rather than a partially-applied selection.
     d.register_method("selection.set",
         [this](const json& params) -> json {
             require_object(params);
             auto it = params.find("indices");
-            if (it == params.end() || !it->is_array()) {
+            auto eit = params.find("entries");
+            if ((it == params.end()) == (eit == params.end())) {
                 throw RpcException(ErrorCode::InvalidParams,
-                    "missing or non-array field: indices");
+                    "pass exactly one of: indices, entries");
             }
             std::set<int> new_sel;
-            const std::size_t n = entries_view().size();
-            for (const auto& v : *it) {
-                if (!v.is_number_integer()) {
+            if (eit != params.end()) {
+                for (int idx : resolve_entries(*eit, entries_view(), "entries"))
+                    new_sel.insert(idx);
+            } else {
+                if (!it->is_array()) {
                     throw RpcException(ErrorCode::InvalidParams,
-                        "indices[] must contain integers only");
+                        "indices must be an array");
                 }
-                int idx = v.get<int>();
-                check_index(idx, n, "indices[i]");
-                new_sel.insert(idx);
+                const std::size_t n = entries_view().size();
+                for (const auto& v : *it) {
+                    if (!v.is_number_integer()) {
+                        throw RpcException(ErrorCode::InvalidParams,
+                            "indices[] must contain integers only");
+                    }
+                    int idx = v.get<int>();
+                    check_index(idx, n, "indices[i]");
+                    new_sel.insert(idx);
+                }
             }
 
             // Honor the grouping invariant the GUI enforces via
@@ -718,8 +695,7 @@ void App::register_rpc_methods() {
     d.register_method("selection.select_group",
         [this](const json& params) -> json {
             require_object(params);
-            int idx = require_int_field(params, "index");
-            check_index(idx, entries_view().size(), "index");
+            int idx = require_entry_field(params, entries_view());
             bool changed = controller_->select_group(idx);
             json indices = json::array();
             for (int s : selection_->indices()) indices.push_back(s);
@@ -812,9 +788,8 @@ void App::register_rpc_methods() {
     d.register_method("timeline.set_frame_offset",
         [this](const json& params) -> json {
             require_object(params);
-            int idx    = require_int_field(params, "index");
+            int idx    = require_entry_field(params, entries_view());
             int offset = require_int_field(params, "offset");
-            check_index(idx, entries_view().size(), "index");
             auto& entries = entries_view();
             entries[idx].frame_offset = offset;
             sync_entries_to_timeline();
