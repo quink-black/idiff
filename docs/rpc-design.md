@@ -161,6 +161,7 @@ Two motivating user scenarios (the original "why"):
 | `tools/idiffctl/idiff_client.py` | Python client + discovery (standard library only). Shared by idiffctl and the MCP shim. |
 | `tools/idiffctl/idiffctl.py` | Command-line client: one JSON document per command, exit status per failure class. |
 | `tools/idiffctl/test_idiffctl.py` | idiffctl against fake servers on Unix sockets; registered with ctest as `idiffctl`. |
+| `tools/idiffctl/SKILL.md` | Agent skill that teaches coding agents to use idiffctl; the directory is symlinked into the agent's skill directory. |
 | `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim. 8 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
 | `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
