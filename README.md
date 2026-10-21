@@ -186,6 +186,7 @@ cmake --build build --config Release
 | `1`–`9` | Channel view (1=all, 2=RGB, 3=R, 4=G, 5=B, 6=Alpha, 7=Alpha contour, 8=Y, 9=U) |
 | `Space` | Timeline play/pause (with multi-frame media loaded) |
 | `←` / `→` | Step one frame (with multi-frame media loaded) |
+| `[` / `]` | Previous / next group (with a comparison config loaded) |
 | `Esc` | Cancel selection |
 | Double-click | Fit to content |
 

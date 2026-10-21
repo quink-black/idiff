@@ -104,6 +104,28 @@ void render_image_list(const ImageListInputs& in) {
         }
         ImGui::TextDisabled("Group %d / %d",
                             idx + 1, static_cast<int>(groups.size()));
+        const int prev_idx =
+            in.comparison_config->step_target(GroupStep::Previous);
+        const int next_idx =
+            in.comparison_config->step_target(GroupStep::Next);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(prev_idx < 0);
+        if (ImGui::SmallButton("Prev") && in.on_switch_comparison_group) {
+            in.on_switch_comparison_group(prev_idx);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Previous group ([)");
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(next_idx < 0);
+        if (ImGui::SmallButton("Next") && in.on_switch_comparison_group) {
+            in.on_switch_comparison_group(next_idx);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Next group (])");
+        }
     }
 
     if (selection.size() >= 2) {

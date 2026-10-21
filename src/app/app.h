@@ -5,6 +5,7 @@
 #include "core/channel_view.h"
 #include "app/texture_types.h"
 #include "core/image.h"
+#include "domain/comparison_config_service.h"
 #include "domain/group_key.h"
 
 #include <functional>
@@ -230,6 +231,9 @@ private:
     // group are unloaded first so only one group's worth of pixels is
     // resident in memory at a time.  Out-of-range indices are ignored.
     void switch_to_comparison_group(int group_idx);
+    // Move to the neighbouring group.  Reports on the status bar when
+    // the current group is already the first or last one.
+    void step_comparison_group(GroupStep step);
     void remove_entry(int index);
     void reload_all_images();
     void update_display_image(int index);

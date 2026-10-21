@@ -175,6 +175,55 @@ TEST_CASE("switch_to: no-op when index already current",
     REQUIRE(svc.current_index() == 0);
 }
 
+TEST_CASE("step_target: -1 until a group is active",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "ok.json";
+    write_text(json_path, R"({"groups": [
+        {"name": "g1", "items": [{"url": "file:///a.png"}]},
+        {"name": "g2", "items": [{"url": "file:///b.png"}]}
+    ]})");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.step_target(idiff::GroupStep::Next) == -1);
+    REQUIRE(svc.step_target(idiff::GroupStep::Previous) == -1);
+
+    svc.set_cache_root_override(tmp.path());
+    REQUIRE(svc.load(json_path.string()).ok);
+    REQUIRE(svc.step_target(idiff::GroupStep::Next) == -1);
+    REQUIRE(svc.step_target(idiff::GroupStep::Previous) == -1);
+}
+
+TEST_CASE("step_target: moves by one and stops at both ends",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "ok.json";
+    write_text(json_path, R"({"groups": [
+        {"name": "g1", "items": [{"url": "file:///a.png"}]},
+        {"name": "g2", "items": [{"url": "file:///b.png"}]},
+        {"name": "g3", "items": [{"url": "file:///c.png"}]}
+    ]})");
+
+    ComparisonConfigService svc;
+    svc.set_cache_root_override(tmp.path());
+    REQUIRE(svc.load(json_path.string()).ok);
+    for (const char* u : {"file:///a.png", "file:///b.png", "file:///c.png"}) {
+        stage_url(*svc.url_cache_for_test(), u);
+    }
+
+    REQUIRE(svc.switch_to(0).ok);
+    REQUIRE(svc.step_target(idiff::GroupStep::Previous) == -1);
+    REQUIRE(svc.step_target(idiff::GroupStep::Next) == 1);
+
+    REQUIRE(svc.switch_to(1).ok);
+    REQUIRE(svc.step_target(idiff::GroupStep::Previous) == 0);
+    REQUIRE(svc.step_target(idiff::GroupStep::Next) == 2);
+
+    REQUIRE(svc.switch_to(2).ok);
+    REQUIRE(svc.step_target(idiff::GroupStep::Previous) == 1);
+    REQUIRE(svc.step_target(idiff::GroupStep::Next) == -1);
+}
+
 TEST_CASE("switch_to: returns local paths and labels for fetched items",
           "[comparison_config_service]") {
     TempDir tmp;
