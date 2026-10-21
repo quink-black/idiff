@@ -17,6 +17,8 @@ add_executable(idiff_tests
     test_timeline_model.cpp
     test_diff_service.cpp
     test_comparison_config_service.cpp
+    test_action_registry.cpp
+    test_process_launcher.cpp
     test_group_key.cpp
     test_app_controller.cpp
     test_controller_integration.cpp

@@ -102,6 +102,10 @@ bool is_valid_transfer(const std::string& v) {
 
 } // namespace
 
+std::string AppSettings::config_dir() {
+    return settings_dir().string();
+}
+
 std::string AppSettings::default_path() {
     auto dir = settings_dir();
     if (dir == std::filesystem::path(".")) {

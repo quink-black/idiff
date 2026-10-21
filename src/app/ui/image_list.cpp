@@ -128,6 +128,35 @@ void render_image_list(const ImageListInputs& in) {
         }
     }
 
+    if (in.actions && !in.actions->empty()) {
+        ImGui::Separator();
+        const auto& style = ImGui::GetStyle();
+        const float line_right =
+            ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        for (std::size_t i = 0; i < in.actions->size(); ++i) {
+            const ActionButton& b = (*in.actions)[i];
+            const float width = ImGui::CalcTextSize(b.label.c_str()).x +
+                                style.FramePadding.x * 2.0f;
+            if (i > 0 && ImGui::GetItemRectMax().x + style.ItemSpacing.x +
+                             width <= line_right) {
+                ImGui::SameLine();
+            }
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Button(b.label.c_str()) && in.on_run_action) {
+                in.on_run_action(static_cast<int>(i));
+            }
+            if (ImGui::IsItemHovered()) {
+                std::string tip = b.command.front();
+                for (std::size_t k = 1; k < b.command.size(); ++k) {
+                    tip += ' ' + b.command[k];
+                }
+                if (!b.key_text.empty()) tip += "\nKey: " + b.key_text;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            ImGui::PopID();
+        }
+    }
+
     if (selection.size() >= 2) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Clear")) {

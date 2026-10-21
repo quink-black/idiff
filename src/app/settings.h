@@ -93,6 +93,10 @@ struct AppSettings {
     // no suitable location can be resolved.
     static std::string default_path();
 
+    // Directory that holds settings.txt and other per-user files such as
+    // actions.json.
+    static std::string config_dir();
+
     // Load settings from `path` (or default_path() when empty).  Missing
     // file is not an error; the returned AppSettings is default-constructed.
     static AppSettings load(const std::string& path = {});

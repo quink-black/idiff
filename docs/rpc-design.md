@@ -222,6 +222,8 @@ Below, *entry* stands for `index:int | path:string`.
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
 | `comparison_config.load` | `{path:string}` | `{entries:int, groups:int, current_group:int}` |
 | `comparison_config.switch_group` | `{group_index:int}` | `{entries:int, current_group:int}` |
+| `actions.set` | `{actions:[{label:string, command:[string], key?:string}]}` | `{count:int}` — replaces the buttons a client registered for the actions panel (`[]` removes them); `count` is the total number of buttons, including those from the user's `actions.json`. `key` is `[ctrl+][alt+][shift+]<a-z\|0-9\|f1-f12>` |
+| `actions.run` | `{index:int}` | `{}` — starts the command of button `index` of `actions.get`, as a click does; returns once the command has started. The child gets `IDIFF_PID` in its environment |
 | `timeline.set_frame` | `{frame:int}` | `{current_frame:int}` |
 | `timeline.set_frame_offset` | `{entry, offset:int}` | `{index:int, offset:int}` |
 
@@ -235,6 +237,7 @@ call as a whole still succeeds.
 
 | Method | Params | Result |
 |---|---|---|
+| `actions.get` | none | `{actions:[{label,command,key,origin:"user"\|"session"}]}` — user buttons first |
 | `metrics.compare` | `{ref?:entry, targets?:[entry]}` — defaults: current reference, rest of the selection | `{ref:{index,path}, results:[{index,path,psnr,ssim,mse,identical} \| {index,path,error}]}` — measured on the image the Metrics panel uses; `psnr` is null when `identical` |
 | `pixel.sample` | `{x:int, y:int, entries?:[entry]}` — native pixel coordinates; default: reference then the rest of the selection | `{x,y,samples:[{index,path,kind,channels,depth,values,text} \| {index,path,error}]}` — `text` matches the Pixel panel |
 

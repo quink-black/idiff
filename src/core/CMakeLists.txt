@@ -10,6 +10,7 @@ add_library(idiff_core
     channel_view.cpp
     depth_utils.cpp
     file_watcher.cpp
+    process_launcher.cpp
     detail/raw_loader.cpp
 )
 
