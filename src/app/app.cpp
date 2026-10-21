@@ -670,6 +670,14 @@ void App::frame() {
                 ImGui::IsKeyPressed(ImGuiKey_F5)) {
                 reload_all_images();
             }
+            if (controller_->comparison_config().has_config()) {
+                if (ImGui::IsKeyChordPressed(ImGuiKey_LeftBracket)) {
+                    step_comparison_group(GroupStep::Previous);
+                }
+                if (ImGui::IsKeyChordPressed(ImGuiKey_RightBracket)) {
+                    step_comparison_group(GroupStep::Next);
+                }
+            }
 
             // Timeline playback / step shortcuts.  Space toggles
             // play/pause; Left/Right step one frame.  Only active
@@ -1208,6 +1216,19 @@ void App::load_paths(const std::vector<std::string>& paths) {
 
     if (!image_paths.empty()) {
         load_images(image_paths);
+    }
+}
+
+void App::step_comparison_group(GroupStep step) {
+    const auto& svc = controller_->comparison_config();
+    const int target = svc.step_target(step);
+    if (target >= 0) {
+        switch_to_comparison_group(target);
+        return;
+    }
+    if (svc.current_index() >= 0) {
+        state_->status_text = step == GroupStep::Next
+            ? "Already at the last group" : "Already at the first group";
     }
 }
 

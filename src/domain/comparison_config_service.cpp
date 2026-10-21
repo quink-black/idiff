@@ -88,6 +88,16 @@ std::size_t ComparisonConfigService::group_count() const noexcept {
     return config_.groups.size();
 }
 
+int ComparisonConfigService::step_target(GroupStep step) const noexcept {
+    if (current_index_ < 0) return -1;
+    const int target = step == GroupStep::Next ? current_index_ + 1
+                                               : current_index_ - 1;
+    if (target < 0 || target >= static_cast<int>(config_.groups.size())) {
+        return -1;
+    }
+    return target;
+}
+
 SwitchGroupResult ComparisonConfigService::switch_to(int group_idx) {
     SwitchGroupResult result;
 

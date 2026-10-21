@@ -69,6 +69,9 @@ struct SwitchGroupResult {
     std::string status_message;
 };
 
+// Direction of a one-group move through the config's group list.
+enum class GroupStep { Previous, Next };
+
 class ComparisonConfigService {
 public:
     ComparisonConfigService();
@@ -100,6 +103,12 @@ public:
     // Index of the group whose URLs were most recently fetched, or
     // -1 when no group has been activated since the last load().
     int current_index() const noexcept { return current_index_; }
+
+    // Index of the group one `step` away from the current group.
+    // Returns -1 when no group is active or the current group is
+    // already the first (Previous) or last (Next) one; the list does
+    // not wrap.  The result is always valid for switch_to().
+    int step_target(GroupStep step) const noexcept;
 
     // Read-only access to the parsed config for UI listing (group
     // names, descriptions, item counts).  Stable until the next load().
