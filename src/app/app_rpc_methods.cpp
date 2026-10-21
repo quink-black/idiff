@@ -769,6 +769,65 @@ void App::register_rpc_methods() {
             };
         });
 
+    // --- actions.set / actions.get ----------------------------------
+    //
+    // actions.set replaces the buttons that a client registered for the
+    // actions panel; [] removes them.  The buttons stay until replaced
+    // or until the process exits.  actions.get lists every button,
+    // including those from the user's actions file.
+    d.register_method("actions.set",
+        [this](const json& params) -> json {
+            require_object(params);
+            auto it = params.find("actions");
+            if (it == params.end()) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "missing field: actions");
+            }
+            const std::string err = controller_->actions().set_session(*it);
+            if (!err.empty()) {
+                throw RpcException(ErrorCode::InvalidParams, err);
+            }
+            return json{{"count",
+                static_cast<int>(controller_->actions().buttons().size())}};
+        });
+
+    // actions.run starts the command of the button at `index`, exactly
+    // as a click on it does.  It returns once the command has started,
+    // not when it ends.
+    d.register_method("actions.run",
+        [this](const json& params) -> json {
+            require_object(params);
+            const int index = require_int_field(params, "index");
+            const int count =
+                static_cast<int>(controller_->actions().buttons().size());
+            if (index < 0 || index >= count) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "index out of range: " + std::to_string(index) +
+                    " (have " + std::to_string(count) + " action(s))");
+            }
+            std::string error;
+            if (!run_action(index, error)) {
+                throw RpcException(ErrorCode::InternalError,
+                    "action could not be started: " + error);
+            }
+            return json::object();
+        });
+
+    d.register_method("actions.get",
+        [this](const json& /*params*/) -> json {
+            json list = json::array();
+            for (const auto& b : controller_->actions().buttons()) {
+                list.push_back({
+                    {"label",   b.label},
+                    {"command", b.command},
+                    {"key",     b.key_text},
+                    {"origin",  b.origin == ActionOrigin::User ? "user"
+                                                               : "session"},
+                });
+            }
+            return json{{"actions", list}};
+        });
+
     // --- timeline.set_frame -----------------------------------------
     //
     // Set the shared timeline frame index and re-decode all multi-frame

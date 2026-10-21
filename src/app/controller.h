@@ -2,6 +2,7 @@
 #define IDIFF_APP_CONTROLLER_H
 
 #include "core/image_loader.h"
+#include "domain/action_registry.h"
 #include "domain/group_key.h"
 #include "domain/lazy_load_cache.h"
 
@@ -48,6 +49,7 @@ public:
     TimelineModel& timeline() noexcept;
     DiffService& diff() noexcept;
     ComparisonConfigService& comparison_config() noexcept;
+    ActionRegistry& actions() noexcept { return actions_; }
 
     // ---- Business orchestration ------------------------------------
     //
@@ -355,6 +357,7 @@ private:
     std::unique_ptr<TimelineModel> timeline_;
     std::unique_ptr<DiffService> diff_;
     std::unique_ptr<ComparisonConfigService> comparison_config_;
+    ActionRegistry actions_;
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();
 

@@ -27,6 +27,7 @@
 #include "app/rpc/socket_paths.h"
 #endif
 #include "core/file_watcher.h"
+#include "core/process_launcher.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
 #include "domain/timeline_model.h"
@@ -162,6 +163,9 @@ struct App::State {
     std::unique_ptr<FileWatcher> file_watcher;
     ReloadDialogState reload_dialog;
 
+    // Runs the commands behind the actions-panel buttons.
+    ProcessLauncher action_launcher;
+
     // Injectable IO collaborators.  Tests substitute fakes; the
     // production wiring in App::init() installs the SDL/NFD-backed
     // implementations.  Stored here (rather than as App members) so
@@ -190,6 +194,33 @@ struct App::State {
     std::vector<rpc::SocketProbe> known_instances;
 #endif
 };
+
+namespace {
+
+ImGuiKey imgui_key_from_name(const std::string& name) {
+    if (name.size() == 1) {
+        const char c = name[0];
+        if (c >= 'a' && c <= 'z') {
+            return static_cast<ImGuiKey>(ImGuiKey_A + (c - 'a'));
+        }
+        if (c >= '0' && c <= '9') {
+            return static_cast<ImGuiKey>(ImGuiKey_0 + (c - '0'));
+        }
+    } else if (name.size() >= 2 && name[0] == 'f') {
+        return static_cast<ImGuiKey>(ImGuiKey_F1 + (std::stoi(name.substr(1)) - 1));
+    }
+    return ImGuiKey_None;
+}
+
+ImGuiKeyChord imgui_chord_from(const KeyChord& chord) {
+    ImGuiKeyChord result = imgui_key_from_name(chord.key);
+    if (chord.ctrl) result |= ImGuiMod_Ctrl;
+    if (chord.alt) result |= ImGuiMod_Alt;
+    if (chord.shift) result |= ImGuiMod_Shift;
+    return result;
+}
+
+} // namespace
 
 App::App()
     : state_(std::make_unique<State>()) {}
@@ -482,6 +513,17 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     diff_service_ = &controller_->diff();
     comparison_config_ = &controller_->comparison_config();
 
+    {
+        const auto actions_path =
+            std::filesystem::path(AppSettings::config_dir()) / "actions.json";
+        const std::string err =
+            controller_->actions().load_user_file(actions_path);
+        if (!err.empty()) {
+            LOG_WARN("actions: %s", err.c_str());
+            state_->status_text = "Actions: " + err;
+        }
+    }
+
     // Restore image loader backend.  Has to happen after controller_
     // is constructed; the previous location ran before the unique_ptr
     // was assigned and dereferenced a null controller.
@@ -649,6 +691,8 @@ void App::frame() {
         }
     }
 
+    poll_actions();
+
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -659,6 +703,7 @@ void App::frame() {
     {
         ImGuiIO& io = ImGui::GetIO();
         if (!io.WantTextInput) {
+            bool action_fired = false;
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
                 open_file_dialog();
             }
@@ -669,6 +714,17 @@ void App::frame() {
             if (!entries_view().empty() &&
                 ImGui::IsKeyPressed(ImGuiKey_F5)) {
                 reload_all_images();
+            }
+            const auto& action_buttons = controller_->actions().buttons();
+            for (std::size_t i = 0; i < action_buttons.size(); ++i) {
+                const auto& chord = action_buttons[i].chord;
+                if (chord &&
+                    ImGui::IsKeyChordPressed(imgui_chord_from(*chord))) {
+                    std::string ignored;
+                    run_action(static_cast<int>(i), ignored);
+                    action_fired = true;
+                    break;
+                }
             }
             if (controller_->comparison_config().has_config()) {
                 if (ImGui::IsKeyChordPressed(ImGuiKey_LeftBracket)) {
@@ -702,8 +758,9 @@ void App::frame() {
                 }
             }
 
-            // Channel view shortcuts: 1-9 cycle through modes.
-            if (!selection_->empty()) {
+            // Channel view shortcuts: 1-9 cycle through modes.  A key
+            // that triggered an action is not also a channel shortcut.
+            if (!selection_->empty() && !action_fired) {
                 static constexpr ChannelViewMode kModeMap[9] = {
                     ChannelViewMode::None,
                     ChannelViewMode::RGB,
@@ -1219,6 +1276,51 @@ void App::load_paths(const std::vector<std::string>& paths) {
     }
 }
 
+bool App::run_action(int index, std::string& error) {
+    const auto& buttons = controller_->actions().buttons();
+    if (index < 0 || index >= static_cast<int>(buttons.size())) {
+        error = "index out of range";
+        return false;
+    }
+    const ActionButton& button = buttons[static_cast<std::size_t>(index)];
+
+#ifdef _WIN32
+    const long pid = static_cast<long>(::GetCurrentProcessId());
+#else
+    const long pid = static_cast<long>(::getpid());
+#endif
+    if (!state_->action_launcher.start(
+            button.label, button.command,
+            {{"IDIFF_PID", std::to_string(pid)}}, error)) {
+        LOG_WARN("action \"%s\": %s", button.label.c_str(), error.c_str());
+        state_->status_text =
+            "Action \"" + button.label + "\" failed to start: " + error;
+        return false;
+    }
+    state_->status_text = "Action \"" + button.label + "\" started";
+    return true;
+}
+
+void App::poll_actions() {
+    for (const auto& r : state_->action_launcher.poll()) {
+        if (r.exit_code == 0) {
+            state_->status_text = "Action \"" + r.name + "\" finished";
+            continue;
+        }
+        std::string tail = r.stderr_tail;
+        while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r')) {
+            tail.pop_back();
+        }
+        const auto nl = tail.find_last_of('\n');
+        if (nl != std::string::npos) tail.erase(0, nl + 1);
+        LOG_WARN("action \"%s\" exited with %d: %s", r.name.c_str(),
+                 r.exit_code, tail.c_str());
+        state_->status_text = "Action \"" + r.name + "\" failed (exit " +
+            std::to_string(r.exit_code) + ")" +
+            (tail.empty() ? std::string() : ": " + tail);
+    }
+}
+
 void App::step_comparison_group(GroupStep step) {
     const auto& svc = controller_->comparison_config();
     const int target = svc.step_target(step);
@@ -1639,6 +1741,11 @@ void App::render_image_list() {
     in.selection = selection_;
     in.diff_service = diff_service_;
     in.comparison_config = comparison_config_;
+    in.actions = &controller_->actions().buttons();
+    in.on_run_action = [this](int i) {
+        std::string ignored;
+        run_action(i, ignored);
+    };
     in.show_image_list = &state_->show_image_list;
     in.group_mode_ptr = &state_->group_mode;
     in.last_clicked_index = &state_->last_clicked_index;

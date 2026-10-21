@@ -192,6 +192,25 @@ cmake --build build --config Release
 
 Mouse: scroll to zoom, drag to pan.
 
+### Actions
+
+Buttons in the image list panel start external commands. Define them in
+`actions.json` next to `settings.txt` (`~/.config/idiff/` on Linux,
+`~/Library/Application Support/idiff/` on macOS):
+
+```json
+{"actions": [
+  {"label": "Open folder", "command": ["xdg-open", "."], "key": "ctrl+shift+o"}
+]}
+```
+
+`command` is an argument vector run without a shell, with `IDIFF_PID` set
+to the idiff process id so that `idiffctl` in the command finds this window.
+`key` is optional: modifiers `ctrl`, `alt`, `shift`, then a letter, a digit
+or `f1`-`f12`. A command that exits with a non-zero status is reported in
+the status bar. Clients can add buttons for the current session with the
+`actions.set` RPC method. Actions are not available on Windows yet.
+
 ## Testing
 
 ```bash

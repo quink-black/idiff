@@ -4,6 +4,7 @@
 #include <functional>
 #include <vector>
 
+#include "domain/action_registry.h"
 #include "domain/group_key.h"
 
 namespace idiff {
@@ -29,6 +30,10 @@ struct ImageListInputs {
     SelectionModel* selection;
     DiffService* diff_service;
     const ComparisonConfigService* comparison_config;
+
+    // Buttons drawn above the list; null or empty hides the section.
+    const std::vector<ActionButton>* actions = nullptr;
+    std::function<void(int action_idx)> on_run_action;
 
     // Panel close button writes through this pointer.
     bool* show_image_list;

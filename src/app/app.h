@@ -234,6 +234,13 @@ private:
     // Move to the neighbouring group.  Reports on the status bar when
     // the current group is already the first or last one.
     void step_comparison_group(GroupStep step);
+    // Starts the command of the actions-panel button at `index` of
+    // ActionRegistry::buttons().  Returns false and sets `error` when the
+    // index is out of range or the command cannot be started; the status
+    // bar reports the failure as well.
+    bool run_action(int index, std::string& error);
+    // Reports the commands that ended since the previous call.
+    void poll_actions();
     void remove_entry(int index);
     void reload_all_images();
     void update_display_image(int index);
