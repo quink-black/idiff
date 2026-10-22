@@ -72,6 +72,10 @@ bundled clients for AI agents:
   its `SKILL.md` is the agent skill that teaches its use.
 - `tools/idiff-mcp/` -- MCP shim for hosts that only speak MCP; kept in
   step with the RPC methods and not extended beyond that.
+- `tools/idiff-bridge/` -- adapters that connect idiff to an external
+  service (open a batch from a link, send verdicts back from buttons in
+  the actions panel). Service-specific behaviour belongs in an adapter,
+  not in idiff; `SKILL.md` there teaches an agent to write one.
 
 **Read `docs/rpc-design.md` before touching anything under `src/app/rpc/`,
 `src/app/app_rpc_methods.cpp`, `src/app/rpc_params.*`,
