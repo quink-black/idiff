@@ -57,6 +57,8 @@ TEST_CASE("parse_key_chord: rejects unknown input", "[action_registry]") {
     REQUIRE_FALSE(parse_key_chord("meta+a", c));
     REQUIRE_FALSE(parse_key_chord("f13", c));
     REQUIRE_FALSE(parse_key_chord("f0", c));
+    REQUIRE_FALSE(parse_key_chord("f99999999999999999", c));
+    REQUIRE_FALSE(parse_key_chord("f1x", c));
     REQUIRE_FALSE(parse_key_chord("ab", c));
     REQUIRE_FALSE(parse_key_chord("alt+alt", c));
 }
@@ -73,9 +75,8 @@ TEST_CASE("set_session: stores buttons with their shortcuts",
     REQUIRE(reg.buttons()[0].label == "Good");
     REQUIRE(reg.buttons()[0].command == std::vector<std::string>{"tool", "good"});
     REQUIRE(reg.buttons()[0].origin == ActionOrigin::Session);
+    REQUIRE(reg.buttons()[0].chord == KeyChord{false, true, false, "1"});
     REQUIRE(reg.buttons()[1].chord == std::nullopt);
-    REQUIRE(reg.find_by_chord(KeyChord{false, true, false, "1"}) == 0);
-    REQUIRE(reg.find_by_chord(KeyChord{false, true, false, "2"}) == -1);
 }
 
 TEST_CASE("set_session: an invalid list leaves the registry unchanged",
@@ -95,6 +96,7 @@ TEST_CASE("set_session: an invalid list leaves the registry unchanged",
         R"([{"label": "A", "command": [""]}])",
         R"([{"label": "A", "command": ["a"], "key": "bogus+1"}])",
         R"([{"label": "A", "command": ["a"], "key": 5}])",
+        R"([{"label": "A", "command": ["a"], "key": "f99999999999999999"}])",
     };
     for (const char* text : bad) {
         INFO(text);
@@ -164,7 +166,7 @@ TEST_CASE("load_user_file: malformed files are reported", "[action_registry]") {
     REQUIRE(reg.buttons().empty());
 }
 
-TEST_CASE("buttons: user buttons precede session buttons and win a shortcut",
+TEST_CASE("buttons: user buttons precede session buttons",
           "[action_registry]") {
     TempFile f(R"([{"label": "User", "command": ["u"], "key": "alt+1"}])");
     ActionRegistry reg;
@@ -175,5 +177,4 @@ TEST_CASE("buttons: user buttons precede session buttons and win a shortcut",
     REQUIRE(reg.buttons().size() == 2);
     REQUIRE(reg.buttons()[0].label == "User");
     REQUIRE(reg.buttons()[1].label == "Session");
-    REQUIRE(reg.find_by_chord(KeyChord{false, true, false, "1"}) == 0);
 }

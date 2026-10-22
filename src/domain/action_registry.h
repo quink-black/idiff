@@ -59,12 +59,10 @@ public:
     std::string load_user_file(const std::filesystem::path& path);
 
     // User buttons first, then session buttons, each in source order.
+    // When two buttons share a shortcut, the earlier one takes it.
     const std::vector<ActionButton>& buttons() const noexcept {
         return merged_;
     }
-
-    // Index into buttons() of the first button bound to `chord`, or -1.
-    int find_by_chord(const KeyChord& chord) const noexcept;
 
 private:
     void rebuild();
