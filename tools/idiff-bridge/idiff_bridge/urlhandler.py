@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
-from .context import bridge_root, cli_command
+from .context import cli_command
 from .errors import BridgeError
 from .loader import available, load_adapter_by_name, read_manifest
 
@@ -59,17 +59,12 @@ def open_link(link: str, host: Optional[Host] = None) -> dict:
         raise BridgeError(
             f"action {adapter_name}/{action_name} cannot be triggered by a "
             "link")
-    import inspect
     from .context import Context
+    from .loader import bind_params
     from .settings import load_settings
 
-    sig = inspect.signature(spec.func)
-    kwargs = {}
-    for name, param in sig.parameters.items():
-        if name == "self" or name in ("ctx", "context"):
-            continue
-        if name in query and query[name]:
-            kwargs[name] = query[name][0]
+    kwargs = bind_params(spec, manifest,
+                         {k: v[0] for k, v in query.items() if v})
     schema = manifest.settings or adapter.settings_schema()
     settings = load_settings(adapter_name, schema)
     ctx = Context(adapter=adapter_name, host=host or Host(),
@@ -83,6 +78,26 @@ def open_link(link: str, host: Optional[Host] = None) -> dict:
 APP_NAME = "idiff-bridge-link.app"
 
 
+def _applescript_string(text: str) -> str:
+    """`text` as an AppleScript string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def build_applescript(command: List[str]) -> str:
+    """Source of the handler: runs `command url <link>` for each link.
+
+    The command is shell-quoted word by word, then embedded as an
+    AppleScript literal; the link is quoted by AppleScript itself.
+    """
+    shell_prefix = " ".join(shlex.quote(word) for word in command) + " url "
+    return (
+        "on open location theURL\n"
+        f"  do shell script {_applescript_string(shell_prefix)} "
+        "& quoted form of theURL\n"
+        "end open location\n"
+    )
+
+
 def install_macos_handler(app_dir: Optional[Path] = None,
                           scheme: str = SCHEME) -> Path:
     """Builds a .app that hands <scheme>:// links to this CLI.
@@ -94,12 +109,7 @@ def install_macos_handler(app_dir: Optional[Path] = None,
     if sys.platform != "darwin":
         raise BridgeError("installing a URL handler is macOS-only")
     app_dir = app_dir or (Path.home() / "Applications" / APP_NAME)
-    script = (
-        "on open location theURL\n"
-        f"  do shell script {shlex.quote(' '.join(cli_command()))} "
-        "& \" url \" & quoted form of theURL\n"
-        "end open location\n"
-    )
+    script = build_applescript(cli_command())
     script_path = app_dir.with_suffix(".applescript")
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script, encoding="utf-8")

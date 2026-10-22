@@ -142,7 +142,7 @@ class Host:
                 found = probe(self.socket_path)
                 self._instance = found or Instance(
                     pid=self.preferred_pid or os.getpid(),
-                    socket_path=self.socket_path)
+                    socket_path=self.socket_path, label="idiff:?")
                 return self._instance
             try:
                 self._instance = discover(self.preferred_pid)
@@ -184,7 +184,7 @@ class Host:
 
     # -- navigation ---------------------------------------------------
     def current_group(self) -> Dict[str, Any]:
-        """The group idiff shows: {pid, index, count, name, meta}."""
+        """The group idiff shows: {pid, name, meta, config_path}."""
         inst = self.instance()
         with Client(inst.socket_path) as c:
             state = c.call("state.get")
@@ -207,10 +207,6 @@ class Host:
                 f"group {name!r} of idiff:{inst.pid} carries no meta; "
                 f"groups with meta: {', '.join(sorted(session.groups)) or 'none'}"
                 f" (config has {len(names)} groups)")
-        if meta is None:
-            raise ResourceNotFound(
-                f"group {name!r} is not part of the config this bridge loaded "
-                f"into idiff:{inst.pid}")
         return {"pid": inst.pid, "name": name, "meta": meta,
                 "config_path": session.config_path}
 

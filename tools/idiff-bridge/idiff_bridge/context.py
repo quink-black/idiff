@@ -7,6 +7,7 @@ on is the whole framework API.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,8 +29,25 @@ def bridge_root() -> Path:
 
 
 def cli_command() -> List[str]:
-    """argv prefix that runs an adapter action through this CLI again."""
-    return [sys.executable, str(bridge_root() / "idiff-bridge"), "run"]
+    """argv prefix that invokes this CLI."""
+    return [sys.executable, str(bridge_root() / "idiff-bridge")]
+
+
+# Variables that decide where the CLI finds adapters, settings and the
+# session record.  A button runs in idiff's environment, not in the shell
+# that registered it, so these are fixed into the button's command.
+# Settings variables (IDIFF_BRIDGE_<NAME>_<KEY>) are left out: they carry
+# secrets, and the command line is visible to other users and in
+# actions.get.
+_PINNED_ENV = ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "IDIFF_BRIDGE_ADAPTERS",
+               "IDIFF_BIN")
+
+
+def action_command(adapter: str, action: str) -> List[str]:
+    """argv a panel button runs for `adapter`'s `action`."""
+    pinned = [f"{k}={os.environ[k]}" for k in _PINNED_ENV if os.environ.get(k)]
+    prefix = ["env"] + pinned if pinned else []
+    return prefix + cli_command() + ["run", adapter, action]
 
 
 class Service:
@@ -79,6 +97,22 @@ class Service:
             return json.loads(raw)
         except ValueError:
             raise BridgeError(f"{method} {path}: response is not JSON")
+
+    def reachable(self) -> int:
+        """HTTP status of the base URL; raises BridgeError when unreachable.
+
+        Any HTTP answer, including 401 or 404, proves the service is up;
+        most services have no handler for "/".
+        """
+        req = urllib.request.Request(self.base_url + "/", method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return int(resp.status)
+        except urllib.error.HTTPError as e:
+            e.close()
+            return int(e.code)
+        except urllib.error.URLError as e:
+            raise BridgeError(f"{self.base_url}: {e.reason}")
 
     def get_json(self, path: str, query: Optional[Dict[str, Any]] = None) -> Any:
         return self._request("GET", path, query=query)
@@ -149,7 +183,7 @@ class Context:
             action = str(b.get("action", ""))
             if not action:
                 raise BridgeError("adapter.toml: [[buttons]] needs 'action'")
-            command = cli_command() + [self.adapter, action]
+            command = action_command(self.adapter, action)
             for k, v in (b.get("args") or {}).items():
                 command += ["--param", f"{k}={v}"]
             entry: Dict[str, Any] = {"label": str(b.get("label") or action),
@@ -183,7 +217,7 @@ class Context:
         for name, label in labels.items():
             spec = params.get(name, {}) if params else {}
             key = spec.get("key")
-            command = cli_command() + [self.adapter, name]
+            command = action_command(self.adapter, name)
             for k, v in spec.items():
                 if k == "key":
                     continue
@@ -221,4 +255,5 @@ class Context:
         return Path(render_path(template, self.config_path))
 
 
-__all__ = ["Context", "Service", "notify", "find_group", "cli_command"]
+__all__ = ["Context", "Service", "notify", "find_group", "cli_command",
+           "action_command"]

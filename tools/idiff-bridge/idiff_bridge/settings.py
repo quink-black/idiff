@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .errors import BridgeError
-from .loader import _parse_toml  # same TOML reader, same error text
+from .loader import parse_toml
 
 
 def config_root() -> Path:
@@ -33,7 +33,7 @@ def load_settings(adapter: str, schema: Dict[str, Dict[str, Any]],
     values: Dict[str, Any] = {}
     path = settings_path(adapter)
     if path.is_file():
-        doc = _parse_toml(path)
+        doc = parse_toml(path)
         for k, v in doc.items():
             if isinstance(v, dict) and "value" in v:
                 values[k] = v["value"]

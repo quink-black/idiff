@@ -7,11 +7,20 @@ panel. idiff stays a general-purpose comparison tool; every
 service-specific decision lives in an adapter.
 
     idiff-bridge://<adapter>/<action>?<query>   link from a service's page
-    idiff-bridge run <adapter> <action> --param k=v
+    idiff-bridge run <adapter> <action> --param k=v   (links use the same
+                                                      parameter rules)
     idiff-bridge adapters | doctor <name> | current | advance
 
 Requires Python 3.11 or newer (adapter.toml is read with `tomllib`).
-The framework only uses the standard library.
+The framework only uses the standard library. It runs on macOS and Linux:
+the panel buttons start commands through `env`, and idiff's own
+`ProcessLauncher` is not implemented on Windows, so actions do not work
+there.
+
+Settings, including a bearer token, are plain text in
+`<config>/idiff-bridge/<name>.toml`; keep that file at mode 600
+(`doctor` warns otherwise). Prefer `IDIFF_BRIDGE_<NAME>_TOKEN` in the
+environment where a file is not acceptable.
 
 ## What an adapter is
 
@@ -38,8 +47,12 @@ without idiff knowing anything about the service.
 
 idiff's session buttons come from the `actions.set` RPC method; the
 `[[buttons]]` in the manifest are sent there by `show_config`. A click
-runs `idiff-bridge <adapter> <action>` again with `IDIFF_PID` set, which
-is how the action finds the window that invoked it.
+runs `env <vars> idiff-bridge run <adapter> <action>` with `IDIFF_PID` set,
+which is how the action finds the window that invoked it. The button runs
+in idiff's environment, so `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
+`IDIFF_BRIDGE_ADAPTERS` and `IDIFF_BIN` are copied from the registering
+process into the command; settings variables are not, because they hold
+secrets.
 
 ## Images
 
