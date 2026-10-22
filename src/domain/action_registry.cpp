@@ -22,12 +22,12 @@ bool is_valid_key_name(const std::string& k) {
         const char c = k[0];
         return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
     }
-    if (k.size() >= 2 && k[0] == 'f') {
+    if (k.size() >= 2 && k.size() <= 3 && k[0] == 'f') {
         for (std::size_t i = 1; i < k.size(); ++i) {
             if (!std::isdigit(static_cast<unsigned char>(k[i]))) return false;
         }
         const int n = std::stoi(k.substr(1));
-        return n >= 1 && n <= 12 && k.size() <= 3;
+        return n >= 1 && n <= 12;
     }
     return false;
 }
@@ -147,15 +147,6 @@ std::string ActionRegistry::load_user_file(const std::filesystem::path& path) {
     user_ = std::move(parsed);
     rebuild();
     return {};
-}
-
-int ActionRegistry::find_by_chord(const KeyChord& chord) const noexcept {
-    for (std::size_t i = 0; i < merged_.size(); ++i) {
-        if (merged_[i].chord && *merged_[i].chord == chord) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
 }
 
 void ActionRegistry::rebuild() {
