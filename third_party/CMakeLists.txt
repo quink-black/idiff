@@ -9,10 +9,15 @@ include(FetchContent)
 
 # ---- Dear ImGui (always from source) ----
 
+# Pinned to a tagged release rather than the moving "docking" branch: the
+# branch tip renames public identifiers (1.93 moved ImGuiCol_TabActive to
+# ImGuiCol_TabSelected), which breaks the theme setup in app.cpp on any
+# configure that re-fetches.  Move this tag together with the app-side
+# fixes a new ImGui needs.
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        docking
+    GIT_TAG        v1.92.9b-docking
     GIT_SHALLOW    TRUE
 )
 
