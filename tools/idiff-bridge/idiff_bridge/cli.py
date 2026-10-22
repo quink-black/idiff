@@ -23,10 +23,15 @@ def _emit(doc: Any) -> None:
     sys.stdout.write("\n")
 
 
-def _ctx(adapter: Adapter, manifest: Manifest,
-         query: Optional[dict] = None) -> Context:
+def _host(args: argparse.Namespace) -> Host:
+    """The Host commands use; tests inject one through main(host=...)."""
+    return getattr(args, "host", None) or Host()
+
+
+def _ctx(adapter: Adapter, manifest: Manifest, query: Optional[dict] = None,
+         host: Optional[Host] = None) -> Context:
     schema = manifest.settings or adapter.settings_schema()
-    return Context(adapter=adapter.name, host=Host(),
+    return Context(adapter=adapter.name, host=host or Host(),
                    settings=load_settings(adapter.name, schema),
                    query=query or {},
                    schema=schema,
@@ -63,24 +68,24 @@ def cmd_run(args: argparse.Namespace) -> Any:
         if not sep or not key:
             raise BridgeError(f"--param expects key=value, got {pair!r}")
         raw[key] = value
-    kwargs = loader.coerce_params(adapter, manifest, args.action, raw)
-    ctx = _ctx(adapter, manifest)
+    kwargs = loader.bind_params(specs[args.action], manifest, raw)
+    ctx = _ctx(adapter, manifest, host=_host(args))
     result = specs[args.action].func(adapter, ctx, **kwargs)
     return {"ok": True, "adapter": args.adapter, "action": args.action,
             "result": result}
 
 
-def cmd_url(args: argparse.Namespace, host: Optional[Host] = None) -> Any:
+def cmd_url(args: argparse.Namespace) -> Any:
     from . import urlhandler
-    return urlhandler.open_link(args.link, host=host)
+    return urlhandler.open_link(args.link, host=getattr(args, "host", None))
 
 
 def cmd_current(args: argparse.Namespace) -> Any:
-    return Host().current_group()
+    return _host(args).current_group()
 
 
 def cmd_advance(args: argparse.Namespace) -> Any:
-    result = Host().advance(args.step)
+    result = _host(args).advance(args.step)
     if result is None:
         return {"ok": False, "reason": "there is no further group"}
     return result
@@ -98,7 +103,6 @@ def cmd_new(args: argparse.Namespace) -> Any:
         if path.is_file():
             path.write_text(path.read_text(encoding="utf-8").replace(
                 "__NAME__", args.name), encoding="utf-8")
-    (target / "adapter.py").rename(target / "adapter.py")
     return {"created": str(target),
             "next": [f"edit {target}/adapter.toml and adapter.py",
                      "run: idiff-bridge doctor " + args.name,
@@ -149,13 +153,17 @@ def cmd_doctor(args: argparse.Namespace) -> Any:
             if values.get("server"):
                 from .context import Service
                 try:
-                    Service(str(values["server"]),
-                            str(values.get("token", ""))).get_json("/")
-                    add("server", True, str(values["server"]))
+                    status = Service(str(values["server"]),
+                                     str(values.get("token", ""))).reachable()
+                    add("server", True, f"{values['server']} (HTTP {status})")
                 except BridgeError as e:
                     add("server", False, str(e), f"check {path}")
+            if values.get("token") and path.is_file() \
+                    and path.stat().st_mode & 0o077:
+                add("token-file", False, f"{path} is readable by others",
+                    f"chmod 600 {path}")
     try:
-        host = Host()
+        host = _host(args)
         inst = host.instance()
         state = host.call("state.get")
         add("idiff", True, f"pid {inst.pid}, "
@@ -214,8 +222,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None,
+         host: Optional[Host] = None) -> int:
+    """Runs one command.  `host` lets tests drive a fake idiff."""
     args = build_parser().parse_args(argv)
+    args.host = host
     try:
         _emit(args.func(args))
         return 0

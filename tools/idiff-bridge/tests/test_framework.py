@@ -59,11 +59,11 @@ class Sandbox:
         return target
 
 
-def run_cli(*argv: str) -> tuple:
+def run_cli(*argv: str, host: "Host | None" = None) -> tuple:
     """(exit code, parsed stdout, stderr text)."""
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
-        code = cli.main(list(argv))
+        code = cli.main(list(argv), host=host)
     text = out.getvalue().strip()
     return code, (json.loads(text) if text else None), err.getvalue()
 
@@ -170,6 +170,15 @@ class SampleAdapter(Adapter):
         return verdict
 
 
+class TypedAdapter(Adapter):
+    name = "typed"
+
+    @action
+    def typed(self, ctx, n: int = 0, ratio: float = 0.0, flag: bool = False,
+              text: str = "") -> None:
+        return None
+
+
 class AdapterClassTest(unittest.TestCase):
     def test_actions_are_descriptors_carrying_their_flags(self) -> None:
         specs = SampleAdapter.actions()
@@ -189,6 +198,20 @@ class AdapterClassTest(unittest.TestCase):
                 return None
 
 
+class AppleScriptTest(unittest.TestCase):
+    def test_handler_script_quotes_the_command_and_the_link(self) -> None:
+        script = urlhandler.build_applescript(
+            ["/usr/bin/python3", "/Users/a b/idiff-bridge"])
+        self.assertIn("on open location theURL", script)
+        self.assertIn(
+            'do shell script "/usr/bin/python3 \'/Users/a b/idiff-bridge\' url "'
+            " & quoted form of theURL", script)
+
+    def test_double_quotes_and_backslashes_are_escaped(self) -> None:
+        literal = urlhandler._applescript_string('a"b\\c')
+        self.assertEqual(literal, '"a\\"b\\\\c"')
+
+
 class LoaderTest(unittest.TestCase):
     def test_template_adapter_loads_and_declares_its_actions(self) -> None:
         with Sandbox() as box:
@@ -205,24 +228,40 @@ class LoaderTest(unittest.TestCase):
                 loader.load_adapter_by_name("nope")
             self.assertIn("none", str(cm.exception))
 
-    def test_coerce_params_uses_manifest_types(self) -> None:
+    def test_bind_params_converts_by_annotation(self) -> None:
+        manifest = loader.Manifest(name="sample")
+        spec = TypedAdapter.actions()["typed"]
+        self.assertEqual(
+            loader.bind_params(spec, manifest,
+                               {"n": "7", "ratio": "0.5", "flag": "yes",
+                                "text": "t"}),
+            {"n": 7, "ratio": 0.5, "flag": True, "text": "t"})
+
+    def test_bind_params_prefers_the_manifest_type(self) -> None:
+        manifest = loader.Manifest(
+            name="sample", params={"typed": {"text": {"type": "int"}}})
+        spec = TypedAdapter.actions()["typed"]
+        self.assertEqual(loader.bind_params(spec, manifest, {"text": "3"}),
+                         {"text": 3})
+
+    def test_bind_params_rejects_unknown_and_malformed_values(self) -> None:
+        manifest = loader.Manifest(name="sample")
+        spec = TypedAdapter.actions()["typed"]
+        with self.assertRaises(BridgeError) as cm:
+            loader.bind_params(spec, manifest, {"typo": "1"})
+        self.assertIn("accepted:", str(cm.exception))
+        with self.assertRaises(BridgeError):
+            loader.bind_params(spec, manifest, {"n": "seven"})
+
+    def test_the_template_open_action_accepts_its_own_parameters(self) -> None:
         with Sandbox() as box:
             directory = box.install_template("demo")
             manifest = loader.read_manifest(directory)
-            manifest.params["mark"]["count"] = {"type": "int"}
             ad = loader.load_adapter(directory)
             self.assertEqual(
-                loader.coerce_params(ad, manifest, "mark",
-                                     {"verdict": "bad", "count": "7"}),
-                {"verdict": "bad", "count": 7})
-
-    def test_coerce_params_rejects_undeclared_arguments(self) -> None:
-        with Sandbox() as box:
-            directory = box.install_template("demo")
-            manifest = loader.read_manifest(directory)
-            ad = loader.load_adapter(directory)
-            with self.assertRaises(BridgeError):
-                loader.coerce_params(ad, manifest, "mark", {"typo": "1"})
+                loader.bind_params(ad.actions()["open"], manifest,
+                                   {"group": "g", "batch": "b"}),
+                {"group": "g", "batch": "b"})
 
 
 class SettingsTest(unittest.TestCase):
@@ -281,7 +320,10 @@ class CliTest(unittest.TestCase):
                 if k.startswith("IDIFF_BRIDGE_"):
                     del os.environ[k]
             box.install_template("demo")
-            code, doc, _ = run_cli("doctor", "demo")
+            # Bound to a socket that does not exist, so a developer's own
+            # idiff window cannot change the outcome.
+            nowhere = Host(socket_path=str(box.dir / "no-such.sock"))
+            code, doc, _ = run_cli("doctor", "demo", host=nowhere)
             self.assertEqual(code, 0)
             assert doc is not None
             names = [c["check"] for c in doc["checks"]]
@@ -334,6 +376,17 @@ class CliTest(unittest.TestCase):
                                  ["run", "demo", "mark", "--param",
                                   "verdict=reviewed"])
 
+    def test_url_rejects_unknown_query_parameters(self) -> None:
+        with Sandbox() as box:
+            box.install_template("demo")
+            with FakeIdiff() as idiff:
+                host = Host(preferred_pid=idiff.pid,
+                            socket_path=idiff.socket_path)
+                with self.assertRaises(BridgeError) as cm:
+                    urlhandler.open_link(
+                        "idiff-bridge://demo/open?typo=1", host=host)
+            self.assertIn("no parameter 'typo'", str(cm.exception))
+
     def test_url_refuses_an_action_not_meant_for_links(self) -> None:
         with Sandbox() as box:
             box.install_template("demo")
@@ -343,6 +396,44 @@ class CliTest(unittest.TestCase):
                 with self.assertRaises(BridgeError) as cm:
                     urlhandler.open_link("idiff-bridge://demo/mark", host=host)
             self.assertIn("cannot be triggered by a link", str(cm.exception))
+
+
+class ButtonCommandTest(unittest.TestCase):
+    def test_button_command_pins_the_path_variables(self) -> None:
+        from idiff_bridge.context import action_command
+        with Sandbox() as box:
+            os.environ["IDIFF_BRIDGE_ADAPTERS"] = str(box.dir / "adapters")
+            try:
+                command = action_command("demo", "mark")
+            finally:
+                del os.environ["IDIFF_BRIDGE_ADAPTERS"]
+            self.assertEqual(command[0], "env")
+            self.assertIn(f"IDIFF_BRIDGE_ADAPTERS={box.dir / 'adapters'}", command)
+            self.assertIn(f"XDG_CONFIG_HOME={os.environ['XDG_CONFIG_HOME']}",
+                          command)
+            self.assertEqual(command[-3:], ["run", "demo", "mark"])
+
+    def test_button_command_never_carries_a_secret(self) -> None:
+        from idiff_bridge.context import action_command
+        with Sandbox():
+            os.environ["IDIFF_BRIDGE_DEMO_TOKEN"] = "hunter2"
+            try:
+                command = action_command("demo", "mark")
+            finally:
+                del os.environ["IDIFF_BRIDGE_DEMO_TOKEN"]
+            self.assertFalse(any("hunter2" in word for word in command))
+
+
+class ServiceTest(unittest.TestCase):
+    def test_reachable_accepts_any_http_answer(self) -> None:
+        from idiff_bridge.context import Service
+        with FakeService({}) as svc:      # "/" is a 404 here
+            self.assertEqual(Service(svc.base_url).reachable(), 404)
+
+    def test_reachable_reports_a_refused_connection(self) -> None:
+        from idiff_bridge.context import Service
+        with self.assertRaises(BridgeError):
+            Service("http://127.0.0.1:9", timeout=2).reachable()
 
 
 class HostTest(unittest.TestCase):

@@ -7,7 +7,7 @@ nothing about any of this.
 
 Layout:
 
-  transport.py   JSON-RPC client for idiff (length-prefixed, Unix socket)
+  transport.py   idiff RPC access, on top of tools/idiffctl/idiff_client.py
   session.py     per-idiff record of the config a bridge loaded into it
   config.py      Group/Item and the comparison-config writer
   adapter.py     Adapter base class and the @action decorator

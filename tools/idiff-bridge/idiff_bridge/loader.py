@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
-from .adapter import Adapter, Manifest, collect_actions
+from .adapter import ActionSpec, Adapter, Manifest, collect_actions
 from .errors import BridgeError
 
 try:  # Python 3.11+
@@ -37,7 +38,7 @@ def available() -> Dict[str, Path]:
     return found
 
 
-def _parse_toml(path: Path) -> Dict[str, Any]:
+def parse_toml(path: Path) -> Dict[str, Any]:
     if _toml is None:
         raise BridgeError(
             "Python 3.11 or newer is required to read adapter.toml")
@@ -48,7 +49,7 @@ def _parse_toml(path: Path) -> Dict[str, Any]:
 
 
 def read_manifest(directory: Path) -> Manifest:
-    doc = _parse_toml(directory / "adapter.toml")
+    doc = parse_toml(directory / "adapter.toml")
     m = Manifest(
         name=str(doc.get("name", directory.name)),
         entry=str(doc.get("entry", "")),
@@ -113,22 +114,45 @@ def load_adapter_by_name(name: str) -> Adapter:
     return load_adapter(found[name])
 
 
-_MISSING = object()
+_CONVERTIBLE = {int: "int", float: "float", bool: "bool", str: "string"}
 
 
-def coerce_params(adapter: Adapter, manifest: Manifest,
-                  action_name: str, raw: Dict[str, str]) -> Dict[str, Any]:
-    """Turn command-line strings into the types the action declares.
+def _declared_type(manifest: Manifest, action_name: str, param: inspect.Parameter,
+                   key: str) -> str:
+    """Type name for one action argument.
 
-    Types come from `[params.<action>.<arg>]` in adapter.toml, defaulting
-    to string.  Unknown arguments are an error: a typo in a key binding
-    should be visible, not silently dropped.
+    adapter.toml's `[params.<action>.<arg>] type` wins; otherwise the
+    annotation on the method decides; otherwise the value stays a string.
     """
-    declared = manifest.params.get(action_name, {})
+    spec = manifest.params.get(action_name, {}).get(key)
+    if spec and "type" in spec:
+        return str(spec["type"])
+    return _CONVERTIBLE.get(param.annotation, "string")
+
+
+def bind_params(spec: ActionSpec, manifest: Manifest,
+                raw: Dict[str, str]) -> Dict[str, Any]:
+    """Keyword arguments for an action from strings.
+
+    Shared by the command line and idiff-bridge:// links so both give an
+    action the same values.  The accepted names are the method's own
+    parameters after `self` and `ctx`; any other name is an error, so a
+    typo in a key binding or a link is visible instead of dropped.
+    """
+    # eval_str resolves annotations that "from __future__ import
+    # annotations" turned into strings.
+    params = list(inspect.signature(spec.func, eval_str=True)
+                  .parameters.values())[2:]
+    by_name = {p.name: p for p in params
+               if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
     out: Dict[str, Any] = {}
     for key, text in raw.items():
-        spec = declared.get(key, {"type": "string"})
-        kind = str(spec.get("type", "string"))
+        param = by_name.get(key)
+        if param is None:
+            raise BridgeError(
+                f"action {spec.name!r} has no parameter {key!r}; "
+                "accepted: " + (", ".join(by_name) or "none"))
+        kind = _declared_type(manifest, spec.name, param, key)
         try:
             if kind == "int":
                 out[key] = int(text)
@@ -139,8 +163,5 @@ def coerce_params(adapter: Adapter, manifest: Manifest,
             else:
                 out[key] = text
         except ValueError:
-            raise BridgeError(f"--{key}: {text!r} is not a valid {kind}")
-        if key not in declared:
-            raise BridgeError(
-                f"action {action_name!r} does not declare a parameter {key!r}")
+            raise BridgeError(f"{key}: {text!r} is not a valid {kind}")
     return out
