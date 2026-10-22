@@ -1,0 +1,35 @@
+# Adapter manifest.  "idiff-bridge doctor __NAME__" checks the setup that
+# this file describes; "idiff-bridge adapters" lists every installed
+# adapter and the actions it found.
+
+name = "__NAME__"
+entry = "adapter.py:Adapter"
+
+# Values the user supplies for this adapter.  Environment variables
+# IDIFF_BRIDGE___NAME___<KEY> override the file at
+# <config>/idiff-bridge/__NAME__.toml.
+[settings.server]
+required = true
+type = "string"
+doc = "Base URL of the service, for example http://host:8080"
+
+[settings.token]
+required = false
+secret = true
+doc = "Bearer token for the service, when it needs one"
+
+# Buttons that show_config() puts into idiff's actions panel.  Each one
+# runs "idiff-bridge __NAME__ <action> --<arg> <value>".  "key" is an
+# optional shortcut: [ctrl+][alt+][shift+]<a-z|0-9|f1-f12>.
+[[buttons]]
+label = "Mark reviewed"
+action = "mark"
+key = "alt+1"
+
+[buttons.args]
+verdict = "reviewed"
+
+# Argument types for "idiff-bridge run".  Undeclared arguments are
+# rejected, so a typo in a key binding fails loudly.
+[params.mark.verdict]
+type = "string"

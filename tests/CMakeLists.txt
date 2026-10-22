@@ -118,6 +118,17 @@ if(IDIFF_HAVE_RPC AND NOT WIN32)
             ENVIRONMENT PYTHONDONTWRITEBYTECODE=1
         )
     endif()
+    # adapter.toml is read with tomllib, which needs Python 3.11.
+    find_package(Python3 3.11 COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME idiff_bridge
+            COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/idiff-bridge
+        )
+        set_tests_properties(idiff_bridge PROPERTIES
+            ENVIRONMENT PYTHONDONTWRITEBYTECODE=1
+        )
+    endif()
 endif()
 
 # Xcode leaves arm64 binaries unsigned (no ad-hoc signature) when no
