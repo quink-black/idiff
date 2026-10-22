@@ -31,6 +31,8 @@ Tool surface (mirrors idiff RPC, with friendlier names)
   set_group_mode             -- none | by_name | by_folder image-list grouping
   set_group_by_name          -- older boolean form of set_group_mode
   screenshot                 -- compose what the viewport currently shows to a file
+  get_actions / set_actions / run_action
+                             -- the actions panel's buttons
   list_comparisons           -- enumerate file/config comparisons in the library
   set_comparison_reference   -- record a per-comparison reference path
   metrics_compare            -- PSNR / SSIM / MSE against the reference
@@ -508,6 +510,63 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_actions",
+            description=(
+                "List the buttons in idiff's actions panel: label, "
+                "command (argv), shortcut and origin ('user' for the "
+                "actions.json file, 'session' for buttons a client "
+                "registered). The index of a button is its position in "
+                "this list."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_actions",
+            description=(
+                "Replace the session buttons in idiff's actions panel. "
+                "Each button runs its command (an argument vector, no "
+                "shell) when clicked or when its shortcut is pressed, "
+                "with IDIFF_PID set to this idiff. An empty list removes "
+                "the session buttons; buttons from the user's "
+                "actions.json stay."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "command": {"type": "array",
+                                            "items": {"type": "string"},
+                                            "minItems": 1},
+                                "key": {"type": "string",
+                                        "description": "e.g. 'alt+1', "
+                                        "'ctrl+shift+k', 'f5'"},
+                            },
+                            "required": ["label", "command"],
+                        },
+                    },
+                },
+                "required": ["actions"],
+            },
+        ),
+        Tool(
+            name="run_action",
+            description=(
+                "Press the actions-panel button at 'index' (see "
+                "get_actions). Returns once the command has started, not "
+                "when it ends."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"index": {"type": "integer", "minimum": 0}},
+                "required": ["index"],
+            },
+        ),
+        Tool(
             name="load_comparison_config",
             description=(
                 "Load a JSON comparison-config file and replace the "
@@ -773,6 +832,17 @@ async def call_tool(
         return _ok(_call(instance, "selection.select_range",
                          {"from": int(arguments["from"]),
                           "to": int(arguments["to"])}))
+
+    if name == "get_actions":
+        return _ok(_call(instance, "actions.get"))
+
+    if name == "set_actions":
+        return _ok(_call(instance, "actions.set",
+                         {"actions": arguments["actions"]}))
+
+    if name == "run_action":
+        return _ok(_call(instance, "actions.run",
+                         {"index": int(arguments["index"])}))
 
     if name == "load_comparison_config":
         return _ok(_call(instance, "comparison_config.load",

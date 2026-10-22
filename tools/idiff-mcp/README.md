@@ -63,6 +63,7 @@ Tools that act on one entry take its `index` or, preferably, its `path`.
 | `screenshot` | Compose the viewport contents to a file |
 | `list_comparisons` / `set_comparison_reference` | Per-comparison references |
 | `load_comparison_config` / `switch_comparison_group` | Comparison-config sessions |
+| `get_actions` / `set_actions` / `run_action` | List, replace and press the buttons of the actions panel |
 | `set_timeline_frame` / `set_frame_offset` | Multi-frame timeline |
 | `reload_all` / `set_loader_backend` | Re-decode from disk, switch decoder |
 | `set_group_by_name` | Older boolean form of `set_group_mode` |

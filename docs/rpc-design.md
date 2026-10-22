@@ -162,7 +162,7 @@ Two motivating user scenarios (the original "why"):
 | `tools/idiffctl/idiffctl.py` | Command-line client: one JSON document per command, exit status per failure class. |
 | `tools/idiffctl/test_idiffctl.py` | idiffctl against fake servers on Unix sockets; registered with ctest as `idiffctl`. |
 | `tools/idiffctl/SKILL.md` | Agent skill that teaches coding agents to use idiffctl; the directory is symlinked into the agent's skill directory. |
-| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim (maintenance mode). 24 tools that map onto idiff RPC. |
+| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim (maintenance mode). 27 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
 | `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
 | `tools/idiff-mcp/README.md` | User-facing setup / usage docs. |
@@ -281,6 +281,9 @@ probe and has no direct tool.
 | `select_range` | `selection.select_range` |
 | `load_comparison_config` | `comparison_config.load` |
 | `switch_comparison_group` | `comparison_config.switch_group` |
+| `get_actions` | `actions.get` |
+| `set_actions` | `actions.set` |
+| `run_action` | `actions.run` |
 | `set_timeline_frame` | `timeline.set_frame` |
 | `set_frame_offset` | `timeline.set_frame_offset` (index or path) |
 | `reload_all` | `library.reload_all` |
