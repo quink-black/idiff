@@ -220,7 +220,7 @@ Below, *entry* stands for `index:int | path:string`.
 | `view.set_zoom_pan` | `{zoom?:float, pan_x?:float, pan_y?:float}` | `{}` — all fields optional |
 | `view.set_channel` | `{channel:"r"\|"g"\|"b"\|"a"\|"y"\|"u"\|"v"\|"none"\|"rgb"}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
-| `comparison_config.load` | `{path:string}` | `{entries:int, groups:int, current_group:int}` |
+| `comparison_config.load` | `{path:string}` | `{entries:int, groups:int, current_group:int}` — JSON shape and the URL/local-mirror rules are documented in `docs/comparison-config-format.md` |
 | `comparison_config.switch_group` | `{group_index:int}` | `{entries:int, current_group:int}` |
 | `actions.set` | `{actions:[{label:string, command:[string], key?:string}]}` | `{count:int}` — replaces the buttons a client registered for the actions panel (`[]` removes them); `count` is the total number of buttons, including those from the user's `actions.json`. `key` is `[ctrl+][alt+][shift+]<a-z\|0-9\|f1-f12>` |
 | `actions.run` | `{index:int}` | `{}` — starts the command of button `index` of `actions.get`, as a click does; returns once the command has started. The child gets `IDIFF_PID` in its environment |
