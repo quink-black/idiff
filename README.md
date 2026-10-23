@@ -108,6 +108,12 @@ Load a JSON file to batch-compare groups of images (local paths or URLs):
 
 Open via `File > Open Comparison Config...` or drag the JSON into the window. Adjacent groups are prefetched in the background.
 
+Other projects that generate these files should follow
+`docs/comparison-config-format.md`: it defines the canonical shape, the
+lenient aliases idiff accepts, and the URL-to-local-file rules that let
+one JSON load from http URLs on one machine and from a local mirror on
+another.
+
 ## Agent Control (JSON-RPC + MCP)
 
 Every running window hosts a JSON-RPC 2.0 server —

@@ -27,6 +27,11 @@ All notable changes to this project will be documented in this file.
   paths. Indices shift on every load and remove; paths do not.
 - **MCP tools** `set_group_mode`, `metrics_compare` and `pixel_sample`,
   and path arguments for the per-entry tools.
+- **Comparison-config format guide**: `docs/comparison-config-format.md`
+  is written for projects that generate comparison-config JSON. It fixes
+  the canonical shape, lists the aliases the lenient parser accepts, and
+  states how a URL resolves to a local file, so one JSON can be served
+  from http URLs on one machine and from a local mirror on another.
 
 ### Changed
 
