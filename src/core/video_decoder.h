@@ -3,6 +3,7 @@
 
 #ifdef IDIFF_HAVE_FFMPEG
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -68,8 +69,8 @@ struct VideoColorTags {
 //
 // Supports:
 //   - Sequential decoding (next frame)
-//   - Random-access seek (av_seek_frame to nearest keyframe, then decode forward)
-//   - Current-frame caching (repeated read_frame(N) returns cached result)
+//   - Random-access seek (seek to the start, then decode forward)
+//   - Byte-budgeted decoded-frame cache keyed by frame index
 //   - Auto-rotation from container display matrix metadata
 //   - Manual rotation override
 //
@@ -159,16 +160,29 @@ public:
     bool has_manual_rotation() const noexcept;
     void clear_manual_rotation() noexcept;
 
+    // --- Decoded-frame cache ---
+
+    // Byte budget for decoded frames retained by each decoder.  The value is
+    // process-wide and applies to every decoder instance.  Set it before any
+    // frame is decoded; existing caches trim to the new budget on their next
+    // insertion.  A budget of 0 keeps at most one frame per decoder.
+    static void set_frame_cache_budget(std::size_t bytes) noexcept;
+    static std::size_t frame_cache_budget() noexcept;
+
+    // Diagnostics for this decoder's cache.  Resident bytes count both the
+    // RGB24 Mat and the native AVFrame buffers held by each cached frame.
+    std::size_t frame_cache_resident_bytes() const noexcept;
+    std::size_t frame_cache_frames() const noexcept;
+    std::uint64_t frame_cache_hits() const noexcept;
+    std::uint64_t frame_cache_misses() const noexcept;
+
     // --- Decoding ---
 
     // Decode and return frame at the given index (0-based).
     // Returns an empty Mat on failure or out-of-range index.
     // The returned Mat is RGB24 (CV_8UC3), with rotation applied.
-    //
-    // Optimization:
-    //   - If index == current position, returns cached frame (no decode).
-    //   - If index == current + 1, decodes next frame sequentially.
-    //   - Otherwise, seeks to nearest keyframe and decodes forward.
+    // The returned Mat shares its buffer with the cache; callers must not
+    // modify it.  A cache hit does not change current_frame_index().
     cv::Mat decode_frame(int index);
 
     // Decode the frame at `index` and return a reference-counted handle
@@ -189,9 +203,9 @@ public:
     // Returns nullptr on failure (index out of range, decoder closed,
     // or decode error).  Sets last_error() on failure.
     //
-    // Calling this with the same index that was last decoded by either
-    // decode_frame() or decode_frame_raw() does not trigger a re-decode
-    // -- a fresh reference to the cached frame is returned.
+    // A cached frame is served from the decoder's frame cache without a
+    // re-decode; a fresh reference to that frame is returned.  The caller
+    // owns the returned AVFrame and must call av_frame_free() on it.
     struct ::AVFrame* decode_frame_raw(int index);
 
     // Fast approximate decode for scrubbing: seeks to the nearest keyframe

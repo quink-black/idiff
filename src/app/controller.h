@@ -172,6 +172,10 @@ public:
     std::size_t cpu_cache_budget() const noexcept;
     void set_cpu_cache_budget(std::size_t bytes);
 
+    // Byte budget for decoded video frames retained by each decoder.
+    // Forwarded to VideoDecoder; a no-op in FFmpeg-free builds.
+    void set_frame_cache_budget(std::size_t bytes);
+
     // ---- Per-comparison reference ---------------------------------
     //
     // A "comparison" is the set of images shown together when the

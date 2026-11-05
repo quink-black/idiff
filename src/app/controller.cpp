@@ -5,6 +5,7 @@
 #include "core/image_loader.h"
 #include "core/media_source.h"
 #ifdef IDIFF_HAVE_FFMPEG
+#include "core/video_decoder.h"
 #include "core/video_file_source.h"
 #endif
 #include "domain/comparison_config_service.h"
@@ -471,6 +472,14 @@ void AppController::set_cpu_cache_budget(std::size_t bytes) {
         library_->release_entry_pixels(static_cast<std::size_t>(idx));
     });
     diff_->mark_dirty();
+}
+
+void AppController::set_frame_cache_budget(std::size_t bytes) {
+#ifdef IDIFF_HAVE_FFMPEG
+    VideoDecoder::set_frame_cache_budget(bytes);
+#else
+    (void)bytes;
+#endif
 }
 
 namespace {

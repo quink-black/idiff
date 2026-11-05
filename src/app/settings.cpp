@@ -207,6 +207,9 @@ AppSettings AppSettings::load(const std::string& path) {
                 s.cpu_cache_mib = v;
                 loaded_cpu_budget = true;
             }
+        } else if (key == "cache.frame_mib") {
+            int v = std::atoi(val.c_str());
+            if (v > 0) s.frame_cache_mib = v;
         } else if (key == "cache.gpu_tile_mib") {
             int v = std::atoi(val.c_str());
             if (v > 0) s.gpu_tile_cache_mib = v;
@@ -275,6 +278,7 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.comparison_mode="   << comparison_mode   << "\n";
     out << "viewport.loader_backend="    << loader_backend    << "\n";
     out << "cache.cpu_mib="               << cpu_cache_mib     << "\n";
+    out << "cache.frame_mib="             << frame_cache_mib   << "\n";
     out << "cache.gpu_tile_mib="          << gpu_tile_cache_mib << "\n";
     for (size_t i = 0; i < session_paths.size(); ++i) {
         out << "session.path." << i << "=" << session_paths[i] << "\n";

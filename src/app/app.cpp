@@ -533,6 +533,9 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     controller_->set_cpu_cache_budget(
         static_cast<std::size_t>(state_->settings.cpu_cache_mib) *
         1024u * 1024u);
+    controller_->set_frame_cache_budget(
+        static_cast<std::size_t>(state_->settings.frame_cache_mib) *
+        1024u * 1024u);
 
     state_->file_watcher = std::make_unique<FileWatcher>();
 
