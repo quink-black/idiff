@@ -76,6 +76,9 @@ struct AppSettings {
     int lru_capacity = 20;
     // Bounds decoded data retained after entries leave the selection.
     int cpu_cache_mib = 2048;
+    // Bounds the decoded video frames retained by each decoder for
+    // frame-by-frame stepping.
+    int frame_cache_mib = 512;
     // Bounds full-resolution source and difference tiles, excluding proxies.
     int gpu_tile_cache_mib = 512;
 

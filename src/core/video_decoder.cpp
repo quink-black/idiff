@@ -16,10 +16,30 @@ extern "C" {
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
+#include <list>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace idiff {
+
+namespace {
+
+// Process-wide byte budget for every decoder's frame cache.  Decoders read
+// the value on each insertion so a changed setting takes effect without
+// rebuilding the decoder.  Only the GUI/RPC main thread decodes, but the
+// setter can run before the event loop, so the value is atomic.
+std::atomic<std::size_t> g_frame_cache_budget{512ull * 1024ull * 1024ull};
+
+// Secondary count ceiling: bounds bookkeeping overhead for very small
+// frames, where a byte budget alone would allow tens of thousands of
+// entries.  The byte budget stays the primary limit at display resolutions.
+constexpr std::size_t kFrameCacheMaxFrames = 512;
+
+}  // namespace
 
 // ============================================================================
 // Impl
@@ -69,10 +89,28 @@ struct VideoDecoder::Impl {
     bool has_manual_rotation = false;
     VideoRotation manual_rotation = VideoRotation::None;
 
-    // Decoding state
-    int current_frame_idx = -1;  // index of the last successfully decoded frame
-    cv::Mat cached_frame;        // cached RGB Mat of current_frame_idx
-    VideoRotation cached_rotation = VideoRotation::None;  // rotation applied to cached_frame
+    // Decoding state.  current_frame_idx is the decoder's real position in
+    // the stream; a frame-cache hit must not change it.
+    int current_frame_idx = -1;
+
+    // Byte-budgeted LRU of decoded frames, keyed by absolute frame index.
+    // Each entry owns a refcounted native AVFrame and shares the RGB Mat
+    // with callers.  Entries are evicted least-recently-used first.
+    struct CachedFrame {
+        cv::Mat rgb;
+        AVFrame* raw = nullptr;
+        std::size_t bytes = 0;
+    };
+    struct DecodedPair {
+        cv::Mat rgb;
+        AVFrame* raw = nullptr;
+    };
+    std::list<int> frame_lru_;
+    std::unordered_map<int, CachedFrame> frame_cache_;
+    std::unordered_map<int, std::list<int>::iterator> frame_pos_;
+    std::size_t frame_resident_bytes_ = 0;
+    std::uint64_t frame_hits_ = 0;
+    std::uint64_t frame_misses_ = 0;
 
     // Stream time_base for PTS/seek calculations
     AVRational time_base{0, 1};
@@ -88,6 +126,16 @@ struct VideoDecoder::Impl {
     // `frame`.  Cheap: bumps refcounts, no pixel copies.  Idempotent
     // for the same frame index.
     void snapshot_current_frame();
+
+    // Produce the final RGB Mat and a refcounted native frame for the
+    // frame currently in `frame`.  Caller owns the returned AVFrame.
+    DecodedPair finish_frame(VideoRotation rot);
+
+    static std::size_t frame_weight(const cv::Mat& rgb, const AVFrame* raw);
+    void frame_cache_touch(int idx);
+    void frame_cache_erase(int idx);
+    void frame_cache_clear();
+    void frame_cache_insert(int idx, const cv::Mat& rgb, AVFrame* raw);
 };
 
 // Determine the effective rotation to apply.
@@ -239,10 +287,9 @@ cv::Mat VideoDecoder::Impl::seek_keyframe(int index) {
     // Invalidate decode position: the format context and codec are now
     // at an unknown frame.  The next decode_frame() must perform a full
     // seek rather than assuming it can decode forward from the cached
-    // position.
+    // position.  The exact-frame cache stays intact: it holds frames
+    // decoded earlier, not the approximate keyframe produced here.
     current_frame_idx = -1;
-    cached_frame = cv::Mat();
-    cached_rotation = VideoRotation::None;
 
     // Decode packets until we get the first video frame (the keyframe).
     // Limit attempts to avoid runaway reads on corrupt streams.
@@ -327,6 +374,94 @@ void VideoDecoder::Impl::snapshot_current_frame() {
                  static_cast<int>(tags.range));
         color_tags_logged = true;
     }
+}
+
+// Count every distinct AVBufferRef once.  Several pixel formats point
+// multiple planes at the same buffer, so summing buf[] directly would
+// over-count the memory a cached frame keeps alive.
+std::size_t VideoDecoder::Impl::frame_weight(const cv::Mat& rgb,
+                                             const AVFrame* raw) {
+    std::size_t total = static_cast<std::size_t>(rgb.step[0]) *
+                        static_cast<std::size_t>(rgb.rows);
+    if (!raw) return total;
+    std::unordered_set<const AVBufferRef*> seen;
+    auto add = [&](const AVBufferRef* b) {
+        if (b && seen.insert(b).second)
+            total += static_cast<std::size_t>(b->size);
+    };
+    for (int i = 0; i < AV_NUM_DATA_POINTERS; ++i) add(raw->buf[i]);
+    if (raw->extended_buf) {
+        for (int i = 0; i < raw->nb_extended_buf; ++i)
+            add(raw->extended_buf[i]);
+    }
+    return total;
+}
+
+void VideoDecoder::Impl::frame_cache_touch(int idx) {
+    auto it = frame_pos_.find(idx);
+    if (it == frame_pos_.end()) return;
+    frame_lru_.splice(frame_lru_.begin(), frame_lru_, it->second);
+}
+
+void VideoDecoder::Impl::frame_cache_erase(int idx) {
+    auto it = frame_cache_.find(idx);
+    if (it == frame_cache_.end()) return;
+    frame_resident_bytes_ -= it->second.bytes;
+    if (it->second.raw) av_frame_free(&it->second.raw);
+    frame_cache_.erase(it);
+    auto pit = frame_pos_.find(idx);
+    if (pit != frame_pos_.end()) {
+        frame_lru_.erase(pit->second);
+        frame_pos_.erase(pit);
+    }
+}
+
+void VideoDecoder::Impl::frame_cache_clear() {
+    for (auto& kv : frame_cache_) {
+        if (kv.second.raw) av_frame_free(&kv.second.raw);
+    }
+    frame_cache_.clear();
+    frame_lru_.clear();
+    frame_pos_.clear();
+    frame_resident_bytes_ = 0;
+}
+
+void VideoDecoder::Impl::frame_cache_insert(int idx, const cv::Mat& rgb,
+                                            AVFrame* raw) {
+    frame_cache_erase(idx);
+    const std::size_t weight = frame_weight(rgb, raw);
+    const std::size_t budget =
+        g_frame_cache_budget.load(std::memory_order_relaxed);
+
+    // Evict before inserting so the byte budget is a hard high-water mark.
+    // A frame larger than the budget is kept, but nothing else is.
+    if (weight > budget) {
+        frame_cache_clear();
+    } else {
+        while (!frame_lru_.empty() &&
+               (frame_cache_.size() + 1 > kFrameCacheMaxFrames ||
+                frame_resident_bytes_ + weight > budget)) {
+            frame_cache_erase(frame_lru_.back());
+        }
+    }
+
+    CachedFrame entry;
+    entry.rgb = rgb;
+    entry.raw = raw;
+    entry.bytes = weight;
+    frame_lru_.push_front(idx);
+    frame_pos_[idx] = frame_lru_.begin();
+    frame_cache_.emplace(idx, std::move(entry));
+    frame_resident_bytes_ += weight;
+}
+
+VideoDecoder::Impl::DecodedPair
+VideoDecoder::Impl::finish_frame(VideoRotation rot) {
+    snapshot_current_frame();
+    DecodedPair out;
+    out.rgb = apply_rotation(frame_to_mat(), rot);
+    out.raw = frame ? av_frame_clone(frame) : nullptr;
+    return out;
 }
 
 // Convert the current AVFrame to an sRGB cv::Mat (no rotation applied).
@@ -633,8 +768,6 @@ bool VideoDecoder::open(const std::string& path) {
     impl_->color_tags_logged = false;
     impl_->last_error.clear();
 
-    impl_->cached_rotation = VideoRotation::None;
-
     LOG_INFO("VideoDecoder: opened '%s' (%dx%d, %s, %.2f fps, %d frames, rotation=%d°)",
              path.c_str(), impl_->coded_width, impl_->coded_height,
              impl_->codec_name.c_str(), impl_->fps, impl_->frame_count,
@@ -644,6 +777,7 @@ bool VideoDecoder::open(const std::string& path) {
 }
 
 void VideoDecoder::close() {
+    impl_->frame_cache_clear();
     impl_->display_graph.reset();
     if (impl_->frame) {
         av_frame_free(&impl_->frame);
@@ -665,8 +799,8 @@ void VideoDecoder::close() {
     impl_->current_frame_idx = -1;
     impl_->cached_av_frame_idx = -1;
     impl_->color_tags_logged = false;
-    impl_->cached_frame = cv::Mat();
-    impl_->cached_rotation = VideoRotation::None;
+    impl_->frame_hits_ = 0;
+    impl_->frame_misses_ = 0;
 }
 
 bool VideoDecoder::is_open() const noexcept {
@@ -713,6 +847,30 @@ VideoDecoder::SAR VideoDecoder::sar() const noexcept {
 int VideoDecoder::current_frame_index() const noexcept { return impl_->current_frame_idx; }
 const std::string& VideoDecoder::last_error() const noexcept { return impl_->last_error; }
 
+void VideoDecoder::set_frame_cache_budget(std::size_t bytes) noexcept {
+    g_frame_cache_budget.store(bytes, std::memory_order_relaxed);
+}
+
+std::size_t VideoDecoder::frame_cache_budget() noexcept {
+    return g_frame_cache_budget.load(std::memory_order_relaxed);
+}
+
+std::size_t VideoDecoder::frame_cache_resident_bytes() const noexcept {
+    return impl_->frame_resident_bytes_;
+}
+
+std::size_t VideoDecoder::frame_cache_frames() const noexcept {
+    return impl_->frame_cache_.size();
+}
+
+std::uint64_t VideoDecoder::frame_cache_hits() const noexcept {
+    return impl_->frame_hits_;
+}
+
+std::uint64_t VideoDecoder::frame_cache_misses() const noexcept {
+    return impl_->frame_misses_;
+}
+
 VideoColorTags VideoDecoder::frame_color_tags() const noexcept {
     VideoColorTags tags;
     if (impl_->cached_av_frame &&
@@ -736,8 +894,7 @@ VideoRotation VideoDecoder::effective_rotation() const noexcept {
 
 void VideoDecoder::set_autorotate(bool enabled) noexcept {
     impl_->autorotate = enabled;
-    // Invalidate cache if rotation changed
-    impl_->cached_frame = cv::Mat();
+    impl_->frame_cache_clear();
 }
 
 bool VideoDecoder::autorotate() const noexcept {
@@ -747,8 +904,7 @@ bool VideoDecoder::autorotate() const noexcept {
 void VideoDecoder::set_manual_rotation(VideoRotation rotation) noexcept {
     impl_->has_manual_rotation = true;
     impl_->manual_rotation = rotation;
-    // Invalidate cache since rotation changed
-    impl_->cached_frame = cv::Mat();
+    impl_->frame_cache_clear();
 }
 
 VideoRotation VideoDecoder::manual_rotation() const noexcept {
@@ -762,8 +918,7 @@ bool VideoDecoder::has_manual_rotation() const noexcept {
 void VideoDecoder::clear_manual_rotation() noexcept {
     impl_->has_manual_rotation = false;
     impl_->manual_rotation = VideoRotation::None;
-    // Invalidate cache
-    impl_->cached_frame = cv::Mat();
+    impl_->frame_cache_clear();
 }
 
 cv::Mat VideoDecoder::decode_frame(int index) {
@@ -777,73 +932,53 @@ cv::Mat VideoDecoder::decode_frame(int index) {
         return {};
     }
 
+    // A cache hit must leave current_frame_idx alone: that member tracks
+    // the decoder's real position in the stream, which the sequential-read
+    // branches below depend on.
+    auto cached = impl_->frame_cache_.find(index);
+    if (cached != impl_->frame_cache_.end()) {
+        impl_->frame_cache_touch(index);
+        ++impl_->frame_hits_;
+        impl_->last_error.clear();
+        return cached->second.rgb;
+    }
+    ++impl_->frame_misses_;
+
     const VideoRotation rot = impl_->current_effective_rotation();
 
-    // Cache hit: return the already-decoded frame (if rotation hasn't changed)
-    if (index == impl_->current_frame_idx && !impl_->cached_frame.empty()
-        && impl_->cached_rotation == rot) {
-        impl_->last_error.clear();
-        return impl_->cached_frame;
-    }
-
-    // If same frame but rotation changed, just re-apply rotation
-    if (index == impl_->current_frame_idx && impl_->cached_rotation != rot) {
-        cv::Mat raw = impl_->frame_to_mat();
-        impl_->cached_frame = impl_->apply_rotation(raw, rot);
-        impl_->cached_rotation = rot;
-        impl_->last_error.clear();
-        return impl_->cached_frame;
-    }
-
-    // Sequential read optimization: if requesting the next frame, just decode it
-    if (index == impl_->current_frame_idx + 1) {
-        if (impl_->decode_next_frame()) {
-            impl_->snapshot_current_frame();
-            cv::Mat raw = impl_->frame_to_mat();
-            impl_->cached_frame = impl_->apply_rotation(raw, rot);
-            impl_->cached_rotation = rot;
-            impl_->last_error.clear();
-            return impl_->cached_frame;
-        }
-        impl_->last_error = "failed to decode next frame";
-        return {};
-    }
-
-    // Forward-decode optimization: if the target is ahead of current position
-    // and within a reasonable distance, just decode forward without seeking.
-    // This avoids the expensive seek-to-beginning for small forward jumps.
-    // Skip when current_frame_idx is -1 (invalidated state) -- the stream
-    // position is unknown and forward-decode would read from the wrong spot.
+    // Sequential read, short forward decode, or a full seek.  Forward
+    // decode is skipped when the position was invalidated by a keyframe
+    // preview, because the stream then sits at an unknown frame.
     static constexpr int kMaxForwardDecode = 30;  // ~1 second at 30fps
-    if (impl_->current_frame_idx >= 0 &&
-        index > impl_->current_frame_idx &&
-        index - impl_->current_frame_idx <= kMaxForwardDecode) {
+    if (index == impl_->current_frame_idx + 1) {
+        if (!impl_->decode_next_frame()) {
+            impl_->last_error = "failed to decode next frame";
+            return {};
+        }
+    } else if (impl_->current_frame_idx >= 0 &&
+               index > impl_->current_frame_idx &&
+               index - impl_->current_frame_idx <= kMaxForwardDecode) {
         while (impl_->current_frame_idx < index) {
             if (!impl_->decode_next_frame()) {
                 impl_->last_error = "failed to decode forward to target frame";
                 return {};
             }
         }
-        impl_->snapshot_current_frame();
-        cv::Mat raw = impl_->frame_to_mat();
-        impl_->cached_frame = impl_->apply_rotation(raw, rot);
-        impl_->cached_rotation = rot;
-        impl_->last_error.clear();
-        return impl_->cached_frame;
+    } else {
+        if (!impl_->seek_to_frame(index)) {
+            // last_error already set by seek_to_frame
+            return {};
+        }
     }
 
-    // Random access: seek and decode forward
-    if (!impl_->seek_to_frame(index)) {
-        // last_error already set by seek_to_frame
+    Impl::DecodedPair pair = impl_->finish_frame(rot);
+    if (pair.rgb.empty()) {
+        if (pair.raw) av_frame_free(&pair.raw);
         return {};
     }
-
-    impl_->snapshot_current_frame();
-    cv::Mat raw = impl_->frame_to_mat();
-    impl_->cached_frame = impl_->apply_rotation(raw, rot);
-    impl_->cached_rotation = rot;
+    impl_->frame_cache_insert(index, pair.rgb, pair.raw);
     impl_->last_error.clear();
-    return impl_->cached_frame;
+    return pair.rgb;
 }
 
 cv::Mat VideoDecoder::decode_keyframe(int index) {
@@ -876,35 +1011,22 @@ AVFrame* VideoDecoder::decode_frame_raw(int index) {
         return nullptr;
     }
 
-    // If neither the cached snapshot nor the live decoder position is at
-    // `index`, drive a full decode through decode_frame() so we exercise
-    // the same caching, sequential-read and seek logic in exactly one
-    // place.  decode_frame() takes the snapshot for us at every full
-    // decode point, so on return cached_av_frame_idx == index.
-    const bool snap_hit = (impl_->cached_av_frame_idx == index &&
-                           impl_->cached_av_frame &&
-                           impl_->cached_av_frame->buf[0] != nullptr);
-    if (!snap_hit) {
+    auto it = impl_->frame_cache_.find(index);
+    if (it == impl_->frame_cache_.end()) {
         cv::Mat m = decode_frame(index);
         if (m.empty()) {
             // last_error already populated by decode_frame()
             return nullptr;
         }
-        // decode_frame() at the cache-hit-with-same-rotation path does
-        // not redecode and therefore does not snapshot.  Cover that
-        // case by snapping here -- it's a no-op when the snapshot is
-        // already current.
-        impl_->snapshot_current_frame();
+        it = impl_->frame_cache_.find(index);
     }
-
-    if (impl_->cached_av_frame_idx != index ||
-        !impl_->cached_av_frame ||
-        impl_->cached_av_frame->buf[0] == nullptr) {
+    if (it == impl_->frame_cache_.end() || !it->second.raw) {
         impl_->last_error = "raw frame snapshot unavailable";
         return nullptr;
     }
 
-    AVFrame* out = av_frame_clone(impl_->cached_av_frame);
+    impl_->frame_cache_touch(index);
+    AVFrame* out = av_frame_clone(it->second.raw);
     if (!out) {
         impl_->last_error = "av_frame_clone failed";
         return nullptr;
