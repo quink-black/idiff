@@ -174,6 +174,7 @@ public:
 
     // Byte budget for decoded video frames retained by each decoder.
     // Forwarded to VideoDecoder; a no-op in FFmpeg-free builds.
+    std::size_t frame_cache_budget() const noexcept;
     void set_frame_cache_budget(std::size_t bytes);
 
     // ---- Per-comparison reference ---------------------------------
@@ -364,6 +365,7 @@ private:
     ActionRegistry actions_;
     IStatusReporter* status_reporter_;
     LoaderBackend loader_backend_ = ImageLoader::default_backend();
+    std::size_t frame_cache_budget_ = 512ull * 1024ull * 1024ull;
 
     // Current grouping mode (ByName / ByFolder / None).  Drives sort
     // strategy, group key extraction, and comparison key namespace.

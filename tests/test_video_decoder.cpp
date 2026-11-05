@@ -510,4 +510,70 @@ TEST_CASE("VideoDecoder: keyframe preview leaves exact frames untouched",
     CHECK(same_pixels(decoder.decode_frame(5), expected[5]));
 }
 
+TEST_CASE("VideoDecoder: frame 0 after a keyframe preview is exact",
+          "[video][decoder][cache][regression]") {
+    if (!has_test_video()) SKIP("Test video not available");
+    ScopedFrameCacheBudget budget(512ull * 1024ull * 1024ull);
+
+    VideoDecoder oracle;
+    REQUIRE(oracle.open(kTestVideoPath));
+    cv::Mat expected0 = oracle.decode_frame(0).clone();
+    cv::Mat expected5 = oracle.decode_frame(5).clone();
+    REQUIRE_FALSE(expected0.empty());
+    REQUIRE_FALSE(expected5.empty());
+
+    VideoDecoder decoder;
+    REQUIRE(decoder.open(kTestVideoPath));
+    REQUIRE_FALSE(decoder.decode_frame(5).empty());
+    // A preview invalidates the decode position (current_frame_idx = -1)
+    // and leaves frame 0 out of the cache, so read_frame(0) used to take
+    // the sequential branch and return the keyframe the preview landed on.
+    REQUIRE_FALSE(decoder.decode_keyframe(8).empty());
+
+    CHECK(same_pixels(decoder.decode_frame(0), expected0));
+    CHECK(same_pixels(decoder.decode_frame(5), expected5));
+}
+
+TEST_CASE("VideoDecoder: clear_frame_cache drops retained frames",
+          "[video][decoder][cache]") {
+    if (!has_test_video()) SKIP("Test video not available");
+    ScopedFrameCacheBudget budget(512ull * 1024ull * 1024ull);
+
+    VideoDecoder decoder;
+    REQUIRE(decoder.open(kTestVideoPath));
+    cv::Mat frame3 = decoder.decode_frame(3).clone();
+    REQUIRE_FALSE(frame3.empty());
+    REQUIRE(decoder.frame_cache_frames() == 1);
+
+    decoder.clear_frame_cache();
+    CHECK(decoder.frame_cache_frames() == 0);
+    CHECK(decoder.frame_cache_resident_bytes() == 0);
+    CHECK(same_pixels(decoder.decode_frame(3), frame3));
+}
+
+TEST_CASE("VideoDecoder: rotation change re-derives the current frame",
+          "[video][decoder][cache][rotation]") {
+    if (!has_test_video()) SKIP("Test video not available");
+    ScopedFrameCacheBudget budget(512ull * 1024ull * 1024ull);
+
+    VideoDecoder decoder;
+    REQUIRE(decoder.open(kTestVideoPath));
+    decoder.set_autorotate(false);
+    REQUIRE_FALSE(decoder.decode_frame(6).empty());
+
+    decoder.set_manual_rotation(VideoRotation::CW180);
+    CHECK(decoder.frame_cache_frames() == 0);
+    cv::Mat rotated = decoder.decode_frame(6);
+    REQUIRE_FALSE(rotated.empty());
+
+    VideoDecoder oracle;
+    REQUIRE(oracle.open(kTestVideoPath));
+    oracle.set_autorotate(false);
+    oracle.set_manual_rotation(VideoRotation::CW180);
+    cv::Mat expected;
+    for (int i = 0; i <= 6; ++i) expected = oracle.decode_frame(i).clone();
+    REQUIRE_FALSE(expected.empty());
+    CHECK(same_pixels(rotated, expected));
+}
+
 #endif  // IDIFF_HAVE_FFMPEG

@@ -140,6 +140,10 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
     return img;
 }
 
+void VideoFileSource::clear_frame_cache() {
+    if (decoder_) decoder_->clear_frame_cache();
+}
+
 std::unique_ptr<Image> VideoFileSource::read_keyframe(int index) {
     if (!is_valid()) {
         last_error_ = "video source not open";

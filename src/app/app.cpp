@@ -1371,6 +1371,8 @@ void App::save_settings() {
     s.loader_backend = static_cast<int>(controller_->loader_backend());
     s.cpu_cache_mib = static_cast<int>(
         controller_->cpu_cache_budget() / (1024u * 1024u));
+    s.frame_cache_mib = static_cast<int>(
+        controller_->frame_cache_budget() / (1024u * 1024u));
 
     // Viewport overlay options (may also be written directly by the
     // viewport panel; sync from the viewport object so the settings
