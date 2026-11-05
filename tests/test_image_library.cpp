@@ -25,6 +25,7 @@
 #include "core/media_source.h" // IWYU pragma: keep
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -59,6 +60,29 @@ private:
     std::uintptr_t next_cookie_ = 0;
     std::vector<SDL_Texture*> destroy_log_;
     std::unordered_set<SDL_Texture*> live_;
+};
+
+// MediaSource whose frame cache records how often it was released.
+class CacheSource : public idiff::MediaSource {
+public:
+    int frame_count() const noexcept override { return 1; }
+    int width() const noexcept override { return 1; }
+    int height() const noexcept override { return 1; }
+    const std::string& format_description() const noexcept override {
+        return description_;
+    }
+    std::unique_ptr<idiff::Image> read_frame(int /*index*/) override {
+        return nullptr;
+    }
+    const std::string& last_error() const noexcept override { return error_; }
+    void clear_frame_cache() override { ++clears_; }
+
+    int clears() const noexcept { return clears_; }
+
+private:
+    std::string description_ = "cache probe";
+    std::string error_;
+    int clears_ = 0;
 };
 
 idiff::ImageEntry make_entry(const std::string& filename) {
@@ -354,4 +378,28 @@ TEST_CASE("ImageLibrary destructor releases remaining textures",
     }
     CHECK(up.live().empty());
     CHECK(up.destroy_log().size() == 4);
+}
+
+TEST_CASE("ImageLibrary releasing pixels clears the source frame cache",
+          "[domain][image_library]") {
+    FakeUploader up;
+    idiff::ImageLibrary lib(up);
+    lib.add(make_entry("a.mp4"));
+
+    auto source = std::make_unique<CacheSource>();
+    CacheSource* probe = source.get();
+    lib.all()[0].source = std::move(source);
+
+    idiff::UploadRequest req;
+    static const std::uint8_t pixel[4] = {0, 0, 0, 0};
+    req.pixels = pixel;
+    req.width = 1;
+    req.height = 1;
+    req.channels = 4;
+    lib.upload(0, req);
+
+    CHECK(probe->clears() == 0);
+    lib.release_entry_pixels(0);
+    CHECK(probe->clears() == 1);
+    CHECK(lib.at(0).texture == nullptr);
 }

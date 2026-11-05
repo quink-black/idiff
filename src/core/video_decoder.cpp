@@ -28,10 +28,12 @@ namespace idiff {
 
 namespace {
 
-// Process-wide byte budget for every decoder's frame cache.  Decoders read
-// the value on each insertion so a changed setting takes effect without
-// rebuilding the decoder.  Only the GUI/RPC main thread decodes, but the
-// setter can run before the event loop, so the value is atomic.
+// One configured byte budget shared by every decoder.  Each decoder
+// enforces it against its own cache, so aggregate retained memory scales
+// with the number of open decoders.  Decoders read the value on each
+// insertion so a changed setting takes effect without rebuilding them.
+// Only the GUI/RPC main thread decodes, but the setter can run before the
+// event loop, so the value is atomic.
 std::atomic<std::size_t> g_frame_cache_budget{512ull * 1024ull * 1024ull};
 
 // Secondary count ceiling: bounds bookkeeping overhead for very small
@@ -130,6 +132,11 @@ struct VideoDecoder::Impl {
     // Produce the final RGB Mat and a refcounted native frame for the
     // frame currently in `frame`.  Caller owns the returned AVFrame.
     DecodedPair finish_frame(VideoRotation rot);
+
+    // Point cached_av_frame at a frame served from the cache, so
+    // frame_color_tags() describes the frame just returned rather than
+    // the last one decoded.  The one-shot diagnostic is not repeated.
+    void snapshot_cached_frame(int idx, const AVFrame* raw);
 
     static std::size_t frame_weight(const cv::Mat& rgb, const AVFrame* raw);
     void frame_cache_touch(int idx);
@@ -453,6 +460,17 @@ void VideoDecoder::Impl::frame_cache_insert(int idx, const cv::Mat& rgb,
     frame_pos_[idx] = frame_lru_.begin();
     frame_cache_.emplace(idx, std::move(entry));
     frame_resident_bytes_ += weight;
+}
+
+void VideoDecoder::Impl::snapshot_cached_frame(int idx, const AVFrame* raw) {
+    if (!cached_av_frame || !raw) return;
+    if (cached_av_frame_idx == idx && cached_av_frame->buf[0] != nullptr) return;
+    av_frame_unref(cached_av_frame);
+    if (av_frame_ref(cached_av_frame, raw) < 0) {
+        cached_av_frame_idx = -1;
+        return;
+    }
+    cached_av_frame_idx = idx;
 }
 
 VideoDecoder::Impl::DecodedPair
@@ -855,6 +873,10 @@ std::size_t VideoDecoder::frame_cache_budget() noexcept {
     return g_frame_cache_budget.load(std::memory_order_relaxed);
 }
 
+void VideoDecoder::clear_frame_cache() noexcept {
+    impl_->frame_cache_clear();
+}
+
 std::size_t VideoDecoder::frame_cache_resident_bytes() const noexcept {
     return impl_->frame_resident_bytes_;
 }
@@ -938,6 +960,7 @@ cv::Mat VideoDecoder::decode_frame(int index) {
     auto cached = impl_->frame_cache_.find(index);
     if (cached != impl_->frame_cache_.end()) {
         impl_->frame_cache_touch(index);
+        impl_->snapshot_cached_frame(index, cached->second.raw);
         ++impl_->frame_hits_;
         impl_->last_error.clear();
         return cached->second.rgb;
@@ -946,11 +969,28 @@ cv::Mat VideoDecoder::decode_frame(int index) {
 
     const VideoRotation rot = impl_->current_effective_rotation();
 
-    // Sequential read, short forward decode, or a full seek.  Forward
-    // decode is skipped when the position was invalidated by a keyframe
-    // preview, because the stream then sits at an unknown frame.
+    // The live AVFrame still holds the frame at current_frame_idx, so a
+    // request for that index can be re-derived without decoding.  This is
+    // the path a rotation change takes after it clears the RGB cache.
+    if (impl_->current_frame_idx >= 0 &&
+        index == impl_->current_frame_idx && impl_->frame) {
+        Impl::DecodedPair pair = impl_->finish_frame(rot);
+        if (!pair.rgb.empty()) {
+            impl_->frame_cache_insert(index, pair.rgb, pair.raw);
+            impl_->last_error.clear();
+            return pair.rgb;
+        }
+        if (pair.raw) av_frame_free(&pair.raw);
+        return {};
+    }
+
+    // Sequential read, short forward decode, or a full seek.  A keyframe
+    // preview sets current_frame_idx to -1, so both forward branches must
+    // require a known (>= 0) stream position; otherwise index 0 would
+    // satisfy 0 == -1 + 1 and decode from the preview's keyframe.
     static constexpr int kMaxForwardDecode = 30;  // ~1 second at 30fps
-    if (index == impl_->current_frame_idx + 1) {
+    if (impl_->current_frame_idx >= 0 &&
+        index == impl_->current_frame_idx + 1) {
         if (!impl_->decode_next_frame()) {
             impl_->last_error = "failed to decode next frame";
             return {};

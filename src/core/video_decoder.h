@@ -162,12 +162,19 @@ public:
 
     // --- Decoded-frame cache ---
 
-    // Byte budget for decoded frames retained by each decoder.  The value is
-    // process-wide and applies to every decoder instance.  Set it before any
-    // frame is decoded; existing caches trim to the new budget on their next
-    // insertion.  A budget of 0 keeps at most one frame per decoder.
+    // Byte budget for decoded frames retained by one decoder.  The value is
+    // shared by every decoder instance, but each cache enforces it against
+    // its own frames, so aggregate retained memory is roughly this value
+    // times the number of open decoders.  Set it before any frame is
+    // decoded; existing caches trim to a new budget on their next
+    // insertion.  A frame larger than the budget is retained alone.
     static void set_frame_cache_budget(std::size_t bytes) noexcept;
     static std::size_t frame_cache_budget() noexcept;
+
+    // Drop all decoded frames retained by this decoder.  A subsequent
+    // read_frame() decodes again.  No effect on the decoder's stream
+    // position; the next read may therefore hit a sequential branch.
+    void clear_frame_cache() noexcept;
 
     // Diagnostics for this decoder's cache.  Resident bytes count both the
     // RGB24 Mat and the native AVFrame buffers held by each cached frame.

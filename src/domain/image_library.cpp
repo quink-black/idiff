@@ -184,6 +184,10 @@ void ImageLibrary::release_entry_pixels(std::size_t index) {
     if (index >= entries_.size()) return;
     auto& e = entries_[index];
     destroy_entry_textures(uploader_, e);
+    // Decoded frames held by the source are not part of the entry's
+    // Image/display_image weights, so release them here too.  Otherwise a
+    // video entry evicted from the LRU keeps its whole frame cache alive.
+    if (e.source) e.source->clear_frame_cache();
     e.release_pixel_data();
 }
 

@@ -45,6 +45,11 @@ public:
         return read_frame(index);
     }
 
+    // Release decoded frames retained between read_frame() calls.  A later
+    // read_frame() may need to decode again.  Sources that do not retain
+    // frames need no override.
+    virtual void clear_frame_cache() {}
+
     // Last error message from the most recent read_frame() failure, if any.
     virtual const std::string& last_error() const noexcept = 0;
 };

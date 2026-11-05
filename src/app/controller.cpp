@@ -474,11 +474,14 @@ void AppController::set_cpu_cache_budget(std::size_t bytes) {
     diff_->mark_dirty();
 }
 
+std::size_t AppController::frame_cache_budget() const noexcept {
+    return frame_cache_budget_;
+}
+
 void AppController::set_frame_cache_budget(std::size_t bytes) {
+    frame_cache_budget_ = bytes;
 #ifdef IDIFF_HAVE_FFMPEG
     VideoDecoder::set_frame_cache_budget(bytes);
-#else
-    (void)bytes;
 #endif
 }
 
