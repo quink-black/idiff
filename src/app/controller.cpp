@@ -825,7 +825,8 @@ int AppController::reload_entries_by_path(
                 entries[i].texture_dirty = true;
                 ++reloaded;
             }
-            break;
+            // No break: duplicate_entry() can create several entries
+            // that share one path, and each holds its own decoder.
         }
     }
     if (reloaded > 0) {
@@ -972,6 +973,40 @@ AppController::load_images(const std::vector<std::string>& paths,
     apply_comparison_reference();
 
     return result;
+}
+
+int AppController::duplicate_entry(int index, int frame_offset) {
+    auto& entries = library_->all();
+    if (index < 0 || index >= static_cast<int>(entries.size())) return -1;
+
+    const std::string path = entries[index].path;
+    std::string err;
+    auto source = open_media_source(path, loader_backend_, err);
+    if (!source) return -1;
+
+    ImageEntry entry;
+    entry.path = path;
+    auto sep = path.find_last_of("/\\");
+    entry.filename = (sep != std::string::npos) ? path.substr(sep + 1)
+                                                : path;
+    entry.display_label = entry.filename;
+    // Two entries now share one path, so give the duplicate its own
+    // label suffix; compute_display_labels() cannot otherwise tell
+    // them apart.
+    entry.label_suffix = " (frame offset " + std::to_string(frame_offset);
+    if (source->frame_count() > 1) {
+        entry.label_suffix += ", " + std::to_string(source->frame_count())
+                              + " frames";
+    }
+    entry.label_suffix += ")";
+    entry.source = std::move(source);
+    entry.frame_offset = frame_offset;
+    entry.texture_dirty = true;
+
+    library_->add(std::move(entry));
+    compute_display_labels();
+    diff_->mark_dirty();
+    return static_cast<int>(library_->all().size()) - 1;
 }
 
 AppController::SwitchGroupResult

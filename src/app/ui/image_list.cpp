@@ -1,6 +1,7 @@
 #include "app/ui/image_list.h"
 
 #include "app/app.h"             // ImageEntry
+#include "core/media_source.h"   // MediaSource::frame_count()
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/group_key.h"
@@ -171,6 +172,13 @@ void render_image_list(const ImageListInputs& in) {
         ImGui::TextColored(ImVec4(0.40f, 0.80f, 1.00f, 1.00f),
                            "%zu selected", selection.size());
     }
+
+    // Duplicating for frame comparison appends to `entries`.  It must
+    // not run while the row loop iterates that vector: group_keys was
+    // sized before the loop, so an extra row would read past its end,
+    // and removal callbacks shrink `entries` mid-loop.  Record the click
+    // and apply it after the list has finished rendering.
+    int pending_duplicate_index = -1;
 
     float list_height = ImGui::GetContentRegionAvail().y;
     if (ImGui::BeginChild("##image_list_child", ImVec2(0, list_height), false)) {
@@ -402,6 +410,18 @@ void render_image_list(const ImageListInputs& in) {
                         if (in.on_unselect_all) in.on_unselect_all();
                     }
                 }
+                if (in.on_duplicate_for_frame_compare && entry.source &&
+                    entry.source->frame_count() > 1) {
+                    if (ImGui::MenuItem("Duplicate for Frame Compare")) {
+                        pending_duplicate_index = i;
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "Add a second entry for this file, offset by\n"
+                            "one frame, and select both so adjacent\n"
+                            "frames can be compared.");
+                    }
+                }
                 ImGui::Separator();
                 if (ImGui::MenuItem("Reload", "F5")) {
                     if (in.on_reload_entry) in.on_reload_entry(i);
@@ -439,6 +459,10 @@ void render_image_list(const ImageListInputs& in) {
         }
     }
     ImGui::EndChild();
+
+    if (pending_duplicate_index >= 0 && in.on_duplicate_for_frame_compare) {
+        in.on_duplicate_for_frame_compare(pending_duplicate_index);
+    }
 
     if (entries.empty()) {
         ImGui::TextDisabled("No media loaded.");

@@ -24,6 +24,7 @@ Tool surface (mirrors idiff RPC, with friendlier names)
   list_instances             -- show every live idiff window
   get_state                  -- snapshot of the active instance (entries, view, ...)
   load_images                -- load files into the GUI library
+  duplicate_image            -- duplicate an entry at a frame offset
   set_reference              -- pin one entry as the comparison "A"
   remove_image               -- delete an entry from the library
   set_selection              -- replace the selection
@@ -236,6 +237,31 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["paths"],
+            },
+        ),
+        Tool(
+            name="duplicate_image",
+            description=(
+                "Append a second library entry that opens the same file "
+                "as the given entry, shifted by frame_offset on the "
+                "shared timeline. Selecting both entries compares two "
+                "frames of one multi-frame source, for example frame N "
+                "against frame N+1 of a single animated GIF. Returns the "
+                "new entry's integer index; address it by index "
+                "afterwards, because both entries now share one path."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    **_ENTRY_PROPS,
+                    "frame_offset": {
+                        "type": "integer",
+                        "description": (
+                            "Shift on the shared timeline (default 0; "
+                            "use 1 for adjacent frames)"
+                        ),
+                    },
+                },
             },
         ),
         Tool(
@@ -763,6 +789,12 @@ async def call_tool(
                 isinstance(p, str) for p in paths):
             raise ToolError("'paths' must be a list of strings")
         return _ok(_call(instance, "library.load", {"paths": paths}))
+
+    if name == "duplicate_image":
+        p = _entry_params(arguments)
+        if "frame_offset" in arguments:
+            p["frame_offset"] = int(arguments["frame_offset"])
+        return _ok(_call(instance, "library.duplicate", p))
 
     if name == "set_reference":
         return _ok(_call(instance, "library.set_reference",

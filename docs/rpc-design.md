@@ -2,10 +2,12 @@
 
 > **Audience:** future contributors and AI agents resuming this work,
 > potentially on a different machine (notably Windows).
-> **Last updated:** 2026-10-04: entry references by path,
-> `metrics.compare` / `pixel.sample`, the `idiffctl` CLI and agent skill
-> as the primary agent channel, MCP shim in maintenance mode (Phase 1 + 2
-> complete, Phase 4 partially done).
+> **Last updated:** 2026-11-06: `library.duplicate` compares two frames
+> of one multi-frame source, `state.get` reports per-entry frame
+> offsets, and animated GIFs are multi-frame sources. The `idiffctl`
+> CLI and its agent skill remain the primary agent channel; the MCP
+> shim is in maintenance mode (Phase 1 + 2 complete, Phase 4
+> partially done).
 
 This document is the load-bearing reference for the RPC subsystem.
 When you (human or agent) sit down to continue this work — especially
@@ -149,7 +151,7 @@ Two motivating user scenarios (the original "why"):
 | `src/app/rpc/rpc_server.{h,cpp}` | Asio-backed transport (UDS on POSIX, named pipe on Windows). Owns the I/O thread (and accept thread on Windows) and the request queue. Rebuilds its own listener after an accept error, or once its socket path stops naming its socket. |
 | `src/app/rpc/socket_paths.{h,cpp}` | Path / label composition + stale-socket sweep (POSIX). A path is stale only when nothing answers it *and* its pid no longer exists. |
 | `src/app/rpc/socket_paths_win32.cpp` | Windows named-pipe path / label composition + enumeration (no stale cleanup needed). |
-| `src/app/app_rpc_methods.cpp` | All 25 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
+| `src/app/app_rpc_methods.cpp` | All 29 method handlers as `App::register_rpc_methods()`. Member function so handlers reach `App` privates. |
 | `src/app/rpc_params.{h,cpp}` | Parameter validation and entry resolution (index or path) shared by the handlers; compiled into the tests directly. |
 | `src/app/rpc_queries.{h,cpp}` | Per-image JSON for `metrics.compare` and `pixel.sample` (MetricsEngine, pixel sampler). |
 | `src/app/screenshot_composer.{h,cpp}` | Pure renderer: viewport state + entries → `cv::Mat`. Used by both the GUI Save flow and `view.screenshot`. |
@@ -162,7 +164,7 @@ Two motivating user scenarios (the original "why"):
 | `tools/idiffctl/idiffctl.py` | Command-line client: one JSON document per command, exit status per failure class. |
 | `tools/idiffctl/test_idiffctl.py` | idiffctl against fake servers on Unix sockets; registered with ctest as `idiffctl`. |
 | `tools/idiffctl/SKILL.md` | Agent skill that teaches coding agents to use idiffctl; the directory is symlinked into the agent's skill directory. |
-| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim (maintenance mode). 27 tools that map onto idiff RPC. |
+| `tools/idiff-mcp/idiff_mcp_server.py` | MCP shim (maintenance mode). 28 tools that map onto idiff RPC. |
 | `tools/idiff-mcp/setup.sh` | Provision the local venv, print the `mcp.json` snippet (POSIX). |
 | `tools/idiff-mcp/setup.ps1` | Same for Windows (PowerShell). |
 | `tools/idiff-mcp/README.md` | User-facing setup / usage docs. |
@@ -185,7 +187,9 @@ when none does, the entries whose path names the same file once
 symlinks and `.` / `..` are resolved. Exactly one entry must match:
 the library does not deduplicate, so a path several entries share is
 rejected with InvalidParams and the message lists their indices.
-Below, *entry* stands for `index:int | path:string`.
+Below, *entry* stands for `index:int | path:string`. `library.duplicate`
+creates a second entry with the same path, so address either entry by
+integer index afterwards; a path that matches both is rejected.
 
 ### Identity
 
@@ -198,13 +202,14 @@ Below, *entry* stands for `index:int | path:string`.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 
 | Method | Params | Result |
 |---|---|---|
 | `library.load` | `{paths:[string]}` | `{added:int, total:int}` |
+| `library.duplicate` | `{entry, frame_offset?:int}` | `{index:int, total:int}` — append a second entry for the same file, shifted on the shared timeline; use the returned index to address it |
 | `library.set_reference` | `{entry}` | `{}` |
 | `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
 | `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
@@ -266,6 +271,7 @@ probe and has no direct tool.
 | `list_instances` | `app.list_instances` (and re-runs local discovery) |
 | `get_state` | `state.get` |
 | `load_images` | `library.load` |
+| `duplicate_image` | `library.duplicate` (index or path, optional `frame_offset`) |
 | `set_reference` | `library.set_reference` (index or path) |
 | `list_comparisons` | `library.list_comparisons` |
 | `set_comparison_reference` | `library.set_comparison_reference` |
@@ -391,6 +397,7 @@ passing.
 - [x] MCP tool for `view.set_group_mode`.
 - [x] `comparison_config.load` / `comparison_config.switch_group` (shipped in 0.3.1).
 - [x] `timeline.set_frame` / `timeline.set_frame_offset` for video (shipped in 0.3.1).
+- [x] `library.duplicate` for comparing two frames of one multi-frame source, with `state.get` exposing per-entry frame offsets.
 
 ---
 
