@@ -684,15 +684,13 @@ void AppController::set_loader_backend(LoaderBackend backend) noexcept {
 
 namespace {
 
-// Build the right MediaSource for `path`, with a fallback so files
-// whose extension is not in our hard-coded video list (e.g. `.y4m`,
-// raw `.yuv`, `.ivf`) still get a chance through the FFmpeg-backed
-// VideoFileSource when the regular still-image loaders give up.
+// Build the right MediaSource for `path`.  A known video container
+// extension goes through the FFmpeg-backed VideoFileSource; animated
+// GIFs use a Magick++ coalescing source when FFmpeg is unavailable.
+// Everything else becomes a still-image ImageFileSource.
 //
 // On success returns an opened source.  On failure returns nullptr
-// and writes a combined error describing what every attempted
-// backend reported, so the status bar / log line mentions both the
-// image and the video failure.
+// and writes the error the attempted backend reported.
 //
 // Pixels are NOT decoded here -- the caller decodes on demand via
 // source->read_frame() (lazy-load).  For ImageFileSource the file
@@ -711,11 +709,14 @@ open_media_source(const std::string& path,
     // decode passes first.
     if (idiff::is_video_file_extension(path)) {
         auto vsrc = std::make_unique<idiff::VideoFileSource>(path);
-        if (!vsrc->is_valid()) {
+        if (vsrc->is_valid()) return vsrc;
+        // A GIF that libav cannot demux still opens as a single-frame
+        // image through the loaders that handled it before GIFs were
+        // routed to the video pipeline.
+        if (!idiff::is_gif_extension(path)) {
             out_error = vsrc->last_error();
             return nullptr;
         }
-        return vsrc;
     }
 #endif
 
@@ -999,14 +1000,37 @@ AppController::load_images(const std::vector<std::string>& paths,
     return result;
 }
 
-int AppController::duplicate_entry(int index, int frame_offset) {
+int AppController::duplicate_entry(int index, int frame_offset,
+                                   std::string* out_error) {
+    auto fail = [out_error](const std::string& reason) -> int {
+        if (out_error) *out_error = reason;
+        return -1;
+    };
+
     auto& entries = library_->all();
-    if (index < 0 || index >= static_cast<int>(entries.size())) return -1;
+    if (index < 0 || index >= static_cast<int>(entries.size())) {
+        return fail("entry index out of range");
+    }
+    if (!entries[index].source ||
+        entries[index].source->frame_count() <= 1) {
+        return fail("source has only one frame; nothing to compare");
+    }
 
     const std::string path = entries[index].path;
     std::string err;
     auto source = open_media_source(path, loader_backend_, err);
-    if (!source) return -1;
+    if (!source) {
+        return fail(err.empty() ? "source cannot be re-opened" : err);
+    }
+    // The original entry can be multi-frame through a source that
+    // open_media_source() cannot rebuild -- a raw YUV stream opened
+    // through the parameter dialog, or a GIF that fell back to a
+    // still when libav could not demux it.  Reject a re-open that
+    // lost the frames instead of appending a broken single-frame
+    // entry and reporting success.
+    if (source->frame_count() <= 1) {
+        return fail("source cannot be re-opened as a multi-frame source");
+    }
 
     ImageEntry entry;
     entry.path = path;
@@ -1017,12 +1041,9 @@ int AppController::duplicate_entry(int index, int frame_offset) {
     // Two entries now share one path, so give the duplicate its own
     // label suffix; compute_display_labels() cannot otherwise tell
     // them apart.
-    entry.label_suffix = " (frame offset " + std::to_string(frame_offset);
-    if (source->frame_count() > 1) {
-        entry.label_suffix += ", " + std::to_string(source->frame_count())
-                              + " frames";
-    }
-    entry.label_suffix += ")";
+    entry.label_suffix = " (frame offset " + std::to_string(frame_offset)
+                       + ", " + std::to_string(source->frame_count())
+                       + " frames)";
     entry.source = std::move(source);
     entry.frame_offset = frame_offset;
     entry.texture_dirty = true;

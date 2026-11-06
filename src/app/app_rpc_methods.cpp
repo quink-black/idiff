@@ -332,10 +332,12 @@ void App::register_rpc_methods() {
                 }
                 offset = it->get<int>();
             }
-            const int new_idx = controller_->duplicate_entry(idx, offset);
+            std::string reason;
+            const int new_idx =
+                controller_->duplicate_entry(idx, offset, &reason);
             if (new_idx < 0) {
                 throw RpcException(ErrorCode::InvalidParams,
-                    "entry cannot be duplicated");
+                    reason.empty() ? "entry cannot be duplicated" : reason);
             }
             return json{
                 {"index", new_idx},

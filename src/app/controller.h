@@ -322,9 +322,12 @@ public:
     // as two ordinary A/B entries, without relaxing the path
     // deduplication in load_images().  The entry is appended without
     // re-sorting so `index` and all existing indices stay valid.
-    // Returns the new entry's index, or -1 when `index` is out of
-    // range or the source cannot be re-opened.
-    int duplicate_entry(int index, int frame_offset);
+    // Returns the new entry's append index, or -1 when `index` is out
+    // of range, the source has fewer than two frames, or the source
+    // cannot be re-opened.  On failure `out_error` (when provided)
+    // names the reason.
+    int duplicate_entry(int index, int frame_offset,
+                        std::string* out_error = nullptr);
 
     // Outcome propagated to the caller for comparison-config
     // navigation.  Mirrors LoadImagesResult: the controller does
