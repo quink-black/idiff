@@ -209,7 +209,7 @@ integer index afterwards; a path that matches both is rejected.
 | Method | Params | Result |
 |---|---|---|
 | `library.load` | `{paths:[string]}` | `{added:int, total:int}` |
-| `library.duplicate` | `{entry, frame_offset?:int}` | `{index:int, total:int}` — append a second entry for the same file, shifted on the shared timeline; use the returned index to address it |
+| `library.duplicate` | `{entry, frame_offset?:int}` | `{index:int, total:int}` — append a second entry for the same file, shifted on the shared timeline; use the returned index to address it. Offsets are clamped to the source's last frame |
 | `library.set_reference` | `{entry}` | `{}` |
 | `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
 | `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
