@@ -8,6 +8,9 @@
 #include "core/video_decoder.h"
 #include "core/video_file_source.h"
 #endif
+#if defined(IDIFF_HAVE_MAGICK) && !defined(IDIFF_HAVE_FFMPEG)
+#include "core/gif_magick_source.h"
+#endif
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/group_key.h"
@@ -716,6 +719,20 @@ open_media_source(const std::string& path,
     }
 #endif
 
+#if defined(IDIFF_HAVE_MAGICK) && !defined(IDIFF_HAVE_FFMPEG)
+    // FFmpeg handles GIF animation when it is available.  Without it,
+    // Magick++ coalescing still exposes every frame instead of
+    // silently showing only the first one.
+    if (idiff::is_gif_extension(path)) {
+        auto gsrc = std::make_unique<idiff::GifMagickSource>(path);
+        if (!gsrc->is_valid()) {
+            out_error = gsrc->last_error();
+            return nullptr;
+        }
+        return gsrc;
+    }
+#endif
+
     // Try the still-image loaders.  ImageFileSource defers the actual
     // decode to read_frame(), but is_valid() cheaply checks the file
     // exists so non-existent paths are reported at load time.  Format
@@ -925,6 +942,13 @@ AppController::load_images(const std::vector<std::string>& paths,
 
             library_->add(std::move(entry));
             status_reporter_->set_status("Loaded: " + path);
+#if !defined(IDIFF_HAVE_FFMPEG) && !defined(IDIFF_HAVE_MAGICK)
+            if (idiff::is_gif_extension(path)) {
+                status_reporter_->set_status(
+                    "GIF animation requires FFmpeg or ImageMagick; "
+                    "showing first frame only: " + path);
+            }
+#endif
         }
     }
 
