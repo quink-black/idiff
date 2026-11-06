@@ -323,5 +323,10 @@ TEST_CASE("Integration: duplicate_entry creates a frame-offset pair",
     CHECK(entries[0].path == entries[1].path);
     CHECK(entries[1].frame_offset == 1);
     CHECK(entries[0].display_label != entries[1].display_label);
+#if defined(IDIFF_HAVE_FFMPEG) || defined(IDIFF_HAVE_MAGICK)
+    // duplicate_entry() must sync the timeline itself; otherwise both
+    // entries still hold frame 0 and the comparison is empty.
+    CHECK(entries[1].cached_frame == 1);
+#endif
     CHECK(controller.duplicate_entry(99, 1) == -1);
 }

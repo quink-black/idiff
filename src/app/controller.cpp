@@ -1029,6 +1029,10 @@ int AppController::duplicate_entry(int index, int frame_offset) {
 
     library_->add(std::move(entry));
     compute_display_labels();
+    // Decode the pair at the current timeline position.  Without this,
+    // both entries lazily decode frame 0 and the diff stays empty until
+    // the user happens to step the timeline.
+    sync_entries_to_timeline();
     diff_->mark_dirty();
     return static_cast<int>(library_->all().size()) - 1;
 }

@@ -105,7 +105,9 @@ idiffctl.py frame 0          # A shows frame 0, B shows frame 1
 
 The duplicate shares a path with the original, so address both entries
 by integer index afterwards. Several GIF files can be compared at the
-same frame by loading them together and calling `frame N`.
+same frame by loading them together and calling `frame N`. Frame
+offsets are clamped to the source's frame count, so with an offset of
+1 the final frame is compared with itself.
 
 ## Cautions
 
