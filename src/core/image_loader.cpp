@@ -45,6 +45,7 @@ SourceFormat extension_to_format(const std::string& path) {
     if (ext == ".webp") return SourceFormat::WebP;
     if (ext == ".tif" || ext == ".tiff") return SourceFormat::TIFF;
     if (ext == ".bmp")  return SourceFormat::BMP;
+    if (ext == ".gif")  return SourceFormat::GIF;
     if (ext == ".heic" || ext == ".heif" || ext == ".hif")
         return SourceFormat::HEIF;
     if (ext == ".avif") return SourceFormat::AVIF;

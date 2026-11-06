@@ -28,6 +28,7 @@ enum class SourceFormat {
     RAW,
     HEIF,
     AVIF,
+    GIF,
     Unknown,
 };
 
