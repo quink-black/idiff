@@ -29,6 +29,7 @@ bool is_video_file_extension(const std::string& path) noexcept {
         ".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv",
         ".ts", ".m4v", ".wmv", ".mpg", ".mpeg", ".3gp",
         ".mts", ".m2ts", ".vob", ".ogv", ".f4v",
+        ".gif",
     };
 
     for (const auto* ve : video_exts) {
@@ -126,7 +127,9 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
     img->internal().info.width = rgb.cols;
     img->internal().info.height = rgb.rows;
     img->internal().info.pixel_format = PixelFormat::RGB8;
-    img->internal().info.source_format = SourceFormat::Unknown;
+    img->internal().info.source_format = is_gif_extension(path_)
+                                             ? SourceFormat::GIF
+                                             : SourceFormat::Unknown;
     img->internal().info.bit_depth = 8;
     img->internal().info.source_bit_depth = decoder_->bit_depth();
     img->internal().info.has_alpha = false;
@@ -154,6 +157,11 @@ std::unique_ptr<Image> VideoFileSource::read_keyframe(int index) {
         last_error_ = "frame index out of range";
         return nullptr;
     }
+
+    // A GIF stream marks only frame 0 as a keyframe, so a keyframe
+    // seek pins every scrub preview to the first frame. Decode the
+    // exact frame instead.
+    if (is_gif_extension(path_)) return read_frame(index);
 
     cv::Mat rgb = decoder_->decode_keyframe(index);
     if (rgb.empty()) {

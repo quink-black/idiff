@@ -114,6 +114,11 @@ struct YuvStreamParams {
     std::string transfer = "bt709";
 };
 
+// Returns true when `path` ends in `.gif` (case-insensitive).  Lives
+// outside the FFmpeg-gated video classifier so every build config can
+// recognise an animated GIF through the same rule.
+bool is_gif_extension(const std::string& path) noexcept;
+
 // Heuristically guess YUV resolution and pixel format from a file
 // path.  Recognizes patterns like `name_1920x1080_yuv420p.yuv` or
 // `name_nv12_1280x720.yuv`.  Only `width`, `height`, and

@@ -23,6 +23,7 @@ const char* source_format_name(SourceFormat f) noexcept {
         case SourceFormat::RAW:  return "RAW";
         case SourceFormat::HEIF: return "HEIF";
         case SourceFormat::AVIF: return "AVIF";
+        case SourceFormat::GIF:  return "GIF";
         default:                 return "Unknown";
     }
 }
@@ -54,6 +55,12 @@ std::string to_lower(std::string s) {
 }
 
 } // namespace
+
+bool is_gif_extension(const std::string& path) noexcept {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return false;
+    return to_lower(path.substr(dot)) == ".gif";
+}
 
 // -------- ImageFileSource --------
 

@@ -1185,7 +1185,7 @@ void App::open_file_dialog() {
     // move on.  load_paths() takes care of routing after the fact.
     std::vector<FileDialogFilter> filters = {
         { "Images, videos, YUV streams, and comparison configs",
-          "png,jpg,jpeg,bmp,tiff,tif,webp,heic,heif,hif,avif,"
+          "png,jpg,jpeg,bmp,gif,tiff,tif,webp,heic,heif,hif,avif,"
           "dng,cr2,nef,arw,"
 #ifdef IDIFF_HAVE_FFMPEG
           "yuv,"
