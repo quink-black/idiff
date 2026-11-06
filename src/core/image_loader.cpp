@@ -612,6 +612,60 @@ ImageLoader::load_via_magick_memory(const uint8_t* data, size_t size,
     }
 }
 
+int ImageLoader::gif_frame_count(const std::string& path) {
+    try {
+        auto buf = platform::read_file_binary(path);
+        if (buf.empty()) {
+            last_error_ = "Failed to read file: " + path;
+            return 0;
+        }
+        Magick::Blob blob(buf.data(), buf.size());
+        std::vector<Magick::Image> frames;
+        Magick::readImages(&frames, blob);
+        return static_cast<int>(frames.size());
+    } catch (const Magick::Exception& e) {
+        last_error_ = e.what();
+        return 0;
+    }
+}
+
+std::unique_ptr<Image> ImageLoader::load_gif_frame(const std::string& path,
+                                                   int index) {
+    try {
+        auto buf = platform::read_file_binary(path);
+        if (buf.empty()) {
+            last_error_ = "Failed to read file: " + path;
+            return nullptr;
+        }
+        Magick::Blob blob(buf.data(), buf.size());
+        std::vector<Magick::Image> frames;
+        Magick::readImages(&frames, blob);
+        if (index < 0 || index >= static_cast<int>(frames.size())) {
+            last_error_ = "frame index out of range";
+            return nullptr;
+        }
+
+        // A GIF frame can store only the changed rectangle together
+        // with a disposal method.  Coalesce onto a full canvas before
+        // exporting pixels, or the diff would measure frame deltas.
+        std::vector<Magick::Image> coalesced;
+        Magick::coalesceImages(&coalesced, frames.begin(), frames.end());
+        if (index >= static_cast<int>(coalesced.size())) {
+            last_error_ = "frame index out of range";
+            return nullptr;
+        }
+
+        auto image = std::make_unique<Image>();
+        image->internal().info.source_format = SourceFormat::GIF;
+        populate_image_from_magick(coalesced[index], *image);
+        last_error_.clear();
+        return image;
+    } catch (const Magick::Exception& e) {
+        last_error_ = e.what();
+        return nullptr;
+    }
+}
+
 #endif // IDIFF_HAVE_MAGICK
 
 std::unique_ptr<Image> ImageLoader::load_via_raw(const std::string& path) {

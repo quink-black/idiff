@@ -34,6 +34,7 @@ if(IDIFF_HAVE_LIBRAW)
 endif()
 
 if(IDIFF_HAVE_IMAGEMAGICK)
+    target_sources(idiff_core PRIVATE gif_magick_source.cpp)
     target_compile_definitions(idiff_core PUBLIC IDIFF_HAVE_MAGICK)
     target_link_libraries(idiff_core PUBLIC PkgConfig::MAGICKXX)
 endif()

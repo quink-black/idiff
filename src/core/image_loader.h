@@ -55,6 +55,17 @@ public:
     std::unique_ptr<Image> load_from_memory(const uint8_t* data, size_t size,
                                             SourceFormat format = SourceFormat::Unknown);
 
+#ifdef IDIFF_HAVE_MAGICK
+    // Frame enumeration for an animated GIF.  These bypass
+    // LoaderBackend: coalescing an animation is a Magick++ capability,
+    // not a property of the still-image backend choice, so switching
+    // the preferred backend cannot drop GIF frames.
+    // gif_frame_count() returns 0 on failure; load_gif_frame() returns
+    // nullptr for an out-of-range index or a decode failure.
+    int gif_frame_count(const std::string& path);
+    std::unique_ptr<Image> load_gif_frame(const std::string& path, int index);
+#endif
+
     const std::string& last_error() const noexcept;
 
     // Compile-time capability queries -- use these to decide which
