@@ -109,6 +109,11 @@ same frame by loading them together and calling `frame N`. Frame
 offsets are clamped to the source's frame count, so with an offset of
 1 the final frame is compared with itself.
 
+`library.duplicate` rejects a source with fewer than two frames. That
+happens when the build has neither FFmpeg nor ImageMagick: such a GIF
+opens as a single still frame. `library.set_loader_backend` does not
+change which decoder handles a GIF.
+
 ## Cautions
 
 - idiff computes `metrics`, `sample` and `shot` on its GUI thread; on very

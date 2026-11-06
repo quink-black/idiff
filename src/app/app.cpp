@@ -1784,8 +1784,14 @@ void App::render_image_list() {
     };
     in.on_reload_entry = [this](int idx) { controller_->reload_entry(idx); };
     in.on_duplicate_for_frame_compare = [this](int idx) {
-        const int dup = controller_->duplicate_entry(idx, 1);
-        if (dup < 0) return;
+        std::string reason;
+        const int dup = controller_->duplicate_entry(idx, 1, &reason);
+        if (dup < 0) {
+            state_->status_text = reason.empty()
+                ? "Cannot duplicate this entry for frame comparison"
+                : "Cannot duplicate for frame comparison: " + reason;
+            return;
+        }
         auto& entries = entries_view();
         selection_->clear();
         selection_->insert(idx);
@@ -1793,6 +1799,7 @@ void App::render_image_list() {
         entries[idx].texture_dirty = true;
         entries[dup].texture_dirty = true;
         diff_service_->mark_dirty();
+        controller_->on_selection_changed();
     };
     in.on_reload_all = [this]() { reload_all_images(); };
     in.on_remove_entry = [this](int idx) { remove_entry(idx); };

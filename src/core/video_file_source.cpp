@@ -121,6 +121,9 @@ std::unique_ptr<Image> VideoFileSource::read_frame(int index) {
     // will simply fall back to 8-bit values for this frame.
     AVFrame* src_frame = decoder_->decode_frame_raw(index);
 
+    // VideoDecoder converts every frame to RGB24, so a GIF's BGRA
+    // palette output is flattened here: alpha and any ICC profile from
+    // the still-image path are not carried into this representation.
     auto img = std::make_unique<Image>();
     img->internal().mat = rgb;
     img->internal().src_av_frame = src_frame;

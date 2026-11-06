@@ -13,6 +13,9 @@
 #include "app/app.h"
 #include "core/image_loader.h"
 #include "core/media_source.h" // IWYU pragma: keep
+#ifdef IDIFF_HAVE_FFMPEG
+#include "core/yuv_raw_source.h"
+#endif
 #include "domain/comparison_config_service.h"
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
@@ -316,6 +319,7 @@ TEST_CASE("Integration: duplicate_entry creates a frame-offset pair",
     controller.load_images({IDIFF_TEST_GIF_PATH});
 
     const int dup = controller.duplicate_entry(0, 1);
+#if defined(IDIFF_HAVE_FFMPEG) || defined(IDIFF_HAVE_MAGICK)
     REQUIRE(dup == 1);
 
     const auto& entries = controller.library().all();
@@ -323,10 +327,73 @@ TEST_CASE("Integration: duplicate_entry creates a frame-offset pair",
     CHECK(entries[0].path == entries[1].path);
     CHECK(entries[1].frame_offset == 1);
     CHECK(entries[0].display_label != entries[1].display_label);
-#if defined(IDIFF_HAVE_FFMPEG) || defined(IDIFF_HAVE_MAGICK)
     // duplicate_entry() must sync the timeline itself; otherwise both
     // entries still hold frame 0 and the comparison is empty.
     CHECK(entries[1].cached_frame == 1);
+#else
+    // Without FFmpeg or Magick the GIF is a single-frame still, so
+    // duplication must be rejected instead of creating two stills.
+    CHECK(dup == -1);
+    CHECK(controller.library().all().size() == 1);
 #endif
     CHECK(controller.duplicate_entry(99, 1) == -1);
 }
+
+TEST_CASE("Integration: duplicate_entry rejects a single-frame source",
+          "[controller][integration][gif]") {
+    const auto p = write_tmp_png("dup_single_frame", "still.png");
+
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.load_images({p});
+    REQUIRE(controller.library().all().size() == 1);
+
+    std::string reason;
+    CHECK(controller.duplicate_entry(0, 1, &reason) == -1);
+    CHECK_FALSE(reason.empty());
+    // The rejection must happen before any entry is appended.
+    CHECK(controller.library().all().size() == 1);
+}
+
+#ifdef IDIFF_HAVE_FFMPEG
+TEST_CASE("Integration: duplicate_entry rejects a source it cannot re-open",
+          "[controller][integration][gif]") {
+    // A raw YUV entry is multi-frame, but open_media_source() only
+    // rebuilds container-backed sources.  Without the post-re-open
+    // check the duplicate silently becomes a single-frame still.
+    auto dir = std::filesystem::temp_directory_path() / "idiff_dup_reopen";
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "clip.yuv";
+    {
+        std::ofstream out(path, std::ios::binary);
+        REQUIRE(out.is_open());
+        // yuv420p 4x4 is 24 bytes per frame; write two frames.
+        std::vector<std::uint8_t> bytes(48, 128);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    idiff::YuvStreamParams params;
+    params.width = 4;
+    params.height = 4;
+    params.pixel_format = "yuv420p";
+
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+
+    idiff::ImageEntry entry;
+    entry.path = path.string();
+    entry.filename = "clip.yuv";
+    entry.display_label = "clip.yuv";
+    entry.source = std::make_unique<idiff::YuvRawSource>(path.string(), params);
+    REQUIRE(entry.source->frame_count() == 2);
+    controller.library().add(std::move(entry));
+
+    std::string reason;
+    CHECK(controller.duplicate_entry(0, 1, &reason) == -1);
+    CHECK(reason.find("multi-frame") != std::string::npos);
+    CHECK(controller.library().all().size() == 1);
+}
+#endif

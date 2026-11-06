@@ -209,13 +209,13 @@ integer index afterwards; a path that matches both is rejected.
 | Method | Params | Result |
 |---|---|---|
 | `library.load` | `{paths:[string]}` | `{added:int, total:int}` |
-| `library.duplicate` | `{entry, frame_offset?:int}` | `{index:int, total:int}` — append a second entry for the same file, shifted on the shared timeline; use the returned index to address it. Offsets are clamped to the source's last frame |
+| `library.duplicate` | `{entry, frame_offset?:int}` | `{index:int, total:int}` — append a second entry for the same file, shifted on the shared timeline; use the returned append index to address it. Rejected with InvalidParams when the source has fewer than two frames. Offsets are clamped to the source's last frame |
 | `library.set_reference` | `{entry}` | `{}` |
 | `library.list_comparisons` | none | `[{key,name,current,entries:[{index,path,filename,directory,is_reference}],reference_path?}]` |
 | `library.set_comparison_reference` | `{key:string, path:string}` | `{}` |
 | `library.remove` | `{entry}` | `{}` |
 | `library.reload_all` | none | `{}` — re-decode every entry from disk |
-| `library.set_loader_backend` | `{backend:"imagemagick"\|"opencv"\|"ffmpeg"}` | `{backend}` — switch decoder + reload |
+| `library.set_loader_backend` | `{backend:"imagemagick"\|"opencv"\|"ffmpeg"}` | `{backend}` — switch decoder + reload. GIF entries backed by `VideoFileSource` or `GifMagickSource` ignore this setting |
 | `selection.set` | `{indices:[int]}` or `{entries:[int\|string]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
 | `selection.select_group` | `{entry}` | `{changed:bool, indices:[int]}` |
 | `selection.select_range` | `{from:int, to:int}` | `{changed:bool, indices:[int]}` |
