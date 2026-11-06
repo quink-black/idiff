@@ -316,6 +316,16 @@ public:
     LoadImagesResult load_images(const std::vector<std::string>& paths,
                                  bool first_load_auto_select = true);
 
+    // Append a second library entry that opens the same file as
+    // `index`, shifted by `frame_offset` on the shared timeline.  This
+    // lets frame N and frame N+1 of one multi-frame source be compared
+    // as two ordinary A/B entries, without relaxing the path
+    // deduplication in load_images().  The entry is appended without
+    // re-sorting so `index` and all existing indices stay valid.
+    // Returns the new entry's index, or -1 when `index` is out of
+    // range or the source cannot be re-opened.
+    int duplicate_entry(int index, int frame_offset);
+
     // Outcome propagated to the caller for comparison-config
     // navigation.  Mirrors LoadImagesResult: the controller does
     // every domain-level effect (load config, swap groups, drive

@@ -8,6 +8,8 @@
 //   state.get             () -> { entries: [...], selection: [...],
 //                                 reference: int|null, view: {...} }
 //   library.load          (paths: [string]) -> { added: int }
+//   library.duplicate     (entry, frame_offset?: int) -> { index: int,
+//                                                          total: int }
 //   library.set_reference (index: int | path: string) -> {}
 //   library.remove        (index: int | path: string) -> {}
 //   selection.set         (indices: [int] | entries: [int|string]) -> {}
@@ -208,6 +210,8 @@ void App::register_rpc_methods() {
                     je["height"] = 0;
                 }
                 je["frames"] = e.source ? e.source->frame_count() : 1;
+                je["frame_offset"] = e.frame_offset;
+                je["cached_frame"] = e.cached_frame;
                 entries_json.push_back(std::move(je));
             }
 
@@ -303,6 +307,39 @@ void App::register_rpc_methods() {
             return json{
                 {"added", static_cast<int>(after - before)},
                 {"total", static_cast<int>(after)},
+            };
+        });
+
+    // --- library.duplicate -----------------------------------------
+    //
+    // Append a second entry that opens the same file, shifted by
+    // frame_offset on the shared timeline.  Selecting the original and
+    // the duplicate together compares two frames of one multi-frame
+    // source (e.g. frame N against frame N+1 of a single GIF).
+    // The returned integer index is the reliable way to address the
+    // new entry: both entries now share one path, and path-based
+    // lookup rejects ambiguous matches (see rpc_params.h).
+    d.register_method("library.duplicate",
+        [this](const json& params) -> json {
+            require_object(params);
+            int idx = require_entry_field(params, entries_view());
+            int offset = 0;
+            auto it = params.find("frame_offset");
+            if (it != params.end()) {
+                if (!it->is_number_integer()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "frame_offset must be an integer");
+                }
+                offset = it->get<int>();
+            }
+            const int new_idx = controller_->duplicate_entry(idx, offset);
+            if (new_idx < 0) {
+                throw RpcException(ErrorCode::InvalidParams,
+                    "entry cannot be duplicated");
+            }
+            return json{
+                {"index", new_idx},
+                {"total", static_cast<int>(entries_view().size())},
             };
         });
 

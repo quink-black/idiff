@@ -87,7 +87,25 @@ idiffctl.py call comparison_config.switch_group '{"group_index": 2}'
 idiffctl.py call timeline.set_frame_offset '{"path": "/data/b.yuv", "offset": -2}'
 idiffctl.py call library.list_comparisons
 idiffctl.py call library.set_loader_backend '{"backend": "ffmpeg"}'
+idiffctl.py call library.duplicate '{"index": 0, "frame_offset": 1}'
 ```
+
+## Comparing frames inside one animated GIF
+
+GIF files load as multi-frame sources. To compare frame N with frame
+N+1 of a single GIF, duplicate its entry with an offset of one, select
+both entries, then step the timeline:
+
+```bash
+idiffctl.py open anim.gif
+idiffctl.py call library.duplicate '{"index": 0, "frame_offset": 1}'
+idiffctl.py select 0 1
+idiffctl.py frame 0          # A shows frame 0, B shows frame 1
+```
+
+The duplicate shares a path with the original, so address both entries
+by integer index afterwards. Several GIF files can be compared at the
+same frame by loading them together and calling `frame N`.
 
 ## Cautions
 
