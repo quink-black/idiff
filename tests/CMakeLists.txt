@@ -4,6 +4,7 @@ add_executable(idiff_tests
     test_image_processor.cpp
     test_image_comparator.cpp
     test_media_source.cpp
+    test_gif.cpp
     test_metrics_engine.cpp
     test_ruler_utils.cpp
     test_yuv_source.cpp
@@ -153,6 +154,39 @@ endif()
 #     be exercised at any index
 # The video is placed in the build directory and its path is passed
 # as a compile definition.
+
+# Generate a 5-frame animated GIF shared by the GIF / multi-frame tests.
+# The testsrc filter makes every frame visually distinct, so adjacent
+# frames can be asserted to differ.  The fixture is generated in every
+# build configuration: the FFmpeg tier, the Magick++ fallback and the
+# still-image degraded path each load it through their own route.
+set(TEST_GIF_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_data")
+set(TEST_GIF_PATH "${TEST_GIF_DIR}/test_5frames_64x64.gif")
+find_program(FFMPEG_EXECUTABLE ffmpeg)
+if(FFMPEG_EXECUTABLE)
+    add_custom_command(
+        OUTPUT "${TEST_GIF_PATH}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TEST_GIF_DIR}"
+        COMMAND ${FFMPEG_EXECUTABLE}
+            -y -v error -f lavfi
+            -i "testsrc=size=64x64:rate=5:duration=1,format=rgb24"
+            -frames:v 5
+            "${TEST_GIF_PATH}"
+        COMMENT "Generating test GIF: ${TEST_GIF_PATH}"
+        VERBATIM
+    )
+    add_custom_target(generate_test_gif DEPENDS "${TEST_GIF_PATH}")
+    add_dependencies(idiff_tests generate_test_gif)
+    target_compile_definitions(idiff_tests PRIVATE
+        IDIFF_TEST_GIF_PATH="${TEST_GIF_PATH}"
+    )
+else()
+    message(WARNING "ffmpeg CLI not found -- GIF tests will be skipped at runtime")
+    target_compile_definitions(idiff_tests PRIVATE
+        IDIFF_TEST_GIF_PATH=""
+    )
+endif()
+
 if(IDIFF_HAVE_FFMPEG)
     set(TEST_VIDEO_DIR "${CMAKE_CURRENT_BINARY_DIR}/test_data")
     set(TEST_VIDEO_PATH "${TEST_VIDEO_DIR}/test_10frames_64x64.mp4")

@@ -27,6 +27,10 @@
 #include <string>
 #include <vector>
 
+#ifndef IDIFF_TEST_GIF_PATH
+#define IDIFF_TEST_GIF_PATH ""
+#endif
+
 namespace {
 
 // SDL_Texture is opaque; the tests only need unique non-null cookies
@@ -274,4 +278,50 @@ TEST_CASE("Integration: loader-backend switch changes reload status text",
     controller.set_loader_backend(idiff::LoaderBackend::OpenCV);
     controller.reload_all_images();
     REQUIRE(reporter.status_calls.back().find(opencv_name) != std::string::npos);
+}
+
+TEST_CASE("Integration: a GIF loads with the frame count this build supports",
+          "[controller][integration][gif]") {
+    if (std::string(IDIFF_TEST_GIF_PATH).empty()) {
+        SKIP("GIF fixture not generated");
+    }
+
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.load_images({IDIFF_TEST_GIF_PATH});
+
+    const auto& entries = controller.library().all();
+    REQUIRE(entries.size() == 1);
+    REQUIRE(entries[0].source);
+
+#if defined(IDIFF_HAVE_FFMPEG) || defined(IDIFF_HAVE_MAGICK)
+    const int expected_frames = 5;
+#else
+    const int expected_frames = 1;
+#endif
+    CHECK(entries[0].source->frame_count() == expected_frames);
+    CHECK(controller.timeline_length() == expected_frames);
+}
+
+TEST_CASE("Integration: duplicate_entry creates a frame-offset pair",
+          "[controller][integration][gif]") {
+    if (std::string(IDIFF_TEST_GIF_PATH).empty()) {
+        SKIP("GIF fixture not generated");
+    }
+
+    CountingUploader uploader;
+    RecordingStatusReporter reporter;
+    idiff::AppController controller(uploader, reporter);
+    controller.load_images({IDIFF_TEST_GIF_PATH});
+
+    const int dup = controller.duplicate_entry(0, 1);
+    REQUIRE(dup == 1);
+
+    const auto& entries = controller.library().all();
+    REQUIRE(entries.size() == 2);
+    CHECK(entries[0].path == entries[1].path);
+    CHECK(entries[1].frame_offset == 1);
+    CHECK(entries[0].display_label != entries[1].display_label);
+    CHECK(controller.duplicate_entry(99, 1) == -1);
 }
