@@ -20,6 +20,10 @@ enum class ComparisonMode {
     Split,
     Overlay,
     Difference,
+    // Single-image local-contrast view: each selected image gets its
+    // own cell, showing the signed residual against a blurred
+    // background.  Rendered by the same grid code as Difference.
+    Reveal,
 };
 
 enum class GridLayout {

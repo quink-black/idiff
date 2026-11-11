@@ -128,11 +128,14 @@ void render_status_bar(const StatusBarInputs& in) {
                 int override_disp_w = 0;
                 int override_disp_h = 0;
 
-                if (vport.mode() == ComparisonMode::Difference) {
+                if (vport.mode() == ComparisonMode::Difference ||
+                    vport.mode() == ComparisonMode::Reveal) {
                     // Map the hovered cell back to its diff slot so
-                    // the status bar shows "Ref vs <partner>" and the
-                    // pixel value comes from the heatmap the user is
-                    // looking at.
+                    // the status bar names the generated view and the
+                    // pixel value comes from what the user is looking
+                    // at.
+                    const bool reveal =
+                        vport.mode() == ComparisonMode::Reveal;
                     if (cell >= 0 &&
                         cell < static_cast<int>(diff_service.size())) {
                         const auto& slot = diff_service.slots()[cell];
@@ -155,10 +158,15 @@ void render_status_bar(const StatusBarInputs& in) {
                                                 ref_idx < static_cast<int>(entries.size()))
                                                   ? entries[ref_idx].display_label
                                                   : std::string("Ref");
-                        diff_label = "Diff: " + ref_name + " vs " + partner;
+                        if (reveal) {
+                            diff_label = "Reveal: " + partner;
+                        } else {
+                            diff_label = "Diff: " + ref_name + " vs " +
+                                         partner;
+                        }
                         src_label = diff_label.c_str();
                     } else {
-                        src_label = "Diff";
+                        src_label = reveal ? "Reveal" : "Diff";
                     }
                 } else if (cell >= 0 &&
                            cell < static_cast<int>(slot_to_entry.size())) {

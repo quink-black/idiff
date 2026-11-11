@@ -119,18 +119,22 @@ cv::Mat compose_viewport(const ComposeViewportInput& in,
     }
 
     if (slot_mats.empty() &&
-        !(in.mode == ComparisonMode::Difference
-          && in.diff && !in.diff->empty())) {
+        !((in.mode == ComparisonMode::Difference ||
+           in.mode == ComparisonMode::Reveal) &&
+          in.diff && !in.diff->empty())) {
         set_error(error_message, "nothing to save (no media selected)");
         return {};
     }
 
     cv::Mat composed;
 
-    if (in.mode == ComparisonMode::Difference) {
+    if (in.mode == ComparisonMode::Difference ||
+        in.mode == ComparisonMode::Reveal) {
         if (!in.diff || in.diff->empty()) {
             set_error(error_message,
-                      "no diff map available (select at least 2 media)");
+                      in.mode == ComparisonMode::Reveal
+                          ? "no reveal image available (select an image)"
+                          : "no diff map available (select at least 2 media)");
             return {};
         }
 

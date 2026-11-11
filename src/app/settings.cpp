@@ -164,6 +164,16 @@ AppSettings AppSettings::load(const std::string& path) {
             s.heatmap_color = std::atoi(val.c_str());
         } else if (key == "diff.amplification") {
             s.diff_amplification = std::atof(val.c_str());
+        } else if (key == "reveal.radius") {
+            int v = std::atoi(val.c_str());
+            if (v > 0) s.reveal_radius = v;
+        } else if (key == "reveal.gain") {
+            double v = std::atof(val.c_str());
+            if (v > 0.0) s.reveal_gain = v;
+        } else if (key == "reveal.smooth") {
+            s.reveal_smooth = parse_bool(val, s.reveal_smooth);
+        } else if (key == "reveal.heatmap_color") {
+            s.reveal_heatmap_color = std::atoi(val.c_str());
         } else if (key == "inspector.panel") {
             s.inspector_panel = std::atoi(val.c_str());
         } else if (key == "panel.show_image_list") {
@@ -262,6 +272,10 @@ bool AppSettings::save(const std::string& path) const {
     out << "viewport.grid_cols="   << grid_cols   << "\n";
     out << "diff.heatmap_color="   << heatmap_color << "\n";
     out << "diff.amplification="   << diff_amplification << "\n";
+    out << "reveal.radius="        << reveal_radius << "\n";
+    out << "reveal.gain="          << reveal_gain << "\n";
+    out << "reveal.smooth="        << (reveal_smooth ? "true" : "false") << "\n";
+    out << "reveal.heatmap_color=" << reveal_heatmap_color << "\n";
     out << "inspector.panel="      << inspector_panel << "\n";
     out << "panel.show_image_list=" << (show_image_list ? "true" : "false") << "\n";
     out << "panel.show_inspector="  << (show_inspector  ? "true" : "false") << "\n";

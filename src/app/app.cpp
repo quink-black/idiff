@@ -43,6 +43,7 @@
 #include <nfd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdarg>
 #include <cstdio>
@@ -143,6 +144,9 @@ struct App::State {
     HeatmapColor heatmap_color = HeatmapColor::Inferno;
     double diff_amplification = 5.0;
 
+    // Reveal-mode options (single-image local-contrast view).
+    RevealOptions reveal;
+
     // Persistent cross-session settings (last-used YUV parameters
     // and viewport preferences).  Loaded in App::init(), saved
     // whenever a YUV file is successfully added.
@@ -228,6 +232,28 @@ App::App()
 App::~App() = default;
 
 #ifdef IDIFF_HAVE_RPC
+RevealOptions& App::rpc_reveal_options() noexcept {
+    return state_->reveal;
+}
+
+const RevealOptions& App::rpc_reveal_options() const noexcept {
+    return state_->reveal;
+}
+
+void App::rpc_refresh_diff(bool reveal) {
+    DiffService::Options opts;
+    opts.amplification = state_->diff_amplification;
+    opts.heatmap_color = state_->heatmap_color;
+    opts.channel_mode = state_->viewport->channel_view_mode();
+    if (reveal) {
+        opts.mode = DiffService::Options::Mode::Reveal;
+        opts.reveal = state_->reveal;
+    }
+    diff_service_->mark_dirty();
+    std::string err;
+    diff_service_->update(entries_view(), *selection_, opts, err);
+}
+
 Viewport& App::rpc_viewport() noexcept {
     return *state_->viewport;
 }
@@ -462,6 +488,11 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     // Restore difference-mode options from the last session.
     state_->heatmap_color = static_cast<HeatmapColor>(state_->settings.heatmap_color);
     state_->diff_amplification = state_->settings.diff_amplification;
+    state_->reveal.background_sigma = state_->settings.reveal_radius;
+    state_->reveal.amplification = state_->settings.reveal_gain;
+    state_->reveal.smooth = state_->settings.reveal_smooth;
+    state_->reveal.heatmap_color =
+        static_cast<HeatmapColor>(state_->settings.reveal_heatmap_color);
 
     // Restore panel visibility and grouping.
     state_->show_image_list = state_->settings.show_image_list;
@@ -1386,6 +1417,13 @@ void App::save_settings() {
     s.heatmap_color = static_cast<int>(state_->heatmap_color);
     s.diff_amplification = state_->diff_amplification;
 
+    // Reveal-mode options.
+    s.reveal_radius =
+        static_cast<int>(std::lround(state_->reveal.background_sigma));
+    s.reveal_gain = state_->reveal.amplification;
+    s.reveal_smooth = state_->reveal.smooth;
+    s.reveal_heatmap_color = static_cast<int>(state_->reveal.heatmap_color);
+
     s.save();
 }
 
@@ -1890,6 +1928,7 @@ void App::render_viewport() {
     in.status_text = &state_->status_text;
     in.diff_amplification = &state_->diff_amplification;
     in.heatmap_color = &state_->heatmap_color;
+    in.reveal_options = &state_->reveal;
     in.viewport_slot_to_entry = &viewport_slot_to_entry_;
     in.last_channel_view_mode = &last_channel_view_mode_;
     in.sel_drag_is_ctrl = &sel_drag_is_ctrl_;
@@ -1953,7 +1992,8 @@ void App::update_pixel_inspector_hover() {
     int override_disp_w = 0;
     int override_disp_h = 0;
 
-    if (vp->mode() == ComparisonMode::Difference) {
+    if (vp->mode() == ComparisonMode::Difference ||
+        vp->mode() == ComparisonMode::Reveal) {
         if (diff_service_ && cell >= 0 &&
             cell < static_cast<int>(diff_service_->size())) {
             const auto& slot = diff_service_->slots()[cell];

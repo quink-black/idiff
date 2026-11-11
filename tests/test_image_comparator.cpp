@@ -194,8 +194,7 @@ TEST_CASE("ImageComparator: heatmap produces 3-channel RGB8 output",
     REQUIRE(heatmap->info().pixel_format == PixelFormat::RGB8);
 }
 
-TEST_CASE("ImageComparator: grayscale images can be compared", "[image_comparator]")
-{
+TEST_CASE("ImageComparator: grayscale images can be compared", "[image_comparator]"){
     auto a = make_image(cv::Mat(16, 16, CV_8UC1, cv::Scalar(100)), PixelFormat::Gray8);
     auto b = make_image(cv::Mat(16, 16, CV_8UC1, cv::Scalar(150)), PixelFormat::Gray8);
 
@@ -275,4 +274,155 @@ TEST_CASE("ImageComparator: RGBA16 images can be compared", "[image_comparator]"
     auto diff = cmp.compute_difference(*a, *b);
     REQUIRE(diff != nullptr);
     REQUIRE(diff->info().pixel_format == PixelFormat::RGB8);
+}
+
+// -----------------------------------------------------------------------------
+// Single-image reveal.
+// -----------------------------------------------------------------------------
+
+namespace {
+
+// Flat field with a centered square whose luminance is offset by
+// `delta`.  Returns the base image and leaves the square's bounds in
+// `patch`.
+std::unique_ptr<Image> make_offset_square(int size, int patch_size,
+                                          int base, int delta,
+                                          cv::Rect& patch) {
+    cv::Mat m(size, size, CV_8UC3, cv::Scalar(base, base, base));
+    const int p = (size - patch_size) / 2;
+    patch = cv::Rect(p, p, patch_size, patch_size);
+    m(patch).setTo(cv::Scalar(base + delta, base + delta, base + delta));
+    return make_image(std::move(m));
+}
+
+double mean_of(const cv::Mat& m, const cv::Rect& roi) {
+    return cv::mean(m(roi))[0];
+}
+
+}  // namespace
+
+TEST_CASE("ImageComparator: reveal rejects an empty image", "[reveal]") {
+    ImageComparator cmp;
+    Image empty;
+    REQUIRE(cmp.compute_reveal(empty) == nullptr);
+    REQUIRE_FALSE(cmp.last_error().empty());
+}
+
+TEST_CASE("ImageComparator: reveal of a flat image is uniform mid-gray",
+          "[reveal]") {
+    auto src = make_image(cv::Mat(64, 64, CV_8UC3, cv::Scalar(120, 120, 120)));
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.heatmap_color = HeatmapColor::Gray;
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+    REQUIRE(out->mat().cols == 64);
+    REQUIRE(out->mat().rows == 64);
+    REQUIRE(out->mat().depth() == CV_8U);
+
+    double lo, hi;
+    cv::minMaxLoc(out->mat(), &lo, &hi);
+    REQUIRE(lo == 128.0);
+    REQUIRE(hi == 128.0);
+}
+
+TEST_CASE("ImageComparator: reveal makes a faint bright patch stand out",
+          "[reveal]") {
+    // A patch wider than the background sigma survives the subtraction
+    // as a signed offset; the sign tells which way it deviates.
+    cv::Rect patch;
+    auto src = make_offset_square(128, 40, 100, 3, patch);
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 60.0;
+    opts.amplification = 20.0;
+    opts.smooth = false;
+    opts.heatmap_color = HeatmapColor::Gray;
+
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+
+    const cv::Rect center(patch.x + 12, patch.y + 12, 16, 16);
+    const cv::Rect outside(2, 2, 16, 16);
+    REQUIRE(mean_of(out->mat(), center) > 140.0);
+    REQUIRE(mean_of(out->mat(), outside) < 130.0);
+}
+
+TEST_CASE("ImageComparator: reveal keeps the sign of a dark patch",
+          "[reveal]") {
+    cv::Rect patch;
+    auto src = make_offset_square(128, 40, 180, -3, patch);
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 60.0;
+    opts.smooth = false;
+    opts.heatmap_color = HeatmapColor::Gray;
+
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+
+    const cv::Rect center(patch.x + 12, patch.y + 12, 16, 16);
+    REQUIRE(mean_of(out->mat(), center) < 120.0);
+}
+
+TEST_CASE("ImageComparator: reveal honors the requested palette",
+          "[reveal]") {
+    cv::Rect patch;
+    auto src = make_offset_square(64, 32, 100, 5, patch);
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 40.0;
+    opts.heatmap_color = HeatmapColor::Coolwarm;
+
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+    REQUIRE(out->mat().channels() == 3);
+    REQUIRE(out->info().pixel_format == PixelFormat::RGB8);
+}
+
+TEST_CASE("ImageComparator: reveal survives a radius larger than a tiny image",
+          "[reveal]") {
+    // Regression: the background estimate is computed on a reduced
+    // copy, and an unclamped reduction factor asked cv::resize for a
+    // zero-sized image.
+    cv::Rect patch;
+    auto src = make_offset_square(9, 5, 128, 10, patch);
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 1000.0;
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+    REQUIRE(out->mat().cols == 9);
+    REQUIRE(out->mat().rows == 9);
+}
+
+TEST_CASE("ImageComparator: reveal keeps sub-8-bit offsets from 16-bit input",
+          "[reveal]") {
+    // One 16-bit step is 1/257 of an 8-bit step.  Quantizing before
+    // the subtraction would erase this patch entirely.
+    constexpr int kBase = 100 * 257;
+    cv::Mat m(128, 128, CV_16UC3, cv::Scalar(kBase, kBase, kBase));
+    const cv::Rect patch(44, 44, 40, 40);
+    m(patch).setTo(cv::Scalar(kBase + 1, kBase + 1, kBase + 1));
+    auto src = make_image(std::move(m), PixelFormat::RGB16);
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 60.0;
+    opts.amplification = 200.0;
+    opts.smooth = false;
+    opts.heatmap_color = HeatmapColor::Gray;
+
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+
+    const cv::Rect center(patch.x + 12, patch.y + 12, 16, 16);
+    const cv::Rect outside(2, 2, 16, 16);
+    REQUIRE(mean_of(out->mat(), center) > 128.0);
+    REQUIRE(mean_of(out->mat(), outside) == 128.0);
 }

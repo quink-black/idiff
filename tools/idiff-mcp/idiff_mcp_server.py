@@ -28,7 +28,8 @@ Tool surface (mirrors idiff RPC, with friendlier names)
   set_reference              -- pin one entry as the comparison "A"
   remove_image               -- delete an entry from the library
   set_selection              -- replace the selection
-  set_view_mode              -- split | overlay | difference, optional slider
+  set_view_mode              -- split | overlay | difference | reveal, optional slider
+  set_reveal                 -- radius / gain / smooth / palette for the reveal view
   set_group_mode             -- none | by_name | by_folder image-list grouping
   set_group_by_name          -- older boolean form of set_group_mode
   screenshot                 -- compose what the viewport currently shows to a file
@@ -369,16 +370,18 @@ async def list_tools() -> list[Tool]:
                 "Switch the viewport's comparison mode. 'split' shows "
                 "every selected image side-by-side; 'overlay' blends "
                 "the first two through an A/B slider; 'difference' "
-                "renders one heatmap per partner against the reference. "
-                "The optional 'slider' (0..1) is only meaningful in "
-                "overlay mode."
+                "renders one heatmap per partner against the reference; "
+                "'reveal' shows each selected image as a signed "
+                "local-contrast residual for spotting faint watermarks "
+                "without a second image. The optional 'slider' (0..1) "
+                "is only meaningful in overlay mode."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "mode": {
                         "type": "string",
-                        "enum": ["split", "overlay", "difference"],
+                        "enum": ["split", "overlay", "difference", "reveal"],
                     },
                     "slider": {
                         "type": "number",
@@ -387,6 +390,32 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["mode"],
+            },
+        ),
+        Tool(
+            name="set_reveal",
+            description=(
+                "Tune the single-image reveal view. 'radius' is the "
+                "background-estimate sigma in pixels (larger values keep "
+                "broader structures and drop edge outlines), 'gain' "
+                "amplifies the signed residual around mid-gray, "
+                "'smooth' suppresses pixel grain, and 'palette' picks "
+                "the color scheme. Every field is optional. Call "
+                "set_view_mode with 'reveal' to display the result."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "radius": {"type": "number", "minimum": 1,
+                               "maximum": 1000},
+                    "gain": {"type": "number", "minimum": 0.1,
+                             "maximum": 1000},
+                    "smooth": {"type": "boolean"},
+                    "palette": {
+                        "type": "string",
+                        "enum": ["gray", "inferno", "viridis", "coolwarm"],
+                    },
+                },
             },
         ),
         Tool(
@@ -448,7 +477,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["split", "overlay", "difference"],
+                        "enum": ["split", "overlay", "difference", "reveal"],
                     },
                     "slider": {
                         "type": "number",
@@ -825,6 +854,17 @@ async def call_tool(
         if "slider" in arguments:
             params["slider"] = float(arguments["slider"])
         return _ok(_call(instance, "view.set_mode", params))
+
+    if name == "set_reveal":
+        params = {}
+        for key in ("radius", "gain"):
+            if key in arguments:
+                params[key] = float(arguments[key])
+        if "smooth" in arguments:
+            params["smooth"] = bool(arguments["smooth"])
+        if "palette" in arguments:
+            params["palette"] = str(arguments["palette"])
+        return _ok(_call(instance, "view.set_reveal", params))
 
     if name == "set_group_mode":
         return _ok(_call(instance, "view.set_group_mode",

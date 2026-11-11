@@ -1,7 +1,7 @@
 #ifndef IDIFF_APP_UI_VIEWPORT_PANEL_H
 #define IDIFF_APP_UI_VIEWPORT_PANEL_H
 
-#include "core/image_comparator.h" // HeatmapColor
+#include "core/image_comparator.h" // HeatmapColor, RevealOptions
 #include "app/viewport.h"          // ChannelViewMode
 
 #include <functional>
@@ -42,6 +42,10 @@ struct ViewportPanelInputs {
     std::string* status_text;
     double* diff_amplification;
     HeatmapColor* heatmap_color;
+
+    // Live reveal parameters (Reveal mode).  Mirror to the reveal.*
+    // settings fields when edited.
+    RevealOptions* reveal_options;
 
     std::vector<int>* viewport_slot_to_entry;
     ChannelViewMode* last_channel_view_mode;

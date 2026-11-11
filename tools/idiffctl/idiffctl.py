@@ -51,7 +51,8 @@ EXIT_CONNECTION = 5
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_LAUNCH_WAIT_S = 20.0
 
-MODES = ("split", "overlay", "difference")
+MODES = ("split", "overlay", "difference", "reveal")
+REVEAL_PALETTES = ("gray", "inferno", "viridis", "coolwarm")
 CHANNELS = ("r", "g", "b", "a", "y", "u", "v", "none", "rgb")
 GROUP_MODES = ("none", "by_name", "by_folder")
 
@@ -340,6 +341,15 @@ def cmd_view(s: Session, args) -> Any:
     if args.channel is not None:
         s.call("view.set_channel", {"channel": args.channel})
         applied.append("view.set_channel")
+    reveal = {k: v for k, v in (
+        ("radius", args.radius), ("gain", args.gain),
+        ("smooth", args.smooth), ("palette", args.palette),
+    ) if v is not None}
+    if reveal:
+        # Works without --mode reveal: the parameters stay in effect
+        # until the view next builds reveal slots.
+        s.call("view.set_reveal", reveal)
+        applied.append("view.set_reveal")
     zoom_pan = {k: v for k, v in (("zoom", args.zoom), ("pan_x", args.pan_x),
                                   ("pan_y", args.pan_y)) if v is not None}
     if zoom_pan:
@@ -455,6 +465,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mode", choices=MODES)
     sp.add_argument("--slider", type=float, help="overlay split, 0..1")
     sp.add_argument("--channel", choices=CHANNELS)
+    sp.add_argument("--radius", type=float,
+                    help="reveal: background-estimate sigma in pixels")
+    sp.add_argument("--gain", type=float,
+                    help="reveal: multiplier on the signed residual")
+    smooth = sp.add_mutually_exclusive_group()
+    smooth.add_argument("--smooth", dest="smooth", action="store_true",
+                        default=None,
+                        help="reveal: suppress pixel grain")
+    smooth.add_argument("--no-smooth", dest="smooth", action="store_false",
+                        help="reveal: keep pixel grain")
+    sp.add_argument("--palette", choices=REVEAL_PALETTES,
+                    help="reveal: color scheme")
     sp.add_argument("--group-mode", choices=GROUP_MODES)
     sp.add_argument("--zoom", type=float, help="1.0 = actual pixels")
     sp.add_argument("--pan-x", type=float, help="screen pixels")

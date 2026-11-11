@@ -48,6 +48,17 @@ public:
         // and ChannelViewMode::RGB mean "diff all RGB channels" (the
         // previous default behaviour).
         ChannelViewMode channel_mode = ChannelViewMode::None;
+
+        // What to build: one heatmap per pair, or one single-image
+        // reveal per selected entry.
+        enum class Mode {
+            Pairwise,
+            Reveal,
+        };
+        Mode mode = Mode::Pairwise;
+
+        // Parameters for Mode::Reveal only.
+        RevealOptions reveal;
     };
 
     explicit DiffService(ITextureUploader& uploader);
@@ -78,6 +89,10 @@ public:
     // message into out_error and continues with the next partner so
     // a single bad input cannot blank out the entire diff column.
     //
+    // In Options::Mode::Reveal, builds one slot per selected entry
+    // instead: each slot holds the single-image reveal of that entry,
+    // with partner_entry_idx set to the entry itself.
+    //
     // After update() returns, is_dirty() is false even when no slots
     // were produced (e.g. fewer than two selected entries); the
     // caller must call mark_dirty() again to retry.
@@ -103,6 +118,13 @@ private:
     // slot.texture as null on uploader failure; the slot is still
     // valid for displaying placeholder text.
     void upload_slot(DiffSlot& slot);
+
+    // Mode::Reveal half of update(): one reveal slot per selected
+    // entry.  Kept separate so the pairwise path stays readable.
+    void update_reveal(const std::vector<ImageEntry>& entries,
+                       const SelectionModel& selection,
+                       const Options& opts,
+                       std::string& out_error);
 
     ITextureUploader& uploader_;
     std::vector<DiffSlot> slots_;

@@ -3,6 +3,7 @@
 
 #include "app/measurement.h"
 #include "core/channel_view.h"
+#include "core/image_comparator.h"
 #include "app/texture_types.h"
 #include "core/image.h"
 #include "domain/comparison_config_service.h"
@@ -314,6 +315,20 @@ private:
     // private State struct and app_rpc_methods.cpp does not see State's
     // definition.  Defined in app.cpp.
     Viewport& rpc_viewport() noexcept;
+
+    // Reveal parameters, used by state.get / view.set_reveal.  They
+    // live inside the opaque State struct; these accessors expose them
+    // to app_rpc_methods.cpp without leaking State.  Defined in app.cpp.
+    RevealOptions& rpc_reveal_options() noexcept;
+    const RevealOptions& rpc_reveal_options() const noexcept;
+
+    // Rebuild the diff cache immediately for the single-image reveal
+    // view (reveal=true) or the pairwise difference view.  The
+    // screenshot composer reads slots directly and never triggers a
+    // render, so a client that changes mode and captures in one burst
+    // would otherwise capture the previous mode's slots.  Defined in
+    // app.cpp.
+    void rpc_refresh_diff(bool reveal);
 
     // Group-mode runtime flag, used by selection.set (to enforce the
     // single-comparison invariant), state.get (to report it), and
