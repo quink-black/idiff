@@ -231,11 +231,13 @@ void App::register_rpc_methods() {
                 {"channel_view", channel_view_mode_label(vp.channel_view_mode())},
             };
 
-            // Timeline state: current frame and total frames across
-            // all multi-frame entries.
+            // Timeline state: current frame, total frames across all
+            // multi-frame entries, and the playback rate adopted from
+            // the active source.
             json timeline = {
                 {"current_frame", timeline_->current_frame()},
                 {"total_frames",  TimelineModel::length(entries)},
+                {"fps",           timeline_->playback_fps()},
             };
 
             // Per-comparison references: expose the mapping the AI

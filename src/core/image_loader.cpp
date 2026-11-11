@@ -629,6 +629,39 @@ int ImageLoader::gif_frame_count(const std::string& path) {
     }
 }
 
+double ImageLoader::gif_frame_rate(const std::string& path) {
+    try {
+        auto buf = platform::read_file_binary(path);
+        if (buf.empty()) {
+            last_error_ = "Failed to read file: " + path;
+            return 0.0;
+        }
+        Magick::Blob blob(buf.data(), buf.size());
+        std::vector<Magick::Image> frames;
+        Magick::readImages(&frames, blob);
+        if (frames.empty()) return 0.0;
+
+        // Each frame's delay is stored in 1/100 s.  Magick++ reports
+        // delay 0 both for a frame whose Graphic Control Extension sets
+        // it to 0 and for a frame with no extension at all, so the two
+        // shapes cannot be told apart here.  Both use the 0.1 s
+        // substitution browsers apply, which is also what libavformat
+        // does for an explicit zero delay.  A file with no extension
+        // anywhere therefore reports 10 fps here but no rate through
+        // FFmpeg; that shape carries no animation timing either way.
+        double total_seconds = 0.0;
+        for (const auto& frame : frames) {
+            const std::size_t delay = frame.animationDelay();
+            total_seconds += (delay > 0 ? delay : 10) / 100.0;
+        }
+        if (total_seconds <= 0.0) return 0.0;
+        return static_cast<double>(frames.size()) / total_seconds;
+    } catch (const Magick::Exception& e) {
+        last_error_ = e.what();
+        return 0.0;
+    }
+}
+
 std::unique_ptr<Image> ImageLoader::load_gif_frame(const std::string& path,
                                                    int index) {
     try {

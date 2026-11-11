@@ -17,6 +17,7 @@ GifMagickSource::GifMagickSource(std::string path)
         last_error_ = loader.last_error();
         return;
     }
+    frame_rate_ = loader.gif_frame_rate(path_);
 
     // Decode frame 0 once to learn the canvas dimensions.  The pixels
     // are discarded; the timeline decodes lazily on demand.

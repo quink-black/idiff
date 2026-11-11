@@ -62,7 +62,13 @@ public:
     // the preferred backend cannot drop GIF frames.
     // gif_frame_count() returns 0 on failure; load_gif_frame() returns
     // nullptr for an out-of-range index or a decode failure.
+    // gif_frame_rate() averages the per-frame delays stored in the
+    // Graphics Control Extensions, substituting 0.1 s for a zero delay
+    // as browsers do.  Magick++ cannot distinguish a zero delay from a
+    // missing extension, so a file with no extension also reports a
+    // rate here; the FFmpeg path reports none for that shape.
     int gif_frame_count(const std::string& path);
+    double gif_frame_rate(const std::string& path);
     std::unique_ptr<Image> load_gif_frame(const std::string& path, int index);
 #endif
 

@@ -5,6 +5,7 @@
 // etc.) so regressions in cross-service state hand-offs are caught
 // headlessly.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "app/controller.h"
@@ -20,6 +21,7 @@
 #include "domain/diff_service.h"
 #include "domain/image_library.h"
 #include "domain/selection_model.h"
+#include "domain/timeline_model.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -305,6 +307,16 @@ TEST_CASE("Integration: a GIF loads with the frame count this build supports",
 #endif
     CHECK(entries[0].source->frame_count() == expected_frames);
     CHECK(controller.timeline_length() == expected_frames);
+
+#if defined(IDIFF_HAVE_FFMPEG) || defined(IDIFF_HAVE_MAGICK)
+    // The fixture runs at 0.2 s per frame.  Loading it must adopt that
+    // rate; otherwise playback runs at the timeline's 30 fps default
+    // and the animation plays six times too fast.
+    CHECK(controller.timeline().playback_fps() == Catch::Approx(5.0));
+#else
+    // A still carries no timing metadata, so the default stands.
+    CHECK(controller.timeline().playback_fps() == Catch::Approx(30.0));
+#endif
 }
 
 TEST_CASE("Integration: duplicate_entry creates a frame-offset pair",

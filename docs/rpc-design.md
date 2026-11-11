@@ -202,7 +202,7 @@ integer index afterwards; a path that matches both is rejected.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames,fps}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 

@@ -110,6 +110,9 @@ public:
 
     int frame_count() const noexcept;
     double fps() const noexcept;
+    // False when the stream had neither avg_frame_rate nor
+    // r_frame_rate and fps() holds the decoder's nominal fallback.
+    bool fps_from_metadata() const noexcept;
     double duration() const noexcept;
 
     // Codec name (e.g. "h264", "hevc", "vp9")

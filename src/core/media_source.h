@@ -34,6 +34,13 @@ public:
     // e.g. "PNG 8-bit RGB" or "YUV420P 1920x1080 8-bit".  May be empty.
     virtual const std::string& format_description() const noexcept = 0;
 
+    // Nominal frame rate from the container or codec metadata, in
+    // frames per second.  Zero means the source carries no timing
+    // information, as a still image does.  Multi-frame sources report
+    // their authored rate so timeline playback matches the file
+    // instead of a fixed default.
+    virtual double frame_rate() const noexcept { return 0.0; }
+
     // Decode and return frame `index`.  Out-of-range indices must return
     // nullptr; callers are expected to clamp beforehand.
     virtual std::unique_ptr<Image> read_frame(int index) = 0;
