@@ -202,7 +202,7 @@ integer index afterwards; a path that matches both is rejected.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view}, timeline:{current_frame,total_frames,fps}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view,reveal:{radius,gain,smooth,palette}}, timeline:{current_frame,total_frames,fps}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 
@@ -219,9 +219,10 @@ integer index afterwards; a path that matches both is rejected.
 | `selection.set` | `{indices:[int]}` or `{entries:[int\|string]}` | `{}` (rejected with InvalidParams when group-by-name is on and the indices span more than one comparison) |
 | `selection.select_group` | `{entry}` | `{changed:bool, indices:[int]}` |
 | `selection.select_range` | `{from:int, to:int}` | `{changed:bool, indices:[int]}` |
-| `view.set_mode` | `{mode:"split"\|"overlay"\|"difference", slider?:float}` | `{}` |
+| `view.set_mode` | `{mode:"split"\|"overlay"\|"difference"\|"reveal", slider?:float}` | `{}` |
 | `view.set_group_mode` | `{mode:"none"\|"by_name"\|"by_folder"}` | `{}` |
 | `view.set_group_by_name` | `{enabled:bool}` | `{}` — **deprecated alias** for `view.set_group_mode` (mapped to `none`/`by_name`); kept so old clients keep working |
+| `view.set_reveal` | `{radius?:number(1..1000 px), gain?:number(0.1..1000), smooth?:bool, palette?:"gray"\|"inferno"\|"viridis"\|"coolwarm"}` | `{}` — all fields optional; rebuilds the Reveal view |
 | `view.set_zoom_pan` | `{zoom?:float, pan_x?:float, pan_y?:float}` | `{}` — all fields optional |
 | `view.set_channel` | `{channel:"r"\|"g"\|"b"\|"a"\|"y"\|"u"\|"v"\|"none"\|"rgb"}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |
@@ -278,6 +279,7 @@ probe and has no direct tool.
 | `remove_image` | `library.remove` (index or path) |
 | `set_selection` | `selection.set` (`entries` or `indices`) |
 | `set_view_mode` | `view.set_mode` |
+| `set_reveal` | `view.set_reveal` |
 | `set_group_mode` | `view.set_group_mode` |
 | `set_group_by_name` | `view.set_group_by_name` (deprecated alias) |
 | `screenshot` | `view.screenshot` |

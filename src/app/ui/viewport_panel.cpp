@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,6 +53,10 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         opts.amplification = *in.diff_amplification;
         opts.heatmap_color = *in.heatmap_color;
         opts.channel_mode = in.viewport->channel_view_mode();
+        if (in.viewport->mode() == ComparisonMode::Reveal) {
+            opts.mode = DiffService::Options::Mode::Reveal;
+            opts.reveal = *in.reveal_options;
+        }
         diff_service.update(entries, selection, opts, *in.status_text);
         diff_service.update_visible_tiles(
             entries, selection, opts, in.viewport->visible_regions(),
@@ -347,14 +352,21 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         ImGui::RadioButton("Overlay", &mode_int, 1);
         ImGui::SameLine();
         ImGui::RadioButton("Diff", &mode_int, 2);
+        ImGui::SameLine();
+        ImGui::RadioButton("Reveal", &mode_int, 3);
         if (static_cast<ComparisonMode>(mode_int) != mode) {
             vp.set_mode(static_cast<ComparisonMode>(mode_int));
+            // Reveal slots are built by the diff service, so entering
+            // or leaving that mode invalidates the cache.
+            diff_service.mark_dirty();
             if (in.settings) in.settings->save();
         }
 
-        // Grid layout selector (only meaningful in Split/Diff modes)
+        // Grid layout selector (only meaningful in Split/Diff/Reveal modes)
         ComparisonMode current_mode = static_cast<ComparisonMode>(mode_int);
-        if (current_mode == ComparisonMode::Split || current_mode == ComparisonMode::Difference) {
+        if (current_mode == ComparisonMode::Split ||
+            current_mode == ComparisonMode::Difference ||
+            current_mode == ComparisonMode::Reveal) {
             ImGui::SameLine();
             ImGui::Spacing();
             ImGui::SameLine();
@@ -422,6 +434,91 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             }
         }
 
+        // Reveal-mode options: background radius, residual gain,
+        // noise suppression, palette.
+        if (current_mode == ComparisonMode::Reveal) {
+            ImGui::SameLine();
+            ImGui::Spacing();
+            ImGui::SameLine();
+            ImGui::Text("Radius:");
+            ImGui::SameLine();
+            int radius = static_cast<int>(
+                std::lround(in.reveal_options->background_sigma));
+            ImGui::PushItemWidth(70);
+            if (ImGui::SliderInt("##reveal_radius", &radius, 2, 200, "%d px")) {
+                in.reveal_options->background_sigma = radius;
+                if (in.settings) settings.reveal_radius = radius;
+                diff_service.mark_dirty();
+                if (in.on_settings_changed) in.on_settings_changed();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Background estimate scale. Raise it "
+                                  "until the whole watermark outline "
+                                  "survives instead of only its edges");
+            }
+
+            ImGui::SameLine();
+            float gain = static_cast<float>(in.reveal_options->amplification);
+            ImGui::PushItemWidth(70);
+            if (ImGui::SliderFloat("Gain##reveal_gain", &gain, 1.0f, 200.0f,
+                                   "%.1fx")) {
+                in.reveal_options->amplification = static_cast<double>(gain);
+                if (in.settings) settings.reveal_gain = gain;
+                diff_service.mark_dirty();
+                if (in.on_settings_changed) in.on_settings_changed();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Multiplier on the signed residual. "
+                                  "Mid-gray means no deviation");
+            }
+
+            ImGui::SameLine();
+            bool smooth = in.reveal_options->smooth;
+            if (ImGui::Checkbox("Smooth", &smooth)) {
+                in.reveal_options->smooth = smooth;
+                if (in.settings) settings.reveal_smooth = smooth;
+                diff_service.mark_dirty();
+                if (in.on_settings_changed) in.on_settings_changed();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Suppress pixel grain before and after "
+                                  "the background subtraction");
+            }
+
+            ImGui::SameLine();
+            // Combo order: the two palettes that preserve the sign of
+            // the residual first, then the sequential ones.  The index
+            // mapping is separate from HeatmapColor's enum values.
+            int palette = 0;
+            switch (in.reveal_options->heatmap_color) {
+                case HeatmapColor::Gray:     palette = 0; break;
+                case HeatmapColor::Coolwarm: palette = 1; break;
+                case HeatmapColor::Inferno:  palette = 2; break;
+                case HeatmapColor::Viridis:  palette = 3; break;
+            }
+            ImGui::PushItemWidth(90);
+            if (ImGui::Combo("##reveal_palette", &palette,
+                             "Gray\0Coolwarm\0Inferno\0Viridis\0")) {
+                HeatmapColor color = HeatmapColor::Gray;
+                if (palette == 1) color = HeatmapColor::Coolwarm;
+                else if (palette == 2) color = HeatmapColor::Inferno;
+                else if (palette == 3) color = HeatmapColor::Viridis;
+                in.reveal_options->heatmap_color = color;
+                if (in.settings) {
+                    settings.reveal_heatmap_color = static_cast<int>(color);
+                }
+                diff_service.mark_dirty();
+                if (in.on_settings_changed) in.on_settings_changed();
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Gray and Coolwarm keep the sign of the "
+                                  "residual; Inferno and Viridis do not");
+            }
+        }
+
         ImGui::SameLine();
         ImGui::Spacing();
         ImGui::SameLine();
@@ -455,7 +552,9 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
         ImGui::SameLine();
         bool can_save = !entries.empty() &&
                         (!selection.empty() ||
-                         (vp.mode() == ComparisonMode::Difference && !diff_service.empty()));
+                         ((vp.mode() == ComparisonMode::Difference ||
+                           vp.mode() == ComparisonMode::Reveal) &&
+                          !diff_service.empty()));
         ImGui::BeginDisabled(!can_save);
         if (ImGui::SmallButton("Save...")) {
             if (in.on_save_viewport) in.on_save_viewport();
@@ -578,7 +677,14 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             } else {
                 partner_name = "?";
             }
-            diff_label_storage.push_back("Diff: " + ref_name + " vs " + partner_name);
+            if (vp.mode() == ComparisonMode::Reveal) {
+                // In reveal mode the slot points at the enhanced entry
+                // itself; there is no A/partner pairing.
+                diff_label_storage.push_back("Reveal: " + partner_name);
+            } else {
+                diff_label_storage.push_back("Diff: " + ref_name + " vs " +
+                                             partner_name);
+            }
             diff_labels.push_back(diff_label_storage.back().c_str());
         }
     }

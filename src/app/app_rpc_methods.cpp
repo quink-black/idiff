@@ -68,6 +68,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <set>
 #include <stdexcept>
@@ -93,8 +94,9 @@ ComparisonMode parse_mode(const std::string& s) {
     if (s == "split")      return ComparisonMode::Split;
     if (s == "overlay")    return ComparisonMode::Overlay;
     if (s == "difference") return ComparisonMode::Difference;
+    if (s == "reveal")     return ComparisonMode::Reveal;
     throw RpcException(ErrorCode::InvalidParams,
-        "mode must be one of: split, overlay, difference (got \""
+        "mode must be one of: split, overlay, difference, reveal (got \""
         + s + "\")");
 }
 
@@ -103,8 +105,29 @@ const char* mode_to_string(ComparisonMode m) {
         case ComparisonMode::Split:      return "split";
         case ComparisonMode::Overlay:    return "overlay";
         case ComparisonMode::Difference: return "difference";
+        case ComparisonMode::Reveal:     return "reveal";
     }
     return "split";
+}
+
+const char* heatmap_color_to_string(HeatmapColor c) {
+    switch (c) {
+        case HeatmapColor::Gray:     return "gray";
+        case HeatmapColor::Inferno:  return "inferno";
+        case HeatmapColor::Viridis:  return "viridis";
+        case HeatmapColor::Coolwarm: return "coolwarm";
+    }
+    return "gray";
+}
+
+HeatmapColor parse_heatmap_color(const std::string& s) {
+    if (s == "gray")     return HeatmapColor::Gray;
+    if (s == "inferno")  return HeatmapColor::Inferno;
+    if (s == "viridis")  return HeatmapColor::Viridis;
+    if (s == "coolwarm") return HeatmapColor::Coolwarm;
+    throw RpcException(ErrorCode::InvalidParams,
+        "palette must be one of: gray, inferno, viridis, coolwarm (got \""
+        + s + "\")");
 }
 
 const char* group_mode_to_string(GroupMode m) {
@@ -229,6 +252,14 @@ void App::register_rpc_methods() {
                 {"pan_x",  vp.pan_x()},
                 {"pan_y",  vp.pan_y()},
                 {"channel_view", channel_view_mode_label(vp.channel_view_mode())},
+                {"reveal", json{
+                    {"radius", std::lround(
+                        rpc_reveal_options().background_sigma)},
+                    {"gain", rpc_reveal_options().amplification},
+                    {"smooth", rpc_reveal_options().smooth},
+                    {"palette", heatmap_color_to_string(
+                        rpc_reveal_options().heatmap_color)},
+                }},
             };
 
             // Timeline state: current frame, total frames across all
@@ -554,6 +585,9 @@ void App::register_rpc_methods() {
             ComparisonMode m = parse_mode(require_string_field(params, "mode"));
             Viewport& vp = rpc_viewport();
             vp.set_mode(m);
+            // The reveal slots (and only those) depend on the mode, so
+            // a mode switch must invalidate the diff cache.
+            diff_service_->mark_dirty();
 
             auto it = params.find("slider");
             if (it != params.end()) {
@@ -632,6 +666,25 @@ void App::register_rpc_methods() {
             int ref_idx = -1;
             controller_->get_ref_index(ref_idx);
 
+            // The composer reads the diff cache directly, while the
+            // cache is normally rebuilt during rendering.  A client
+            // that switches mode and captures in one burst can reach
+            // this point before the next frame, so when the cached
+            // slot kind does not match the requested view -- or a
+            // previous call already invalidated it -- rebuild now
+            // instead of capturing another mode's slots.
+            const bool cache_is_reveal =
+                vp.mode() == ComparisonMode::Reveal;
+            const bool want_reveal = mode == ComparisonMode::Reveal;
+            if (diff_service_->is_dirty() ||
+                cache_is_reveal != want_reveal) {
+                rpc_refresh_diff(want_reveal);
+                // The cache now describes the requested snapshot, not
+                // the live viewport.  Mark before composing so a
+                // failure below cannot strand it in the other kind.
+                if (mode != vp.mode()) diff_service_->mark_dirty();
+            }
+
             ComposeViewportInput in;
             in.mode = mode;
             in.ref_idx = ref_idx;
@@ -667,6 +720,7 @@ void App::register_rpc_methods() {
                 throw RpcException(ErrorCode::InternalError,
                     "screenshot: failed to write file: " + final_path);
             }
+
 
             return json{
                 {"path",   final_path},
@@ -733,6 +787,60 @@ void App::register_rpc_methods() {
                     "none, rgb (got \"" + ch + "\")");
             }
             rpc_viewport().set_channel_view_mode(m);
+            return json::object();
+        });
+
+    // --- view.set_reveal -------------------------------------------
+    //
+    // Tune the single-image reveal view.  Every field is optional;
+    // the call only invalidates the reveal cache, so a caller can set
+    // radius and gain in one round-trip before taking a screenshot.
+    d.register_method("view.set_reveal",
+        [this](const json& params) -> json {
+            require_object(params);
+            RevealOptions& ro = rpc_reveal_options();
+
+            if (auto it = params.find("radius"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "radius must be a number in [1, 1000]");
+                }
+                const double v = it->get<double>();
+                if (!(v >= 1.0 && v <= 1000.0)) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "radius must be in [1, 1000]");
+                }
+                ro.background_sigma = v;
+            }
+            if (auto it = params.find("gain"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "gain must be a number in [0.1, 1000]");
+                }
+                const double v = it->get<double>();
+                if (!(v >= 0.1 && v <= 1000.0)) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "gain must be in [0.1, 1000]");
+                }
+                ro.amplification = v;
+            }
+            if (auto it = params.find("smooth"); it != params.end()) {
+                if (!it->is_boolean()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "smooth must be a boolean");
+                }
+                ro.smooth = it->get<bool>();
+            }
+            if (auto it = params.find("palette"); it != params.end()) {
+                if (!it->is_string()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "palette must be a string");
+                }
+                ro.heatmap_color =
+                    parse_heatmap_color(it->get<std::string>());
+            }
+
+            diff_service_->mark_dirty();
             return json::object();
         });
 

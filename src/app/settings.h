@@ -35,6 +35,15 @@ struct AppSettings {
     int heatmap_color = 1;
     double diff_amplification = 5.0;
 
+    // Reveal-mode options (single-image local-contrast view).
+    // reveal_radius is the background-estimate sigma in pixels;
+    // reveal_gain maps the signed residual onto the display range.
+    // reveal_heatmap_color uses the same encoding as heatmap_color.
+    int reveal_radius = 20;
+    double reveal_gain = 20.0;
+    bool reveal_smooth = true;
+    int reveal_heatmap_color = 0;
+
     // Inspector panel currently shown.
     // 0 = Properties (default), 1 = Pixel, 2 = Metrics,
     // 3 = Statistics, 4 = Measurements.  Persisted so the user does

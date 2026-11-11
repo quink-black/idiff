@@ -173,6 +173,11 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
     // always reconstructed from the selection anyway.
     clear();
 
+    if (opts.mode == Options::Mode::Reveal) {
+        update_reveal(entries, selection, opts, out_error);
+        return;
+    }
+
     if (selection.size() < 2) return;
 
     int idx_ref = -1;
@@ -293,12 +298,89 @@ void DiffService::update(const std::vector<ImageEntry>& entries,
     }
 }
 
+void DiffService::update_reveal(
+        const std::vector<ImageEntry>& entries,
+        const SelectionModel& selection,
+        const Options& opts,
+        std::string& out_error) {
+    ImageComparator comparator;
+
+    const auto limits = uploader_.limits();
+    const int proxy_limit = std::min(
+        4096, std::max(1, std::min(
+            limits.max_width > 0 ? limits.max_width : 4096,
+            limits.max_height > 0 ? limits.max_height : 4096)));
+
+    for (int idx : selection.indices()) {
+        if (idx < 0 || idx >= static_cast<int>(entries.size())) continue;
+        const auto& entry = entries[static_cast<std::size_t>(idx)];
+        // Lazy-load: a selected entry may have been evicted by the LRU.
+        entry.ensure_decoded();
+        const Image* img = entry.display_image ? entry.display_image.get()
+                                               : entry.image.get();
+        if (!img) continue;
+
+        std::unique_ptr<Image> chan =
+            extract_channel_image(*img, opts.channel_mode);
+        const Image* eff = chan ? chan.get() : img;
+
+        const int src_w = eff->mat().cols;
+        const int src_h = eff->mat().rows;
+        if (src_w <= 0 || src_h <= 0) continue;
+
+        std::unique_ptr<Image> revealed;
+        if (src_w > proxy_limit || src_h > proxy_limit) {
+            // The reveal is a full-frame texture and has no tile path,
+            // so oversized sources are processed at proxy resolution.
+            const double scale = std::min(
+                static_cast<double>(proxy_limit) / src_w,
+                static_cast<double>(proxy_limit) / src_h);
+            const cv::Size proxy_size(
+                std::max(1, static_cast<int>(src_w * scale)),
+                std::max(1, static_cast<int>(src_h * scale)));
+            cv::Mat proxy;
+            cv::resize(eff->mat(), proxy, proxy_size, 0.0, 0.0,
+                       cv::INTER_AREA);
+            Image proxy_img;
+            proxy_img.internal().mat = std::move(proxy);
+            proxy_img.internal().info = eff->info();
+            proxy_img.internal().info.width = proxy_size.width;
+            proxy_img.internal().info.height = proxy_size.height;
+            revealed = comparator.compute_reveal(proxy_img, opts.reveal);
+        } else {
+            revealed = comparator.compute_reveal(*eff, opts.reveal);
+        }
+
+        if (!revealed) {
+            const auto err = "Reveal: " + comparator.last_error();
+            LOG_WARN("%s", err.c_str());
+            if (!out_error.empty()) out_error += " | ";
+            out_error += err;
+            continue;
+        }
+
+        DiffSlot slot;
+        slot.partner_entry_idx = idx;
+        // Layout keeps the source dimensions so measurements and
+        // zoom-to-fit use the image's coordinate system; a proxy
+        // texture is simply stretched over that cell.
+        slot.tex_w = src_w;
+        slot.tex_h = src_h;
+        slot.image = std::move(revealed);
+        slots_.push_back(std::move(slot));
+        upload_slot(slots_.back());
+    }
+}
+
 void DiffService::update_visible_tiles(
         const std::vector<ImageEntry>& entries,
         const SelectionModel& selection,
         const Options& opts,
         const std::vector<VisibleImageRegion>& regions,
         std::size_t gpu_budget_bytes) {
+    // Reveal slots are single full-frame textures; there is nothing to
+    // stream tile by tile.
+    if (opts.mode == Options::Mode::Reveal) return;
     if (slots_.empty() || regions.empty()) return;
     int ref_index = -1;
     selection.get_ref_index(ref_index);

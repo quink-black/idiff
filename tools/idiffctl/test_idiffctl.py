@@ -300,6 +300,29 @@ class IdiffctlTest(unittest.TestCase):
             ("view.set_zoom_pan", {"zoom": 2.0, "pan_x": 5.0}),
         ])
 
+    def test_view_passes_reveal_parameters(self):
+        names = ("view.set_mode", "view.set_reveal")
+        srv = self.server(handlers={n: (lambda p: {}) for n in names})
+        code, out, _ = self.run_cli(
+            "view", "--mode", "reveal", "--radius", "30", "--gain", "40",
+            "--palette", "coolwarm", "--no-smooth")
+        self.assertEqual(code, 0)
+        self.assertEqual(out["applied"], list(names))
+        self.assertEqual(srv.calls, [
+            ("view.set_mode", {"mode": "reveal"}),
+            ("view.set_reveal", {"radius": 30.0, "gain": 40.0,
+                                 "smooth": False, "palette": "coolwarm"}),
+        ])
+
+    def test_shot_passes_reveal_mode_through(self):
+        srv = self.server(handlers={
+            "view.screenshot": lambda p: {"path": p["path"]},
+        })
+        code, _, _ = self.run_cli("shot", "out.png", "--mode", "reveal")
+        self.assertEqual(code, 0)
+        self.assertEqual(srv.methods(), ["view.screenshot"])
+        self.assertEqual(srv.calls[-1][1]["mode"], "reveal")
+
     def test_view_slider_alone_keeps_the_current_mode(self):
         srv = self.server(handlers={"view.set_mode": lambda p: {}})
         self.run_cli("view", "--slider", "0.25")

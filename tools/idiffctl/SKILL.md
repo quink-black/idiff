@@ -1,11 +1,11 @@
 ---
 name: idiffctl
 description: |
-  Drive the idiff image-comparison GUI from the shell: open images side by
-  side, choose the reference, switch split / overlay / difference views,
-  read PSNR / SSIM / MSE and pixel values, and save what the viewport
-  shows. Use when the user mentions idiff, asks to compare or show images
-  in idiff, or asks what an idiff window currently shows.
+  Drive the idiff image-comparison GUI from the shell: open images side
+  by side, choose the reference, switch split / overlay / difference /
+  reveal views, read PSNR / SSIM / MSE and pixel values, and save what
+  the viewport shows. Use when the user mentions idiff, asks to compare
+  or show images in idiff, or asks what an idiff window currently shows.
 ---
 
 # idiffctl
@@ -61,8 +61,10 @@ idiffctl.py open /data/ref.png /data/out.png    # load, or start idiff
 idiffctl.py state --brief
 idiffctl.py ref /data/ref.png                   # the "A" side
 idiffctl.py select /data/ref.png /data/out.png  # what is compared
-idiffctl.py view --mode difference              # split | overlay | difference
+idiffctl.py view --mode difference              # split | overlay | difference | reveal
 idiffctl.py view --mode overlay --slider 0.3
+idiffctl.py view --mode reveal --radius 30 --gain 40   # single-image boost
+idiffctl.py shot out.png --mode reveal          # capture the boosted view
 idiffctl.py view --channel y --zoom 4 --pan-x 100 --pan-y 50
 idiffctl.py view --group-mode none              # none | by_name | by_folder
 idiffctl.py metrics                             # each selected entry vs. the reference

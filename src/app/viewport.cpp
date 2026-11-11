@@ -927,6 +927,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
             break;
         }
         case ComparisonMode::Difference:
+        case ComparisonMode::Reveal:
             cell_layouts_.reserve(diff_tex_ptrs.size());
             for (size_t i = 0; i < diff_tex_ptrs.size(); ++i) {
                 CellLayout cl;
@@ -950,6 +951,7 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
             render_overlay(tex_ptrs, tex_ws, tex_hs, labels);
             break;
         case ComparisonMode::Difference:
+        case ComparisonMode::Reveal:
             render_difference(diff_tex_ptrs, diff_tex_ws, diff_tex_hs, diff_labels);
             break;
     }
@@ -1024,7 +1026,9 @@ void Viewport::render(const std::vector<SDL_Texture*>& tex_ptrs,
                         }
                     }
                 }
-            } else if (mode_ == ComparisonMode::Difference && !diff_tex_ptrs.empty()) {
+            } else if ((mode_ == ComparisonMode::Difference ||
+                        mode_ == ComparisonMode::Reveal) &&
+                       !diff_tex_ptrs.empty()) {
                 int n = static_cast<int>(diff_tex_ptrs.size());
                 float cell_w = vp_size_.x / split_cols_;
                 float cell_h = vp_size_.y / split_rows_;

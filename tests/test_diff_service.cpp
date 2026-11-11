@@ -428,3 +428,83 @@ TEST_CASE("DiffService::Options forwards heatmap_color choice", "[diff_service]"
     // pixel-difference or a shape/channel mismatch satisfies the
     // contract.
 }
+
+TEST_CASE("DiffService reveal builds one slot per selected entry",
+          "[diff_service][reveal]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("a.png", 32, 32, cv::Scalar(10, 20, 30)));
+    entries.push_back(make_entry("b.png", 32, 32, cv::Scalar(40, 50, 60)));
+    entries.push_back(make_entry("c.png", 32, 32, cv::Scalar(70, 80, 90)));
+
+    sel.insert(0);
+    sel.insert(2);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+
+    REQUIRE(err.empty());
+    REQUIRE(svc.size() == 2);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 0);
+    REQUIRE(svc.slots()[1].partner_entry_idx == 2);
+    REQUIRE(svc.slots()[0].texture != nullptr);
+    REQUIRE(svc.slots()[1].texture != nullptr);
+    REQUIRE(svc.slots()[0].tex_w == 32);
+    REQUIRE(svc.slots()[0].tex_h == 32);
+    REQUIRE(up.upload_count() == 2);
+}
+
+TEST_CASE("DiffService reveal works with a single selected entry",
+          "[diff_service][reveal]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("only.png", 16, 16, cv::Scalar(90, 90, 90)));
+    sel.insert(0);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+
+    REQUIRE(err.empty());
+    REQUIRE(svc.size() == 1);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 0);
+}
+
+TEST_CASE("DiffService reveal slots do not stream tiles",
+          "[diff_service][reveal]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("a.png", 128, 96, cv::Scalar(10, 20, 30)));
+    sel.insert(0);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+    REQUIRE(svc.size() == 1);
+
+    idiff::VisibleImageRegion region;
+    region.slot = 0;
+    region.width = 128;
+    region.height = 96;
+    region.difference = true;
+    svc.update_visible_tiles(entries, sel, opts, {region}, 64u * 64u * 4u);
+
+    REQUIRE(svc.slots()[0].texture_tiles.empty());
+    REQUIRE(up.live_count() == 1);
+}
