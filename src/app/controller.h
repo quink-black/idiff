@@ -258,6 +258,14 @@ public:
     // reported through the injected status reporter.
     void sync_entries_to_timeline();
 
+    // Adopt the playback rate reported by the first multi-frame source
+    // that carries timing metadata (video container or animated GIF).
+    // Called whenever the entry set changes -- load, duplicate, remove,
+    // reload -- so playback follows the file instead of the timeline's
+    // built-in default.  A manual fps edit survives until the next
+    // such change.
+    void sync_playback_fps_from_sources();
+
     // Fast approximate preview for scrubbing: uses read_keyframe()
     // instead of read_frame().  Updates viewport pixels but does not
     // mark the diff cache dirty (diff is too expensive for scrub).

@@ -90,6 +90,14 @@ const std::string& VideoFileSource::format_description() const noexcept {
     return format_desc_;
 }
 
+double VideoFileSource::frame_rate() const noexcept {
+    // fps() carries a nominal 25 fps when the stream has no timing
+    // metadata.  Report 0 instead, so the timeline does not adopt a
+    // made-up rate that would also mask a later timed source.
+    if (!decoder_ || !decoder_->fps_from_metadata()) return 0.0;
+    return decoder_->fps();
+}
+
 const std::string& VideoFileSource::last_error() const noexcept {
     return last_error_;
 }

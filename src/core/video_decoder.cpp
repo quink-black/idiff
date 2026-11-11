@@ -76,6 +76,11 @@ struct VideoDecoder::Impl {
     int frame_count = 0;
     int bit_depth = 8;
     double fps = 0.0;
+    // Whether `fps` came from the stream's own metadata.  When the
+    // container carries no usable rate, `fps` keeps the nominal 25.0
+    // used for frame-count estimation, and this flag stays false so
+    // callers that need the file's real rate can tell the difference.
+    bool fps_from_metadata = false;
     double duration = 0.0;
     std::string codec_name;
     std::string last_error;
@@ -741,20 +746,33 @@ bool VideoDecoder::open(const std::string& path) {
         impl_->bit_depth = pix_desc->comp[0].depth;
     }
 
-    // Calculate FPS
-    AVRational fr = video_stream->avg_frame_rate;
-    if (fr.num > 0 && fr.den > 0) {
-        impl_->fps = av_q2d(fr);
-    } else {
-        fr = video_stream->r_frame_rate;
-        impl_->fps = (fr.num > 0 && fr.den > 0) ? av_q2d(fr) : 25.0;
-    }
-
-    // Calculate duration
+    // Calculate duration first: the frame-rate fallback below needs to
+    // know whether the stream carries any timing at all.
     if (video_stream->duration != AV_NOPTS_VALUE) {
         impl_->duration = video_stream->duration * av_q2d(video_stream->time_base);
     } else if (impl_->fmt_ctx->duration != AV_NOPTS_VALUE) {
         impl_->duration = impl_->fmt_ctx->duration / static_cast<double>(AV_TIME_BASE);
+    }
+
+    // Calculate FPS.  avg_frame_rate is derived from the stream's
+    // timestamps and is the most trustworthy value.  r_frame_rate is
+    // accepted only when the stream has a duration: without one it can
+    // be a time-base artifact (a GIF whose frames carry no delay
+    // reports 100/1 from a 1/100 time base).  A stream with no usable
+    // rate keeps a nominal 25 fps so the frame-count estimate below
+    // still has a value; fps_from_metadata() marks that as a fallback.
+    AVRational fr = video_stream->avg_frame_rate;
+    bool have_rate = fr.num > 0 && fr.den > 0;
+    if (!have_rate) {
+        fr = video_stream->r_frame_rate;
+        have_rate = fr.num > 0 && fr.den > 0 && impl_->duration > 0.0;
+    }
+    if (have_rate) {
+        impl_->fps = av_q2d(fr);
+        impl_->fps_from_metadata = true;
+    } else {
+        impl_->fps = 25.0;
+        impl_->fps_from_metadata = false;
     }
 
     // Determine frame count
@@ -841,6 +859,9 @@ int VideoDecoder::coded_width() const noexcept { return impl_->coded_width; }
 int VideoDecoder::coded_height() const noexcept { return impl_->coded_height; }
 int VideoDecoder::frame_count() const noexcept { return impl_->frame_count; }
 double VideoDecoder::fps() const noexcept { return impl_->fps; }
+bool VideoDecoder::fps_from_metadata() const noexcept {
+    return impl_->fps_from_metadata;
+}
 double VideoDecoder::duration() const noexcept { return impl_->duration; }
 const std::string& VideoDecoder::codec_name() const noexcept { return impl_->codec_name; }
 int VideoDecoder::bit_depth() const noexcept { return impl_->bit_depth; }

@@ -24,6 +24,7 @@ public:
     const std::string& format_description() const noexcept override {
         return format_desc_;
     }
+    double frame_rate() const noexcept override { return frame_rate_; }
     std::unique_ptr<Image> read_frame(int index) override;
     const std::string& last_error() const noexcept override {
         return last_error_;
@@ -36,6 +37,7 @@ private:
     int frame_count_ = 0;
     int width_ = 0;
     int height_ = 0;
+    double frame_rate_ = 0.0;
     std::string format_desc_;
     std::string last_error_;
 };

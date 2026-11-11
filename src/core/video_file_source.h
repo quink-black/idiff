@@ -28,6 +28,7 @@ public:
     int width() const noexcept override;
     int height() const noexcept override;
     const std::string& format_description() const noexcept override;
+    double frame_rate() const noexcept override;
     std::unique_ptr<Image> read_frame(int index) override;
     std::unique_ptr<Image> read_keyframe(int index) override;
     void clear_frame_cache() override;

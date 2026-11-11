@@ -632,6 +632,7 @@ void AppController::remove_entry(int index) {
     lazy_cache_.apply_remap(remap);
 
     compute_display_labels();
+    sync_playback_fps_from_sources();
     diff_->mark_dirty();
     on_selection_changed();
 }
@@ -657,6 +658,23 @@ void AppController::sync_entries_to_timeline() {
         if (e.image_decoded && e.image && e.source &&
             e.source->frame_count() > 1) {
             touch_lazy(static_cast<int>(i));
+        }
+    }
+}
+
+void AppController::sync_playback_fps_from_sources() {
+    // Entries are library-ordered, so the first timed source is also
+    // the one the timeline slider is anchored on.  Sources without
+    // timing metadata (stills, raw YUV) report 0 and are skipped: a
+    // later GIF or video in the same library still gets to set the
+    // rate.  When nothing reports a rate the timeline keeps whatever
+    // it has, so a manual edit is not discarded by an unrelated load.
+    for (const auto& entry : library_->all()) {
+        if (!entry.source || entry.source->frame_count() <= 1) continue;
+        const double fps = entry.source->frame_rate();
+        if (fps > 0.0) {
+            timeline_->set_playback_fps(fps);
+            return;
         }
     }
 }
@@ -792,6 +810,7 @@ void AppController::reload_all_images() {
         }
     }
     diff_->mark_dirty();
+    sync_playback_fps_from_sources();
 
     const char* name = ImageLoader::backend_name(loader_backend_);
     std::string status;
@@ -821,6 +840,7 @@ void AppController::reload_entry(int index) {
         library_->release_entry_pixels(static_cast<std::size_t>(index));
         entry.texture_dirty = true;
         diff_->mark_dirty();
+        sync_playback_fps_from_sources();
     } else {
         std::string err = entry.source ? entry.source->last_error()
                                        : "no source";
@@ -849,6 +869,7 @@ int AppController::reload_entries_by_path(
     }
     if (reloaded > 0) {
         diff_->mark_dirty();
+        sync_playback_fps_from_sources();
         status_reporter_->set_status(
             "Reloaded " + std::to_string(reloaded) + " changed file(s)");
     }
@@ -955,6 +976,7 @@ AppController::load_images(const std::vector<std::string>& paths,
 
     sort_entries_by_name();
     compute_display_labels();
+    sync_playback_fps_from_sources();
     diff_->mark_dirty();
 
     if (!failures.empty()) {
@@ -1050,6 +1072,7 @@ int AppController::duplicate_entry(int index, int frame_offset,
 
     library_->add(std::move(entry));
     compute_display_labels();
+    sync_playback_fps_from_sources();
     // Decode the pair at the current timeline position.  Without this,
     // both entries lazily decode frame 0 and the diff stays empty until
     // the user happens to step the timeline.
