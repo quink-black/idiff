@@ -15,6 +15,22 @@ enum class HeatmapColor {
     Coolwarm,
 };
 
+// Scalar field that the reveal filter operates on.  Luma is the
+// default; the chroma axes expose colour structure that is invisible in
+// a luminance residual, and the Lab channels separate hue from
+// brightness.  The chroma options only apply to colour sources: a gray
+// image yields a flat mid-gray result.
+enum class RevealChannel {
+    Luma,      // Rec.601 luminance on code values
+    Red,
+    Green,
+    Blue,
+    ChromaRG,  // R - G, red/green opponent axis
+    ChromaBY,  // B - (R + G) / 2, blue/yellow opponent axis
+    LabA,      // CIELAB a*, shifted onto the 0..255 encoding
+    LabB,      // CIELAB b*, shifted onto the 0..255 encoding
+};
+
 struct DifferenceOptions {
     // Amplification factor for difference values (1.0 = raw, 10.0 = 10x).
     double amplification = 5.0;
@@ -40,6 +56,24 @@ struct RevealOptions {
     // Suppress single-pixel noise on both sides of the subtraction so
     // faint structures are not buried in grain.
     bool smooth = true;
+    // First field in the filter chain.  Chroma and Lab options expose
+    // colour structure that a luminance residual cancels out.
+    RevealChannel channel = RevealChannel::Luma;
+    // Encode the residual against a blurred local magnitude instead of a
+    // single global gain.  The two cannot share one gain: a flat
+    // background carries about one 8-bit level of structure while
+    // textured mid-tones such as clothing or hair carry an order of
+    // magnitude more, so whichever the gain suits, the other either
+    // saturates or stays invisible.  Normalisation keeps both readable.
+    bool normalize = false;
+    // Standard deviation of the local magnitude estimate, in pixels.
+    // Keep it well above the feature scale so the divisor varies more
+    // slowly than the structure being revealed.
+    double normalize_sigma = 60.0;
+    // Lower bound for the divisor, in 8-bit levels.  Without it a
+    // perfectly flat area would divide by almost zero and turn
+    // quantisation noise into visible grain.
+    double normalize_floor = 0.12;
     // Color scheme.  Gray and Coolwarm preserve the sign of the
     // residual; the sequential maps do not.
     HeatmapColor heatmap_color = HeatmapColor::Gray;

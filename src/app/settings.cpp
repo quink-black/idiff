@@ -12,6 +12,8 @@
 #include <sstream>
 #include <string>
 
+#include "core/image_comparator.h"  // RevealChannel bounds
+
 namespace idiff {
 
 namespace {
@@ -172,6 +174,16 @@ AppSettings AppSettings::load(const std::string& path) {
             if (v > 0.0) s.reveal_gain = v;
         } else if (key == "reveal.smooth") {
             s.reveal_smooth = parse_bool(val, s.reveal_smooth);
+        } else if (key == "reveal.channel") {
+            const int v = std::atoi(val.c_str());
+            if (v >= 0 && v <= static_cast<int>(RevealChannel::LabB)) {
+                s.reveal_channel = v;
+            }
+        } else if (key == "reveal.normalize") {
+            s.reveal_normalize = parse_bool(val, s.reveal_normalize);
+        } else if (key == "reveal.normalize_sigma") {
+            double v = std::atof(val.c_str());
+            if (v > 0.0) s.reveal_normalize_sigma = v;
         } else if (key == "reveal.heatmap_color") {
             s.reveal_heatmap_color = std::atoi(val.c_str());
         } else if (key == "inspector.panel") {
@@ -275,6 +287,9 @@ bool AppSettings::save(const std::string& path) const {
     out << "reveal.radius="        << reveal_radius << "\n";
     out << "reveal.gain="          << reveal_gain << "\n";
     out << "reveal.smooth="        << (reveal_smooth ? "true" : "false") << "\n";
+    out << "reveal.channel="       << reveal_channel << "\n";
+    out << "reveal.normalize="     << (reveal_normalize ? "true" : "false") << "\n";
+    out << "reveal.normalize_sigma=" << reveal_normalize_sigma << "\n";
     out << "reveal.heatmap_color=" << reveal_heatmap_color << "\n";
     out << "inspector.panel="      << inspector_panel << "\n";
     out << "panel.show_image_list=" << (show_image_list ? "true" : "false") << "\n";

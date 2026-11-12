@@ -491,6 +491,10 @@ bool App::init(SDL_Window* window, SDL_Renderer* renderer) {
     state_->reveal.background_sigma = state_->settings.reveal_radius;
     state_->reveal.amplification = state_->settings.reveal_gain;
     state_->reveal.smooth = state_->settings.reveal_smooth;
+    state_->reveal.channel =
+        static_cast<RevealChannel>(state_->settings.reveal_channel);
+    state_->reveal.normalize = state_->settings.reveal_normalize;
+    state_->reveal.normalize_sigma = state_->settings.reveal_normalize_sigma;
     state_->reveal.heatmap_color =
         static_cast<HeatmapColor>(state_->settings.reveal_heatmap_color);
 
@@ -1422,6 +1426,9 @@ void App::save_settings() {
         static_cast<int>(std::lround(state_->reveal.background_sigma));
     s.reveal_gain = state_->reveal.amplification;
     s.reveal_smooth = state_->reveal.smooth;
+    s.reveal_channel = static_cast<int>(state_->reveal.channel);
+    s.reveal_normalize = state_->reveal.normalize;
+    s.reveal_normalize_sigma = state_->reveal.normalize_sigma;
     s.reveal_heatmap_color = static_cast<int>(state_->reveal.heatmap_color);
 
     s.save();

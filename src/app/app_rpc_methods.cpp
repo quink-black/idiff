@@ -130,6 +130,34 @@ HeatmapColor parse_heatmap_color(const std::string& s) {
         + s + "\")");
 }
 
+const char* reveal_channel_to_string(RevealChannel c) {
+    switch (c) {
+        case RevealChannel::Luma:     return "luma";
+        case RevealChannel::Red:      return "red";
+        case RevealChannel::Green:    return "green";
+        case RevealChannel::Blue:     return "blue";
+        case RevealChannel::ChromaRG: return "chroma_rg";
+        case RevealChannel::ChromaBY: return "chroma_by";
+        case RevealChannel::LabA:     return "lab_a";
+        case RevealChannel::LabB:     return "lab_b";
+    }
+    return "luma";
+}
+
+RevealChannel parse_reveal_channel(const std::string& s) {
+    if (s == "luma")      return RevealChannel::Luma;
+    if (s == "red")       return RevealChannel::Red;
+    if (s == "green")     return RevealChannel::Green;
+    if (s == "blue")      return RevealChannel::Blue;
+    if (s == "chroma_rg") return RevealChannel::ChromaRG;
+    if (s == "chroma_by") return RevealChannel::ChromaBY;
+    if (s == "lab_a")     return RevealChannel::LabA;
+    if (s == "lab_b")     return RevealChannel::LabB;
+    throw RpcException(ErrorCode::InvalidParams,
+        "channel must be one of: luma, red, green, blue, chroma_rg, "
+        "chroma_by, lab_a, lab_b (got \"" + s + "\")");
+}
+
 const char* group_mode_to_string(GroupMode m) {
     switch (m) {
         case GroupMode::None:    return "none";
@@ -257,6 +285,11 @@ void App::register_rpc_methods() {
                         rpc_reveal_options().background_sigma)},
                     {"gain", rpc_reveal_options().amplification},
                     {"smooth", rpc_reveal_options().smooth},
+                    {"channel", reveal_channel_to_string(
+                        rpc_reveal_options().channel)},
+                    {"normalize", rpc_reveal_options().normalize},
+                    {"normalize_sigma",
+                        rpc_reveal_options().normalize_sigma},
                     {"palette", heatmap_color_to_string(
                         rpc_reveal_options().heatmap_color)},
                 }},
@@ -830,6 +863,32 @@ void App::register_rpc_methods() {
                         "smooth must be a boolean");
                 }
                 ro.smooth = it->get<bool>();
+            }
+            if (auto it = params.find("channel"); it != params.end()) {
+                if (!it->is_string()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "channel must be a string");
+                }
+                ro.channel = parse_reveal_channel(it->get<std::string>());
+            }
+            if (auto it = params.find("normalize"); it != params.end()) {
+                if (!it->is_boolean()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "normalize must be a boolean");
+                }
+                ro.normalize = it->get<bool>();
+            }
+            if (auto it = params.find("normalize_sigma"); it != params.end()) {
+                if (!it->is_number()) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "normalize_sigma must be a number in [1, 1000]");
+                }
+                const double v = it->get<double>();
+                if (!(v >= 1.0 && v <= 1000.0)) {
+                    throw RpcException(ErrorCode::InvalidParams,
+                        "normalize_sigma must be in [1, 1000]");
+                }
+                ro.normalize_sigma = v;
             }
             if (auto it = params.find("palette"); it != params.end()) {
                 if (!it->is_string()) {

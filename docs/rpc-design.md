@@ -202,7 +202,7 @@ integer index afterwards; a path that matches both is rejected.
 
 | Method | Params | Result |
 |---|---|---|
-| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view,reveal:{radius,gain,smooth,palette}}, timeline:{current_frame,total_frames,fps}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
+| `state.get` | none | `{identity, entries:[{index,path,filename,label,width,height,frames,frame_offset,cached_frame}], selection:[int], reference:int\|null, explicit_reference:bool, group_mode:"none"\|"by_name"\|"by_folder", group_by_name:bool, view:{mode,slider,zoom,pan_x,pan_y,channel_view,reveal:{radius,gain,smooth,channel,normalize,normalize_sigma,palette}}, timeline:{current_frame,total_frames,fps}, comparison_references:{key->path}, current_comparison_key:string\|null}` |
 
 ### Mutations
 
@@ -222,7 +222,7 @@ integer index afterwards; a path that matches both is rejected.
 | `view.set_mode` | `{mode:"split"\|"overlay"\|"difference"\|"reveal", slider?:float}` | `{}` |
 | `view.set_group_mode` | `{mode:"none"\|"by_name"\|"by_folder"}` | `{}` |
 | `view.set_group_by_name` | `{enabled:bool}` | `{}` — **deprecated alias** for `view.set_group_mode` (mapped to `none`/`by_name`); kept so old clients keep working |
-| `view.set_reveal` | `{radius?:number(1..1000 px), gain?:number(0.1..1000), smooth?:bool, palette?:"gray"\|"inferno"\|"viridis"\|"coolwarm"}` | `{}` — all fields optional; rebuilds the Reveal view |
+| `view.set_reveal` | `{radius?:number(1..1000 px), gain?:number(0.1..1000), smooth?:bool, channel?:"luma"\|"red"\|"green"\|"blue"\|"chroma_rg"\|"chroma_by"\|"lab_a"\|"lab_b", normalize?:bool, normalize_sigma?:number(1..1000 px), palette?:"gray"\|"inferno"\|"viridis"\|"coolwarm"}` | `{}` — all fields optional; rebuilds the Reveal view. `channel` picks the scalar field (chroma axes expose colour structure a luminance residual cancels out). `normalize` divides the residual by a blurred local magnitude, so one gain serves both flat background and textured mid-tones instead of saturating one of them |
 | `view.set_zoom_pan` | `{zoom?:float, pan_x?:float, pan_y?:float}` | `{}` — all fields optional |
 | `view.set_channel` | `{channel:"r"\|"g"\|"b"\|"a"\|"y"\|"u"\|"v"\|"none"\|"rgb"}` | `{}` |
 | `view.screenshot` | `{path:string, mode?, slider?}` | `{path,width,height,bytes}` |

@@ -38,10 +38,17 @@ struct AppSettings {
     // Reveal-mode options (single-image local-contrast view).
     // reveal_radius is the background-estimate sigma in pixels;
     // reveal_gain maps the signed residual onto the display range.
+    // reveal_normalize divides the residual by a blurred local
+    // magnitude, so textured regions and flat background can share one
+    // gain; reveal_normalize_sigma is that magnitude's blur radius.
     // reveal_heatmap_color uses the same encoding as heatmap_color.
     int reveal_radius = 20;
     double reveal_gain = 20.0;
     bool reveal_smooth = true;
+    // Reveal channel, encoded as int(RevealChannel).
+    int reveal_channel = 0;
+    bool reveal_normalize = false;
+    double reveal_normalize_sigma = 60.0;
     int reveal_heatmap_color = 0;
 
     // Inspector panel currently shown.

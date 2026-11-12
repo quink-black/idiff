@@ -440,6 +440,30 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             ImGui::SameLine();
             ImGui::Spacing();
             ImGui::SameLine();
+            {
+                // Channel first: chroma and Lab fields expose colour
+                // structure that a luminance residual cancels out.
+                const char* channels[] = {
+                    "Luma", "Red", "Green", "Blue",
+                    "Chroma R-G", "Chroma B-Y", "Lab a*", "Lab b*"};
+                int channel = static_cast<int>(in.reveal_options->channel);
+                ImGui::PushItemWidth(110);
+                if (ImGui::Combo("##reveal_channel", &channel, channels,
+                                 IM_ARRAYSIZE(channels))) {
+                    in.reveal_options->channel =
+                        static_cast<RevealChannel>(channel);
+                    if (in.settings) settings.reveal_channel = channel;
+                    diff_service.mark_dirty();
+                    if (in.on_settings_changed) in.on_settings_changed();
+                }
+                ImGui::PopItemWidth();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Scalar field the residual is taken on. "
+                                      "Chroma axes reveal colour banding that "
+                                      "a luminance residual cancels out");
+                }
+            }
+            ImGui::SameLine();
             ImGui::Text("Radius:");
             ImGui::SameLine();
             int radius = static_cast<int>(
@@ -485,6 +509,42 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Suppress pixel grain before and after "
                                   "the background subtraction");
+            }
+
+            ImGui::SameLine();
+            bool normalize = in.reveal_options->normalize;
+            if (ImGui::Checkbox("Local##reveal_normalize", &normalize)) {
+                in.reveal_options->normalize = normalize;
+                if (in.settings) settings.reveal_normalize = normalize;
+                diff_service.mark_dirty();
+                if (in.on_settings_changed) in.on_settings_changed();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Divide the residual by a blurred local "
+                                  "magnitude, so textured mid-tones and flat "
+                                  "background share one gain. Without it a "
+                                  "gain tuned for the background saturates "
+                                  "clothing, hair and other textured areas");
+            }
+
+            if (in.reveal_options->normalize) {
+                ImGui::SameLine();
+                int nsigma = static_cast<int>(
+                    std::lround(in.reveal_options->normalize_sigma));
+                ImGui::PushItemWidth(70);
+                if (ImGui::SliderInt("##reveal_nsigma", &nsigma, 10, 400,
+                                     "%d px")) {
+                    in.reveal_options->normalize_sigma = nsigma;
+                    if (in.settings) settings.reveal_normalize_sigma = nsigma;
+                    diff_service.mark_dirty();
+                    if (in.on_settings_changed) in.on_settings_changed();
+                }
+                ImGui::PopItemWidth();
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Local magnitude scale. Keep it well "
+                                      "above the size of the structure being "
+                                      "revealed");
+                }
             }
 
             ImGui::SameLine();

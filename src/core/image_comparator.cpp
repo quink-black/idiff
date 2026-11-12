@@ -51,11 +51,12 @@ cv::Mat apply_colormap_raw(const cv::Mat& gray, HeatmapColor color) {
     return colored;
 }
 
-// Convert any supported input to a CV_32F luminance field on the
+// Convert any supported input to a CV_32F scalar field on the
 // 0..255 scale, without the 8-bit rounding step.  Reveal needs the
 // sub-level precision: a watermark below one 8-bit step is invisible
-// once the subtraction runs on quantized data.
-cv::Mat to_luminance_float(const cv::Mat& mat) {
+// once the subtraction runs on quantized data.  Chroma fields are
+// computed in float and never routed through an 8-bit conversion.
+cv::Mat to_channel_float(const cv::Mat& mat, RevealChannel channel) {
     cv::Mat f;
     switch (mat.depth()) {
         case CV_16U:
@@ -84,9 +85,87 @@ cv::Mat to_luminance_float(const cv::Mat& mat) {
         cv::cvtColor(f, f, cv::COLOR_GRAY2RGB);
     }
 
-    cv::Mat gray;
-    cv::cvtColor(f, gray, cv::COLOR_RGB2GRAY);
-    return gray;
+    if (channel == RevealChannel::Luma) {
+        cv::Mat gray;
+        cv::cvtColor(f, gray, cv::COLOR_RGB2GRAY);
+        return gray;
+    }
+
+    std::vector<cv::Mat> planes;
+    cv::split(f, planes);  // R, G, B
+
+    switch (channel) {
+        case RevealChannel::Red:
+            return planes[0];
+        case RevealChannel::Green:
+            return planes[1];
+        case RevealChannel::Blue:
+            return planes[2];
+        case RevealChannel::ChromaRG: {
+            cv::Mat out;
+            cv::subtract(planes[0], planes[1], out);
+            return out;
+        }
+        case RevealChannel::ChromaBY: {
+            // B - (R + G) / 2
+            cv::Mat rg_mean;
+            cv::addWeighted(planes[0], 0.5, planes[1], 0.5, 0.0, rg_mean);
+            cv::Mat out;
+            cv::subtract(planes[2], rg_mean, out);
+            return out;
+        }
+        case RevealChannel::LabA:
+        case RevealChannel::LabB: {
+            // cvtColor expects float RGB in [0, 1].  The 0..255 Lab
+            // encoding used elsewhere in the app puts a* and b* around
+            // 128, so shift them the same way.
+            cv::Mat unit;
+            f.convertTo(unit, CV_32F, 1.0 / 255.0);
+            cv::Mat lab;
+            cv::cvtColor(unit, lab, cv::COLOR_RGB2Lab);
+            std::vector<cv::Mat> lab_planes;
+            cv::split(lab, lab_planes);
+            const int index = channel == RevealChannel::LabA ? 1 : 2;
+            cv::Mat out = lab_planes[index] + 128.0;
+            return out;
+        }
+        case RevealChannel::Luma:
+            break;
+    }
+    return planes[1];
+}
+
+// Gaussian blur that evaluates large sigmas on a reduced copy: a 4K
+// frame with sigma 100 would otherwise need a ~800-tap kernel.  The
+// result is smooth by construction, so blurring at 1/factor resolution
+// with sigma/factor and scaling back is indistinguishable from the
+// full-resolution result, and keeps the slider interactive.
+cv::Mat blur_reduced(const cv::Mat& src, double sigma) {
+    const double s = std::max(0.1, sigma);
+    constexpr double kMaxDirectSigma = 4.0;
+    int factor = std::max(
+        1, static_cast<int>(std::ceil(s / kMaxDirectSigma)));
+    // Never scale a side below two pixels: a tiny image with a large
+    // radius would otherwise ask cv::resize for a zero-sized output
+    // and throw out of the render loop.
+    factor = std::min(
+        factor, std::max(1, std::min(src.cols, src.rows) / 2));
+
+    if (factor <= 1) {
+        cv::Mat out;
+        cv::GaussianBlur(src, out, cv::Size(0, 0), s);
+        return out;
+    }
+
+    const cv::Size small_size(
+        std::max(1, src.cols / factor),
+        std::max(1, src.rows / factor));
+    cv::Mat small;
+    cv::resize(src, small, small_size, 0.0, 0.0, cv::INTER_AREA);
+    cv::GaussianBlur(small, small, cv::Size(0, 0), s / factor);
+    cv::Mat out;
+    cv::resize(small, out, src.size(), 0.0, 0.0, cv::INTER_LINEAR);
+    return out;
 }
 
 // Convert a cv::Mat to 8-bit 3-channel (RGB order) for comparison.
@@ -191,48 +270,23 @@ std::unique_ptr<Image> ImageComparator::compute_reveal(const Image& src,
         return nullptr;
     }
 
-    // Work on luminance: watermarks are low-amplitude luminance
-    // offsets, and a single channel avoids amplifying per-channel
-    // compression noise independently.  Subtracting in float keeps
-    // sub-8-bit structure from 16-bit sources.
-    cv::Mat gray = to_luminance_float(mat);
+    // Work on the requested field.  Subtracting in float keeps
+    // sub-8-bit structure from 16-bit sources; a chroma field must never
+    // pass through an 8-bit conversion or its low bits are lost.
+    cv::Mat field = to_channel_float(mat, options.channel);
+    // One NaN would spread across its whole blur footprint.
+    cv::patchNaNs(field, 0.0);
 
     // A sub-pixel blur removes sensor / compression grain without
     // touching structures wider than about a pixel.
     constexpr double kSmoothSigma = 0.8;
-    cv::Mat base = gray;
+    cv::Mat base = field;
     if (options.smooth) {
         cv::GaussianBlur(base, base, cv::Size(0, 0), kSmoothSigma);
     }
 
     const double sigma = std::max(0.1, options.background_sigma);
-    cv::Mat background;
-    // Large sigmas are evaluated on a reduced copy: a 4K frame with
-    // sigma 100 would otherwise need a ~800-tap kernel.  The
-    // background field is smooth by construction, so blurring at 1/f
-    // resolution with sigma/f and scaling back is indistinguishable
-    // from the full-resolution result, and keeps the slider
-    // interactive.
-    constexpr double kMaxDirectSigma = 4.0;
-    int factor = std::max(
-        1, static_cast<int>(std::ceil(sigma / kMaxDirectSigma)));
-    // Never scale a side below two pixels: a tiny image with a large
-    // radius would otherwise ask cv::resize for a zero-sized output
-    // and throw out of the render loop.
-    factor = std::min(
-        factor, std::max(1, std::min(base.cols, base.rows) / 2));
-    if (factor > 1) {
-        const cv::Size small_size(
-            std::max(1, base.cols / factor),
-            std::max(1, base.rows / factor));
-        cv::Mat small;
-        cv::resize(base, small, small_size, 0.0, 0.0, cv::INTER_AREA);
-        cv::GaussianBlur(small, small, cv::Size(0, 0), sigma / factor);
-        cv::resize(small, background, base.size(), 0.0, 0.0,
-                   cv::INTER_LINEAR);
-    } else {
-        cv::GaussianBlur(base, background, cv::Size(0, 0), sigma);
-    }
+    cv::Mat background = blur_reduced(base, sigma);
 
     cv::Mat residual;
     cv::subtract(base, background, residual, cv::noArray(), CV_32F);
@@ -240,10 +294,30 @@ std::unique_ptr<Image> ImageComparator::compute_reveal(const Image& src,
         cv::GaussianBlur(residual, residual, cv::Size(0, 0), kSmoothSigma);
     }
 
+    // Optional local normalisation: divide by a blurred magnitude so each
+    // region is encoded against its own residual amplitude.  The divisor
+    // is floored to keep genuinely flat areas from amplifying
+    // quantisation noise into grain.
+    double encode_gain = options.amplification;
+    if (options.normalize) {
+        cv::Mat magnitude = cv::abs(residual);
+        magnitude = blur_reduced(
+            magnitude, std::max(1.0, options.normalize_sigma));
+        cv::max(magnitude, std::max(1e-3, options.normalize_floor),
+                magnitude);
+        cv::divide(residual, magnitude, residual);
+        // The normalised residual is dimensionless and mostly within a
+        // few units, so the previous "levels per gain" scale would
+        // saturate almost everything.  Keep the slider monotonic in
+        // brightness while mapping it onto that smaller range.
+        constexpr double kNormalisedGain = 0.45;
+        encode_gain *= kNormalisedGain;
+    }
+
     // Signed residual -> 0..255 with mid-gray as "no difference".
     // Saturating cast clamps the rare strong edge pixels.
     cv::Mat encoded;
-    residual.convertTo(encoded, CV_8U, options.amplification, 128.0);
+    residual.convertTo(encoded, CV_8U, encode_gain, 128.0);
 
     cv::Mat colored = apply_colormap_raw(encoded, options.heatmap_color);
 

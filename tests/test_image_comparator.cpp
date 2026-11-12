@@ -426,3 +426,144 @@ TEST_CASE("ImageComparator: reveal keeps sub-8-bit offsets from 16-bit input",
     REQUIRE(mean_of(out->mat(), center) > 128.0);
     REQUIRE(mean_of(out->mat(), outside) == 128.0);
 }
+
+namespace {
+
+// Fraction of pixels clamped to either end of the 8-bit range inside
+// `roi`.  A reveal tuned for a flat field saturates a texture; the
+// fraction is the cheapest proxy for "structure has been destroyed".
+double saturated_fraction(const cv::Mat& rgb, const cv::Rect& roi) {
+    const cv::Mat r = rgb(roi);
+    long saturated = 0;
+    for (int y = 0; y < r.rows; ++y) {
+        const auto* row = r.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < r.cols; ++x) {
+            if (row[x][0] == 0 || row[x][0] == 255) ++saturated;
+        }
+    }
+    const double total =
+        static_cast<double>(r.rows) * static_cast<double>(r.cols);
+    return static_cast<double>(saturated) / total;
+}
+
+}  // namespace
+
+TEST_CASE("ImageComparator: local normalisation leaves a flat image mid-gray",
+          "[reveal]") {
+    auto src =
+        make_image(cv::Mat(64, 64, CV_8UC3, cv::Scalar(120, 120, 120)));
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.heatmap_color = HeatmapColor::Gray;
+    opts.normalize = true;
+    auto out = cmp.compute_reveal(*src, opts);
+    REQUIRE(out != nullptr);
+
+    double lo, hi;
+    cv::minMaxLoc(out->mat(), &lo, &hi);
+    REQUIRE(lo == 128.0);
+    REQUIRE(hi == 128.0);
+}
+
+TEST_CASE("ImageComparator: local normalisation keeps a texture readable",
+          "[reveal]") {
+    // A flat field beside a high-contrast texture reproduces the case
+    // that motivated the option: one global gain cannot serve both, so
+    // the texture clamps to black and white and its structure is lost.
+    const int size = 160;
+    const int half = size / 2;
+    cv::Mat m(size, size, CV_8UC3, cv::Scalar(120, 120, 120));
+    cv::Mat tex(half, half, CV_8UC3);
+    for (int y = 0; y < half; ++y) {
+        for (int x = 0; x < half; ++x) {
+            const int v = ((x / 3 + y / 3) % 2 != 0) ? 132 : 108;
+            tex.at<cv::Vec3b>(y, x) = cv::Vec3b(
+                cv::saturate_cast<uchar>(v), cv::saturate_cast<uchar>(v),
+                cv::saturate_cast<uchar>(v));
+        }
+    }
+    tex.copyTo(m(cv::Rect(0, 0, half, half)));
+    auto src = make_image(std::move(m));
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 20.0;
+    opts.amplification = 101.0;
+    opts.smooth = false;
+    opts.heatmap_color = HeatmapColor::Gray;
+
+    const cv::Rect roi(8, 8, half - 16, half - 16);
+
+    auto global = cmp.compute_reveal(*src, opts);
+    REQUIRE(global != nullptr);
+    const double sat_global =
+        saturated_fraction(global->mat(), roi);
+
+    opts.normalize = true;
+    auto local = cmp.compute_reveal(*src, opts);
+    REQUIRE(local != nullptr);
+    const double sat_local =
+        saturated_fraction(local->mat(), roi);
+
+    REQUIRE(sat_global > 0.10);
+    REQUIRE(sat_local < sat_global * 0.5);
+}
+
+namespace {
+
+double range_of(const cv::Mat& rgb, const cv::Rect& roi) {
+    // The gray palette writes the same value into every channel.
+    cv::Mat gray;
+    cv::extractChannel(rgb(roi), gray, 0);
+    double lo, hi;
+    cv::minMaxLoc(gray, &lo, &hi);
+    return hi - lo;
+}
+
+}  // namespace
+
+TEST_CASE("ImageComparator: chroma channel sees what luminance misses",
+          "[reveal]") {
+    // R and G move in opposite directions with weights that keep the
+    // Rec.601 luminance flat.  A luminance residual is blind to this
+    // modulation; the R-G field is not.
+    const int size = 96;
+    cv::Mat m(size, size, CV_8UC3);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const double d = ((x / 6 + y / 6) % 2 == 0) ? 12.0 : -12.0;
+            constexpr int kBase = 128;
+            m.at<cv::Vec3b>(y, x) = cv::Vec3b(
+                cv::saturate_cast<uchar>(kBase + 0.587 * d),
+                cv::saturate_cast<uchar>(kBase - 0.299 * d),
+                cv::saturate_cast<uchar>(kBase));
+        }
+    }
+    auto src = make_image(std::move(m));
+
+    ImageComparator cmp;
+    RevealOptions opts;
+    opts.background_sigma = 12.0;
+    opts.amplification = 20.0;
+    opts.smooth = false;
+    opts.heatmap_color = HeatmapColor::Gray;
+
+    const cv::Rect roi(6, 6, size - 12, size - 12);
+
+    opts.channel = RevealChannel::Luma;
+    auto luma = cmp.compute_reveal(*src, opts);
+    REQUIRE(luma != nullptr);
+    const double luma_range = range_of(luma->mat(), roi);
+
+    opts.channel = RevealChannel::ChromaRG;
+    auto chroma = cmp.compute_reveal(*src, opts);
+    REQUIRE(chroma != nullptr);
+    const double chroma_range = range_of(chroma->mat(), roi);
+
+    // Only quantisation noise survives on the luminance axis; the
+    // chroma axis saturates well before the same gain.
+    REQUIRE(luma_range < 20.0);
+    REQUIRE(chroma_range > 100.0);
+    REQUIRE(chroma_range > 3.0 * luma_range);
+}

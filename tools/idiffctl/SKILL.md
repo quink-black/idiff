@@ -64,6 +64,11 @@ idiffctl.py select /data/ref.png /data/out.png  # what is compared
 idiffctl.py view --mode difference              # split | overlay | difference | reveal
 idiffctl.py view --mode overlay --slider 0.3
 idiffctl.py view --mode reveal --radius 30 --gain 40   # single-image boost
+idiffctl.py view --mode reveal --normalize --reveal-channel chroma_rg
+#   --normalize divides by a blurred local magnitude, so one gain shows
+#   structure in flat background AND in textured mid-tones (clothing, hair)
+#   instead of saturating one of them.  --reveal-channel picks the field:
+#   luma | red | green | blue | chroma_rg | chroma_by | lab_a | lab_b.
 idiffctl.py shot out.png --mode reveal          # capture the boosted view
 idiffctl.py view --channel y --zoom 4 --pan-x 100 --pan-y 50
 idiffctl.py view --group-mode none              # none | by_name | by_folder

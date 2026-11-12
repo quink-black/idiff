@@ -53,6 +53,8 @@ DEFAULT_LAUNCH_WAIT_S = 20.0
 
 MODES = ("split", "overlay", "difference", "reveal")
 REVEAL_PALETTES = ("gray", "inferno", "viridis", "coolwarm")
+REVEAL_CHANNELS = ("luma", "red", "green", "blue",
+                   "chroma_rg", "chroma_by", "lab_a", "lab_b")
 CHANNELS = ("r", "g", "b", "a", "y", "u", "v", "none", "rgb")
 GROUP_MODES = ("none", "by_name", "by_folder")
 
@@ -343,7 +345,9 @@ def cmd_view(s: Session, args) -> Any:
         applied.append("view.set_channel")
     reveal = {k: v for k, v in (
         ("radius", args.radius), ("gain", args.gain),
-        ("smooth", args.smooth), ("palette", args.palette),
+        ("smooth", args.smooth), ("channel", args.reveal_channel),
+        ("normalize", args.normalize),
+        ("normalize_sigma", args.normalize_sigma), ("palette", args.palette),
     ) if v is not None}
     if reveal:
         # Works without --mode reveal: the parameters stay in effect
@@ -465,6 +469,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mode", choices=MODES)
     sp.add_argument("--slider", type=float, help="overlay split, 0..1")
     sp.add_argument("--channel", choices=CHANNELS)
+    sp.add_argument("--reveal-channel", choices=REVEAL_CHANNELS,
+                    help="reveal: scalar field, e.g. chroma_rg for colour "
+                         "banding that a luminance residual cancels out")
     sp.add_argument("--radius", type=float,
                     help="reveal: background-estimate sigma in pixels")
     sp.add_argument("--gain", type=float,
@@ -475,6 +482,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="reveal: suppress pixel grain")
     smooth.add_argument("--no-smooth", dest="smooth", action="store_false",
                         help="reveal: keep pixel grain")
+    norm = sp.add_mutually_exclusive_group()
+    norm.add_argument("--normalize", dest="normalize", action="store_true",
+                      default=None,
+                      help="reveal: divide by a local magnitude so textured "
+                           "areas and flat background share one gain")
+    norm.add_argument("--no-normalize", dest="normalize",
+                      action="store_false",
+                      help="reveal: use a single global gain")
+    sp.add_argument("--normalize-sigma", type=float,
+                    help="reveal: local magnitude scale in pixels")
     sp.add_argument("--palette", choices=REVEAL_PALETTES,
                     help="reveal: color scheme")
     sp.add_argument("--group-mode", choices=GROUP_MODES)
