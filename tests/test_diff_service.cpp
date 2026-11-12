@@ -5,6 +5,7 @@
 //   * empty / single-selection states produce no slots
 //   * partner ordering: every selected entry except the reference
 //     (smallest selected index), in natural selection order
+//   * reveal ordering: every selected entry, reference first
 //   * texture lifecycle: every uploaded texture is destroyed exactly
 //     once when the cache is rebuilt, cleared, or the service is
 //     destroyed
@@ -507,4 +508,92 @@ TEST_CASE("DiffService reveal slots do not stream tiles",
 
     REQUIRE(svc.slots()[0].texture_tiles.empty());
     REQUIRE(up.live_count() == 1);
+}
+
+TEST_CASE("DiffService reveal emits slots reference-first",
+          "[diff_service][reveal][reference]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("a.png", 32, 32, cv::Scalar(10, 20, 30)));
+    entries.push_back(make_entry("b.png", 32, 32, cv::Scalar(40, 50, 60)));
+    entries.push_back(make_entry("c.png", 32, 32, cv::Scalar(70, 80, 90)));
+    entries.push_back(make_entry("d.png", 32, 32, cv::Scalar(90, 90, 90)));
+
+    sel.insert(0);
+    sel.insert(1);
+    sel.insert(3);
+    sel.set_reference(3);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+
+    REQUIRE(err.empty());
+    REQUIRE(svc.size() == 3);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 3);
+    REQUIRE(svc.slots()[1].partner_entry_idx == 0);
+    REQUIRE(svc.slots()[2].partner_entry_idx == 1);
+    REQUIRE(up.upload_count() == 3);
+}
+
+TEST_CASE("DiffService reveal follows a changed reference on rebuild",
+          "[diff_service][reveal][reference]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("a.png", 32, 32, cv::Scalar(10, 20, 30)));
+    entries.push_back(make_entry("b.png", 32, 32, cv::Scalar(40, 50, 60)));
+    entries.push_back(make_entry("c.png", 32, 32, cv::Scalar(70, 80, 90)));
+
+    sel.insert(0);
+    sel.insert(1);
+    sel.insert(2);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+    REQUIRE(svc.size() == 3);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 0);
+
+    sel.set_reference(2);
+    svc.mark_dirty();
+    svc.update(entries, sel, opts, err);
+
+    REQUIRE(err.empty());
+    REQUIRE(svc.size() == 3);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 2);
+    REQUIRE(svc.slots()[1].partner_entry_idx == 0);
+    REQUIRE(svc.slots()[2].partner_entry_idx == 1);
+}
+
+TEST_CASE("DiffService reveal keeps a reference-only selection revealed",
+          "[diff_service][reveal][reference]") {
+    FakeUploader up;
+    DiffService svc(up);
+    SelectionModel sel;
+
+    std::vector<ImageEntry> entries;
+    entries.push_back(make_entry("only.png", 16, 16, cv::Scalar(90, 90, 90)));
+    sel.insert(0);
+    sel.set_reference(0);
+
+    DiffService::Options opts;
+    opts.mode = DiffService::Options::Mode::Reveal;
+
+    std::string err;
+    svc.update(entries, sel, opts, err);
+
+    REQUIRE(err.empty());
+    REQUIRE(svc.size() == 1);
+    REQUIRE(svc.slots()[0].partner_entry_idx == 0);
+    REQUIRE(up.upload_count() == 1);
 }

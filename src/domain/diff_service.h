@@ -4,7 +4,8 @@
 // Diff service.
 //
 // Owns the per-frame difference cache: one DiffSlot per partner image
-// compared against the reference (the smallest selected entry index).
+// compared against the reference (the explicit reference, else the
+// smallest selected entry index).
 // Each slot keeps the heatmap Image and an SDL texture handle
 // uploaded through the injected ITextureUploader.
 //
@@ -91,7 +92,11 @@ public:
     //
     // In Options::Mode::Reveal, builds one slot per selected entry
     // instead: each slot holds the single-image reveal of that entry,
-    // with partner_entry_idx set to the entry itself.
+    // with partner_entry_idx set to the entry itself.  The reference
+    // entry comes first (explicit reference, else smallest selected
+    // index), followed by the other selected entries in natural order,
+    // so the grid matches the reference-first cell order of the other
+    // views.
     //
     // After update() returns, is_dirty() is false even when no slots
     // were produced (e.g. fewer than two selected entries); the
@@ -120,7 +125,8 @@ private:
     void upload_slot(DiffSlot& slot);
 
     // Mode::Reveal half of update(): one reveal slot per selected
-    // entry.  Kept separate so the pairwise path stays readable.
+    // entry, reference first.  Kept separate so the pairwise path
+    // stays readable.
     void update_reveal(const std::vector<ImageEntry>& entries,
                        const SelectionModel& selection,
                        const Options& opts,

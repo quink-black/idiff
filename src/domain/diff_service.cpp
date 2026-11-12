@@ -311,7 +311,24 @@ void DiffService::update_reveal(
             limits.max_width > 0 ? limits.max_width : 4096,
             limits.max_height > 0 ? limits.max_height : 4096)));
 
-    for (int idx : selection.indices()) {
+    // Reveal shows every selected entry, but the slots follow the same
+    // reference-first order as the viewport's cell layout.  Without this
+    // an explicit reference is buried in natural index order and setting
+    // it has no visible effect.
+    int idx_ref = -1;
+    selection.get_ref_index(idx_ref);
+    const bool ref_first = idx_ref >= 0 &&
+                           idx_ref < static_cast<int>(entries.size()) &&
+                           selection.contains(idx_ref);
+    std::vector<int> order;
+    order.reserve(selection.size());
+    if (ref_first) order.push_back(idx_ref);
+    for (int s : selection.indices()) {
+        if (ref_first && s == idx_ref) continue;
+        order.push_back(s);
+    }
+
+    for (int idx : order) {
         if (idx < 0 || idx >= static_cast<int>(entries.size())) continue;
         const auto& entry = entries[static_cast<std::size_t>(idx)];
         // Lazy-load: a selected entry may have been evicted by the LRU.

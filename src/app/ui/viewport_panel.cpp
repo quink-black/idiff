@@ -679,8 +679,12 @@ void render_viewport_panel(const ViewportPanelInputs& in) {
             }
             if (vp.mode() == ComparisonMode::Reveal) {
                 // In reveal mode the slot points at the enhanced entry
-                // itself; there is no A/partner pairing.
-                diff_label_storage.push_back("Reveal: " + partner_name);
+                // itself; there is no A/partner pairing.  The reference
+                // still leads the grid, so mark that cell.
+                const bool is_ref = slot.partner_entry_idx == ref_lbl_idx;
+                diff_label_storage.push_back(
+                    is_ref ? "Reveal: [Ref] " + partner_name
+                           : "Reveal: " + partner_name);
             } else {
                 diff_label_storage.push_back("Diff: " + ref_name + " vs " +
                                              partner_name);

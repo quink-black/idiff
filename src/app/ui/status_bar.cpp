@@ -159,7 +159,9 @@ void render_status_bar(const StatusBarInputs& in) {
                                                   ? entries[ref_idx].display_label
                                                   : std::string("Ref");
                         if (reveal) {
-                            diff_label = "Reveal: " + partner;
+                            diff_label = slot.partner_entry_idx == ref_idx
+                                ? "Reveal: [Ref] " + partner
+                                : "Reveal: " + partner;
                         } else {
                             diff_label = "Diff: " + ref_name + " vs " +
                                          partner;
