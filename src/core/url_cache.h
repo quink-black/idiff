@@ -102,7 +102,10 @@ public:
     // URL path segment appended to the base.  Matching is by path
     // structure, not by host: the URL "https://host/sr/img/a.png"
     // resolves to <base>/sr/img/a.png, so the local directory tree
-    // must mirror the URL path from a shared ancestor.  If no match
+    // must mirror the URL path from a shared ancestor.  A string
+    // without a scheme is a plain path with no host, so "img/a.png"
+    // resolves to <base>/img/a.png and a config can name its images
+    // relative to the JSON directory.  If no match
     // is found, the URL falls through to the normal download path.
     //
     // The search also walks up to `ancestors` parent directories of

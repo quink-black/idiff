@@ -53,7 +53,9 @@ std::string url_decode(std::string_view s) {
 // especially) with underscores.  We deliberately preserve '.', '-', and
 // '_' so filenames like "kid-pisa-v0.jpg" survive intact.
 std::string sanitize_segment(std::string_view s) {
-    static constexpr std::string_view kBad = "<>:\"\\|?*";
+    // '/' can only appear here through a percent escape; keeping it would
+    // let "..%2Fx" step out of the base directory.
+    static constexpr std::string_view kBad = "<>:\"\\|?*/";
     std::string out;
     out.reserve(s.size());
     for (char c : s) {
@@ -70,9 +72,16 @@ std::string sanitize_segment(std::string_view s) {
     return out;
 }
 
+// A string without "://" names a file, not a remote resource, so curl
+// has nothing to fetch for it.
+bool is_local_path(const std::string& url) {
+    return url.find("://") == std::string::npos;
+}
+
 struct ParsedUrl {
     std::string host;           // may be empty (e.g. file:// or bare path)
     std::string path_no_query;  // leading '/' stripped; "" when only a host
+    bool has_scheme = false;    // false: a plain path, taken literally
 };
 
 ParsedUrl parse_url(const std::string& url) {
@@ -82,6 +91,18 @@ ParsedUrl parse_url(const std::string& url) {
     // Strip scheme, if any.
     if (auto pos = v.find("://"); pos != std::string_view::npos) {
         v.remove_prefix(pos + 3);
+        p.has_scheme = true;
+    }
+    // Without a scheme the string is a file path: there is no authority,
+    // query or fragment, and '%' and '#' are ordinary characters.  A
+    // leading "./" is dropped as redundant.
+    if (!p.has_scheme) {
+        while (v.size() >= 2 && v[0] == '.' && v[1] == '/') {
+            v.remove_prefix(2);
+        }
+        while (!v.empty() && v.front() == '/') v.remove_prefix(1);
+        p.path_no_query = std::string(v);
+        return p;
     }
     // Drop query / fragment.
     if (auto q = v.find_first_of("?#"); q != std::string_view::npos) {
@@ -251,7 +272,20 @@ std::vector<std::string> UrlCache::url_segments(const std::string& url) {
                               : slash;
         std::string seg(p.path_no_query.data() + start, end - start);
         if (!seg.empty()) {
-            segs.push_back(sanitize_segment(url_decode(seg)));
+            if (!p.has_scheme) {
+                // A path names a real file, so it is used as written.
+                // ".." would step outside the base and "." is no file
+                // name.  On Windows a backslash separates directories and a
+                // "C:" segment replaces the base, so both are refused
+                // on every platform.
+                if (seg == "." || seg == ".." ||
+                    seg.find_first_of("\\:") != std::string::npos) {
+                    return {};
+                }
+                segs.push_back(std::move(seg));
+            } else {
+                segs.push_back(sanitize_segment(url_decode(seg)));
+            }
         }
         if (slash == std::string::npos) break;
         start = slash + 1;
@@ -377,7 +411,9 @@ void UrlCache::register_urls(const std::vector<std::string>& urls) {
                                   : slash;
             std::string seg(p.path_no_query.data() + start, end - start);
             if (!seg.empty()) {
-                d.segs.push_back(sanitize_segment(url_decode(seg)));
+                d.segs.push_back(p.has_scheme
+                                     ? sanitize_segment(url_decode(seg))
+                                     : seg);
             }
             if (slash == std::string::npos) break;
             start = slash + 1;
@@ -543,6 +579,12 @@ std::filesystem::path UrlCache::fetch(const std::string& url,
     namespace fs = std::filesystem;
     last_error_.clear();
 
+    if (is_local_path(url)) {
+        if (auto local = local_candidate(url); !local.empty()) return local;
+        last_error_ = "file not found: " + url;
+        return {};
+    }
+
     fs::path target = path_for(url);
     std::error_code ec;
 
@@ -604,6 +646,7 @@ bool UrlCache::is_cached(const std::string& url) const {
 
 void UrlCache::prefetch(const std::string& url, int priority) {
     if (url.empty()) return;
+    if (is_local_path(url)) return;
 
     // Skip anything already materialized on disk -- a prefetch request
     // for a hit is just noise.  Intentionally done outside the pool

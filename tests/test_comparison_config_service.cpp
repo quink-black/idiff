@@ -325,6 +325,176 @@ TEST_CASE("load: resolves images from local JSON dir (no download)",
     REQUIRE(result.entries[0].display_label == "A");
 }
 
+TEST_CASE("load: relative paths resolve against the JSON directory",
+          "[comparison_config_service]") {
+    // Every item shares the first path segment ("out"), which is the
+    // case where treating that segment as a host used to drop it.
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    auto img_a = tmp.path() / "out" / "a.png";
+    auto img_b = tmp.path() / "out" / "b.png";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "out/a.png", "title": "A"},
+        {"url": "out/b.png", "title": "B"}
+    ]}]})");
+    write_text(img_a, "a bytes");
+    write_text(img_b, "b bytes");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.failures == 0);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(result.entries[0].local_path == img_a.string());
+    REQUIRE(result.entries[1].local_path == img_b.string());
+    REQUIRE(result.entries[0].display_label == "A");
+}
+
+TEST_CASE("load: relative paths nest and may start with ./",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    auto img_a = tmp.path() / "x" / "deep" / "1.png";
+    auto img_b = tmp.path() / "y" / "1.png";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "x/deep/1.png", "title": "A"},
+        {"url": "./y/1.png", "title": "B"}
+    ]}]})");
+    write_text(img_a, "a bytes");
+    write_text(img_b, "b bytes");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.failures == 0);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(result.entries[0].local_path == img_a.string());
+    REQUIRE(result.entries[1].local_path == img_b.string());
+}
+
+TEST_CASE("load: a missing relative path is a failure, not a download",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    write_text(tmp.path() / "out" / "a.png", "a bytes");
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "out/a.png", "title": "A"},
+        {"url": "gone/missing.png", "title": "M"}
+    ]}]})");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.ok);
+    REQUIRE(result.requested == 2);
+    REQUIRE(result.entries.size() == 1);
+    REQUIRE(result.failures == 1);
+    // A scheme-less string is never downloaded: no cache directory is
+    // created beside the JSON and the error names the missing file.
+    REQUIRE_FALSE(fs::exists(tmp.path() / "gone"));
+    REQUIRE(result.last_error.find("not found") != std::string::npos);
+}
+
+TEST_CASE("load: a config named without a directory resolves from the cwd",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    write_text(tmp.path() / "compare.json", R"({"groups": [{"name": "g",
+        "items": [{"url": "out/a.png", "title": "A"}]}]})");
+    write_text(tmp.path() / "out" / "a.png", "a bytes");
+
+    struct CwdGuard {
+        fs::path saved = fs::current_path();
+        ~CwdGuard() { std::error_code ec; fs::current_path(saved, ec); }
+    } guard;
+    fs::current_path(tmp.path());
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load("compare.json").ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.failures == 0);
+    REQUIRE(result.entries.size() == 1);
+    REQUIRE(fs::path(result.entries[0].local_path).is_absolute());
+    REQUIRE(fs::equivalent(result.entries[0].local_path,
+                           tmp.path() / "out" / "a.png"));
+}
+
+TEST_CASE("load: relative paths are literal file names",
+          "[comparison_config_service]") {
+    // '%' and '#' are ordinary characters in a path; only a URL gives
+    // them escape and fragment meaning.
+    TempDir tmp;
+    auto json_path = tmp.path() / "compare.json";
+    auto img_a = tmp.path() / "set" / "100%20crop.png";
+    auto img_b = tmp.path() / "set" / "img#1.png";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "set/100%20crop.png", "title": "A"},
+        {"url": "set/img#1.png", "title": "B"}
+    ]}]})");
+    write_text(img_a, "a bytes");
+    write_text(img_b, "b bytes");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.failures == 0);
+    REQUIRE(result.entries.size() == 2);
+    REQUIRE(result.entries[0].local_path == img_a.string());
+    REQUIRE(result.entries[1].local_path == img_b.string());
+}
+
+TEST_CASE("load: relative paths never match a renamed sibling",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "sub" / "compare.json";
+    auto real = tmp.path() / "sub" / "set" / "a?b.png";
+    auto decoy = tmp.path() / "sub" / "set" / "a_b.png";
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "set/a?b.png", "title": "Q"},
+        {"url": "../outside.png", "title": "U"},
+        {"url": "..\\..\\outside.png", "title": "W"},
+        {"url": "C:/outside.png", "title": "D"}
+    ]}]})");
+    write_text(real, "real bytes");
+    write_text(decoy, "decoy bytes");
+    write_text(tmp.path() / "outside.png", "outside bytes");
+    // Decoys that exist on POSIX under the literal names; an
+    // implementation that accepts these strings would load them.
+    write_text(tmp.path() / "sub" / "..\\..\\outside.png", "decoy");
+    write_text(tmp.path() / "sub" / "C:" / "outside.png", "decoy");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.failures == 3);
+    REQUIRE(result.entries.size() == 1);
+    REQUIRE(result.entries[0].local_path == real.string());
+}
+
+TEST_CASE("load: an encoded slash cannot leave the JSON directory",
+          "[comparison_config_service]") {
+    TempDir tmp;
+    auto json_path = tmp.path() / "sub" / "compare.json";
+    write_text(tmp.path() / "outside.png", "outside bytes");
+    write_text(json_path, R"({"groups": [{"name": "g", "items": [
+        {"url": "..%2Foutside.png", "title": "O"}
+    ]}]})");
+
+    ComparisonConfigService svc;
+    REQUIRE(svc.load(json_path.string()).ok);
+    auto result = svc.switch_to(0);
+
+    REQUIRE(result.entries.empty());
+    REQUIRE(result.failures == 1);
+}
+
 TEST_CASE("clear: drops config and cache", "[comparison_config_service]") {
     TempDir tmp;
     auto json_path = tmp.path() / "ok.json";

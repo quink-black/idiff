@@ -52,7 +52,11 @@ LoadConfigResult ComparisonConfigService::load(const std::string& path) {
     // JSON directory itself (or the test override) so any genuinely
     // remote URL still needing a download lands beside the JSON rather
     // than in ~/Downloads.
-    std::filesystem::path json_path(path);
+    // json_path is absolute so a config named without a directory still
+    // has a parent to search for its images.
+    std::error_code abs_ec;
+    std::filesystem::path json_path = std::filesystem::absolute(path, abs_ec);
+    if (abs_ec) json_path = path;
     std::filesystem::path cache_dir = cache_root_override_.empty()
         ? json_path.parent_path()
         : cache_root_override_;
