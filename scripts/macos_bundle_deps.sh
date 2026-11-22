@@ -134,6 +134,32 @@ list_deps() {
 QUEUE="$MAIN_EXE|$MAIN_EXE"
 COPIED_LIST=""
 
+bundle_dylib() {
+    local resolved="$1" base="$2" real
+    if printf '%s\n' "$COPIED_LIST" | grep -Fxq "$base"; then
+        return
+    fi
+
+    real=$(/usr/bin/perl -MCwd -e 'print Cwd::abs_path(shift)' "$resolved")
+    cp -f "$real" "$FW_DIR/$base"
+    chmod u+w "$FW_DIR/$base"
+    install_name_tool -id "@rpath/$base" "$FW_DIR/$base"
+    COPIED_LIST="$COPIED_LIST
+$base"
+    QUEUE="$QUEUE
+$FW_DIR/$base|$real"
+}
+
+# sdl2-compat uses dlopen(), so SDL3 has to enter the dependency scan
+# through the symlink staged beside the executable.
+SDL3_LINK="$MACOS_DIR/libSDL3.dylib"
+SDL3_BUNDLE_PATH="../Frameworks/libSDL3.dylib"
+bundling_sdl3=false
+if [[ -L "$SDL3_LINK" && "$(readlink "$SDL3_LINK")" != "$SDL3_BUNDLE_PATH" ]]; then
+    bundle_dylib "$SDL3_LINK" libSDL3.dylib
+    bundling_sdl3=true
+fi
+
 while [[ -n "$QUEUE" ]]; do
     entry="$(printf '%s\n' "$QUEUE" | head -n1)"
     QUEUE="$(printf '%s\n' "$QUEUE" | tail -n +2)"
@@ -191,27 +217,12 @@ while [[ -n "$QUEUE" ]]; do
             continue
         fi
 
-        # Resolve symlinks so we always copy the real dylib. macOS has no
-        # GNU `readlink -f`, so fall back to a short Perl one-liner.
-        real=$(/usr/bin/perl -MCwd -e 'print Cwd::abs_path(shift)' "$resolved")
         # Use the basename of the *reference* (dep) so the copied file's
         # name matches the install name its sibling dylibs were linked
         # against. Homebrew ships symlinks for this exact purpose, e.g.
         #   libopencv_imgproc.413.dylib -> libopencv_imgproc.4.13.0.dylib
         base=$(basename "$dep")
-
-        if ! printf '%s\n' "$COPIED_LIST" | grep -Fxq "$base"; then
-            cp -f "$real" "$FW_DIR/$base"
-            chmod u+w "$FW_DIR/$base"
-            # Canonicalise its own LC_ID_DYLIB.
-            install_name_tool -id "@rpath/$base" "$FW_DIR/$base"
-            COPIED_LIST="$COPIED_LIST
-$base"
-            # Enqueue with the *source* location we resolved to, so the
-            # next iteration can expand @loader_path correctly.
-            QUEUE="$QUEUE
-$FW_DIR/$base|$real"
-        fi
+        bundle_dylib "$resolved" "$base"
 
         # Rewrite the reference in the file that pulled it in. If dep is
         # already @rpath/<base> the -change is a no-op but still succeeds.
@@ -239,6 +250,10 @@ $FW_DIR/$base|$real"
     done <<< "$RPATHS"
 done
 
+if "$bundling_sdl3"; then
+    ln -sfn "$SDL3_BUNDLE_PATH" "$SDL3_LINK"
+fi
+
 # Make sure the main executable can find @rpath/*. Adding the same rpath
 # twice is an error, so we check first.
 if ! otool -l "$MAIN_EXE" | grep -q "path @executable_path/../Frameworks "; then
@@ -257,5 +272,6 @@ done
 # Without a bundle-level signature, Gatekeeper sometimes reports the app
 # as "damaged" even when every Mach-O inside is individually valid.
 codesign --deep --force --sign - "$APP"
+codesign --verify --deep --strict "$APP"
 
 echo "Bundled $(ls "$FW_DIR" | wc -l | tr -d ' ') dylib(s) into $FW_DIR"

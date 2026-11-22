@@ -74,6 +74,8 @@ target_link_libraries(idiff PRIVATE
     nfd::nfd
 )
 
+idiff_provide_sdl3_runtime(idiff)
+
 if(IDIFF_HAVE_RPC)
     target_link_libraries(idiff PRIVATE idiff_rpc)
     target_compile_definitions(idiff PRIVATE IDIFF_HAVE_RPC=1)

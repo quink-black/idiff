@@ -83,6 +83,8 @@ target_link_libraries(idiff_tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+idiff_provide_sdl3_runtime(idiff_tests)
+
 if(WIN32)
     target_compile_definitions(idiff_tests PRIVATE NOMINMAX)
     target_compile_options(idiff_tests PRIVATE /utf-8)

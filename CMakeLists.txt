@@ -205,6 +205,29 @@ endif()
 # SDL2
 find_package(SDL2 REQUIRED CONFIG)
 
+# sdl2-compat probes @executable_path/libSDL3.dylib from a library
+# initializer, before the application can intervene.
+if(APPLE)
+    find_library(IDIFF_SDL3_RUNTIME NAMES SDL3 SDL3.0)
+    if(IDIFF_SDL3_RUNTIME)
+        message(STATUS "SDL3 runtime for sdl2-compat: ${IDIFF_SDL3_RUNTIME}")
+    endif()
+endif()
+
+function(idiff_provide_sdl3_runtime target)
+    if(NOT APPLE OR NOT IDIFF_SDL3_RUNTIME)
+        return()
+    endif()
+    # Check the runtime even when the executable is already up to date.
+    add_custom_target(${target}_sdl3_runtime
+        COMMAND "${CMAKE_COMMAND}"
+            "-DSDL3_RUNTIME=${IDIFF_SDL3_RUNTIME}"
+            "-DEXECUTABLE_DIR=$<TARGET_FILE_DIR:${target}>"
+            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/scripts/macos_stage_sdl3.cmake"
+        VERBATIM)
+    add_dependencies(${target} ${target}_sdl3_runtime)
+endfunction()
+
 # --- Dependencies with source-build fallback ---
 
 # Catch2 v3
